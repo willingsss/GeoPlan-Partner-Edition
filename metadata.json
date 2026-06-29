@@ -1,0 +1,6 @@
+{
+  "name": "GeoPlan",
+  "description": "城市建设方案影响评估平台 (GeoPlan - Urban Planning Impact Assessment WebGIS Platform) targeting Quanshan District, Xuzhou, Jiangsu, using advanced spatial overlay operations, EPSG:3857 planar buffers, and population calculations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

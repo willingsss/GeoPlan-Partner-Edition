@@ -1,0 +1,21 @@
+- [x] `/api/v1/analysis/coverage` 响应包含 `blindSpotClusters`，每项有 clusterId/center/communityCount/population，按 population 降序
+- [x] `blindSpotClusters` 聚类阈值为 1500m，盲区社区质心两两距离 ≤ 阈值归为同一聚类
+- [x] 原 `coverageRate`/`blindSpots`/`blindSpotCommunities`/`blindSpotPopulation`/`totalStations` 字段保持不变
+- [x] `/api/v1/analysis/evaluate-site` 响应包含 `in_blind_spot: boolean`
+- [x] 请求未携带 `coverageBlindSpots` 时 `in_blind_spot` 为 false，不报错
+- [x] 请求携带 `coverageBlindSpots` 且 buffer 与任一盲区相交时 `in_blind_spot` 为 true
+- [x] 覆盖分析完成后地图上以金色定位针标记聚类中心
+- [x] 聚类中心弹窗显示盲区人口、社区数、"在此选址"按钮
+- [x] 点击"在此选址"切换到选址 Tab 并以聚类质心放置虚拟站点自动评估
+- [x] `evaluateSite` 请求体携带 `coverageBlindSpots`（来自最近一次覆盖分析）
+- [x] 选址面板在 `siteMetrics.in_blind_spot` 为 true 时高亮"该选址将消除盲区"提示
+- [x] 选址 Tab 存在最近覆盖分析结果时显示"当前区域盲区概况"卡片（覆盖率/盲区社区/盲区人口 + "来自覆盖分析"角标）
+- [x] 无覆盖分析历史时选址面板不显示盲区概况卡片
+- [x] 候选点图层仅在 coverage Tab 可见，切 Tab 不清除数据
+- [x] 选址面板采用分区卡片布局，标题 14px、标签 13px、数值 18px
+- [x] 指标卡使用渐变背景 + 左侧色条
+- [x] 快/慢充切换为分段控件样式
+- [x] 输入框/下拉框统一 32px 高、6px 圆角
+- [x] 覆盖分析面板含候选点列表区，每项可"在此选址"
+- [x] 切换 Tab 不丢失各面板状态（选址虚拟站点/覆盖分析结果均保留）
+- [x] `npm run lint` 通过无错误
