@@ -89,6 +89,7 @@ import EmptyState from "./components/EmptyState";
 import LoginView from "./components/LoginView";
 import QueryResultPanel from "./components/QueryResultPanel";
 import CoverageControlBar from "./components/CoverageControlBar";
+import CoverageResultPanel from "./components/CoverageResultPanel";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import MapVerticalBar from "./components/MapVerticalBar";
@@ -5398,183 +5399,43 @@ export default function App() {
           )}
 
           {/* ===== 右侧面板 - Bento 玻璃指挥甲板 (图表/社区/候选点) ===== */}
-          {activeTab === "coverage" && coverageSummary && (
-            <div
-              className="z-20 animate-panel-enter flex flex-col rounded-xl overflow-hidden bento-tile"
-              style={{
-                position: "fixed",
-                right: 12,
-                top: 258,
-                bottom: 16,
-                width: 300,
-                background: "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(250,250,250,0.82) 100%)",
-                backdropFilter: "blur(20px) saturate(1.4)",
-                WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-                border: "1px solid rgba(255,255,255,0.25)",
-                boxShadow: "var(--shadow-elevated)",
-              }}
-            >
-              {/* Tab 导航栏 - 玻璃风格 */}
-              <div className="flex shrink-0" style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", background: "linear-gradient(180deg, rgba(255,255,255,0.5), rgba(255,255,255,0.2))" }}>
-                {([
-                  { key: "charts", label: "图表", icon: BarChart3, show: true },
-                  { key: "communities", label: "社区", icon: Users, show: coverageResults.length > 0 },
-                  { key: "candidates", label: "候选点", icon: MapPin, show: blindSpotClusters.length > 0 },
-                ] as const).filter(t => t.show).map(t => {
-                  const Icon = t.icon;
-                  const active = rightPanelTab === t.key;
-                  return (
-                    <button
-                      key={t.key}
-                      onClick={() => setRightPanelTab(t.key)}
-                      className="flex-1 px-2 py-2.5 text-[11px] font-medium transition-all flex items-center justify-center gap-1"
-                      style={{
-                        color: active ? "var(--color-brand-text)" : "var(--color-ink-4)",
-                        borderBottom: active ? "2px solid var(--color-brand)" : "2px solid transparent",
-                        background: active ? "rgba(0,200,150,0.06)" : "transparent",
-                        textShadow: active ? "0 0 8px rgba(0,200,150,0.2)" : "none",
-                      }}
-                    >
-                      <Icon className="w-3.5 h-3.5" />
-                      {t.label}
-                    </button>
-                  );
-                })}
-              </div>
+        {/* ===== 覆盖分析结果面板 (CoverageResultPanel 组件) ===== */}
+        {activeTab === "coverage" && coverageSummary && (
+          <CoverageResultPanel
+            coverageSummary={coverageSummary}
+            coverageResults={coverageResults}
+            blindSpotClusters={blindSpotClusters}
+            clusterSortBy={clusterSortBy}
+            setClusterSortBy={setClusterSortBy}
+            expandedClusterId={expandedClusterId}
+            setExpandedClusterId={setExpandedClusterId}
+            communityDetail={communityDetail}
+            setCommunityDetail={setCommunityDetail}
+            setCommunityDetailOpen={setCommunityDetailOpen}
+            rightPanelTab={rightPanelTab}
+            setRightPanelTab={setRightPanelTab}
+            coverageChartRef={coverageChartRef}
+            coveragePieChartRef={coveragePieChartRef}
+            stationEffChartRef={stationEffChartRef}
+            onLocateCommunity={(comm) => {
+              const feat = communitySourceRef.current?.getFeatureById(comm.id);
+              if (feat && mapRef.current) {
+                const geom = feat.getGeometry();
+                if (geom) {
+                  const centerCoord = geom.getExtent ? [(geom.getExtent()[0] + geom.getExtent()[2]) / 2, (geom.getExtent()[1] + geom.getExtent()[3]) / 2] : null;
+                  if (centerCoord) {
+                    mapRef.current.getView().animate({ center: centerCoord as [number, number], zoom: 14, duration: 600 });
+                  }
+                }
+              }
+            }}
+            onSelectSiteAt={(lng, lat) => {
+              setActiveTab("site");
+              placeVirtualStation(lng, lat);
+            }}
+          />
+        )}
 
-              {/* Tab 内容区 (统一滚动, 切换带动画) */}
-              <div className="flex-1 overflow-y-auto p-2 min-h-0">
-                {/* 图表 Tab */}
-                {rightPanelTab === "charts" && (
-                  <div key="charts-tab" className="animate-slide-in-right flex flex-col gap-2 h-full">
-                    {/* 堆叠柱图: 各行政区覆盖率 */}
-                    <div className="bento-tile rounded-xl p-2 flex-1 flex flex-col min-h-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
-                      <div className="w-full flex items-center gap-1.5 mb-1 shrink-0" style={{ color: "var(--color-ink-2)" }}>
-                        <BarChart3 className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} />
-                        <span className="text-[11px] font-semibold flex-1">各行政区覆盖率</span>
-                      </div>
-                      <div ref={coverageChartRef} className="w-full flex-1 min-h-0" style={{ minHeight: 100 }} />
-                    </div>
-                    {/* 分级饼图 */}
-                    <div className="bento-tile rounded-xl p-2 flex-1 flex flex-col min-h-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
-                      <div className="w-full flex items-center gap-1.5 mb-1 shrink-0" style={{ color: "var(--color-ink-2)" }}>
-                        <BarChart3 className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} />
-                        <span className="text-[11px] font-semibold flex-1">覆盖率分级</span>
-                      </div>
-                      <div ref={coveragePieChartRef} className="w-full flex-1 min-h-0" style={{ minHeight: 100 }} />
-                    </div>
-                    {/* 效率柱图 */}
-                    <div className="bento-tile rounded-xl p-2 flex-1 flex flex-col min-h-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
-                      <div className="w-full flex items-center gap-1.5 mb-1 shrink-0" style={{ color: "var(--color-ink-2)" }}>
-                        <BarChart3 className="w-3.5 h-3.5" style={{ color: "var(--color-ink-4)" }} />
-                        <span className="text-[11px] font-semibold flex-1">充电站效率 Top10</span>
-                      </div>
-                      <div ref={stationEffChartRef} className="w-full flex-1 min-h-0" style={{ minHeight: 120 }} />
-                    </div>
-                  </div>
-                )}
-
-                {/* 社区列表 Tab */}
-                {rightPanelTab === "communities" && coverageResults.length > 0 && (
-                  <div key="communities-tab" className="animate-slide-in-right">
-                    <CoverageCommunityList
-                    communities={coverageResults}
-                    onLocate={(comm) => {
-                      const feat = communitySourceRef.current?.getFeatureById(comm.id);
-                      if (feat && mapRef.current) {
-                        const geom = feat.getGeometry();
-                        if (geom) {
-                          const centerCoord = geom.getExtent ? [(geom.getExtent()[0] + geom.getExtent()[2]) / 2, (geom.getExtent()[1] + geom.getExtent()[3]) / 2] : null;
-                          if (centerCoord) {
-                            mapRef.current.getView().animate({ center: centerCoord as [number, number], zoom: 14, duration: 600 });
-                          }
-                        }
-                      }
-                    }}
-                    onSelect={(comm) => {
-                      setCommunityDetail(comm);
-                      setCommunityDetailOpen(true);
-                    }}
-                  />
-                  </div>
-                )}
-
-                {/* 候选点 Tab */}
-                {rightPanelTab === "candidates" && blindSpotClusters.length > 0 && (
-                  <div key="candidates-tab" className="animate-slide-in-right">
-                    {/* 排序栏 */}
-                    <div className="px-1 py-1.5 flex items-center gap-1" style={{ borderBottom: "1px solid var(--color-muted)" }}>
-                      <span className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>排序</span>
-                      <select
-                        value={clusterSortBy}
-                        onChange={(e) => setClusterSortBy(e.target.value as "population" | "communityCount")}
-                        className="flex-1 h-6 text-[10px] rounded input-sys px-1"
-                        style={{ background: "var(--color-surface)" }}
-                      >
-                        <option value="population">人口降序</option>
-                        <option value="communityCount">社区数降序</option>
-                      </select>
-                    </div>
-                    {/* 候选点列表 - 直接平铺, 由外层统一滚动 */}
-                    <div>
-                      {[...blindSpotClusters]
-                        .sort((a, b) => {
-                          if (clusterSortBy === "population") return b.population - a.population;
-                          return b.communityCount - a.communityCount;
-                        })
-                        .map((c) => {
-                          const expanded = expandedClusterId === c.clusterId;
-                          return (
-                            <div
-                              key={c.clusterId}
-                              className="px-2 py-1.5 cursor-pointer hover:bg-amber-50/50 transition-colors"
-                              style={{ borderBottom: "1px solid var(--color-subtle)" }}
-                              onClick={() => setExpandedClusterId(expanded ? null : c.clusterId)}
-                            >
-                              <div className="flex items-center justify-between gap-1">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <span className="text-[10px] font-mono text-amber-700 font-bold shrink-0">#{c.clusterId}</span>
-                                  <span className="text-[10px] truncate" style={{ color: "var(--color-ink-4)" }}>
-                                    {c.communityCount} 社区
-                                  </span>
-                                  <span className="text-[10px] text-orange-600 font-bold font-num shrink-0">
-                                    {c.population.toLocaleString()} 人
-                                  </span>
-                                </div>
-                                <ChevronDown
-                                  className={`w-3 h-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
-                                  style={{ color: "var(--color-ink-5)" }}
-                                />
-                              </div>
-                              {expanded && (
-                                <div className="mt-1 space-y-1 animate-fade-in">
-                                  <div className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>
-                                    社区数: {c.communityCount} · 人口: {c.population.toLocaleString()}
-                                  </div>
-                                  <div className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>
-                                    质心: {c.center[0].toFixed(4)}, {c.center[1].toFixed(4)}
-                                  </div>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setActiveTab("site");
-                                      placeVirtualStation(c.center[0], c.center[1]);
-                                    }}
-                                    className="w-full mt-1 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-bold py-1 rounded flex items-center justify-center gap-1 transition-colors"
-                                  >
-                                    <Target className="w-3 h-3" /> 在此选址
-                                  </button>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
 
           {/* 选址评估仪表盘 - Bento 玻璃面板 */}
           {activeTab === "site" && siteMetrics && (
