@@ -50,6 +50,8 @@ export function useCoverageAnalysis() {
   // 阶段三: 覆盖率分级统计 + 充电站效率 (供饼图/柱图渲染)
   const [coverageLevels, setCoverageLevels] = useState<CoverageLevel[]>([]);
   const [stationEfficiency, setStationEfficiency] = useState<StationEfficiency[]>([]);
+  // 覆盖率分级筛选 (空 Set = 全部显示, 支持多选: 点击图例切换)
+  const [selectedCoverageLevels, setSelectedCoverageLevels] = useState<Set<string>>(new Set());
   // 阶段三 任务 3.3.3: 右侧三个图表面板 (默认全部展开, 不再折叠)
   const [coverageChartCollapsed, setCoverageChartCollapsed] = useState(false);
   const [coveragePieCollapsed, setCoveragePieCollapsed] = useState(false);
@@ -78,6 +80,7 @@ export function useCoverageAnalysis() {
     expandedClusterId, setExpandedClusterId,
     coverageLevels, setCoverageLevels,
     stationEfficiency, setStationEfficiency,
+    selectedCoverageLevels, setSelectedCoverageLevels,
     coverageChartCollapsed, setCoverageChartCollapsed,
     coveragePieCollapsed, setCoveragePieCollapsed,
     stationEffCollapsed, setStationEffCollapsed,

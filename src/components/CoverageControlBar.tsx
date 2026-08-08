@@ -20,6 +20,8 @@ export interface CoverageControlBarProps {
   coverageResults: any[];
   isochroneCoverage: { covered: number; total: number; fallback: number; ratio: number } | null;
   blindSpotClusters: any[];
+  selectedCoverageLevels: Set<string>;
+  onToggleCoverageLevel: (level: string) => void;
   runCoverageAnalysis: () => void;
   exportCoverageCSV: () => void;
   printCoverageReport: () => void;
@@ -36,6 +38,7 @@ export default function CoverageControlBar({
   coverageViewMode, setCoverageViewMode,
   regionStats, onDistrictChange,
   coverageLoading, coverageSummary, coverageResults, isochroneCoverage, blindSpotClusters,
+  selectedCoverageLevels, onToggleCoverageLevel,
   runCoverageAnalysis, exportCoverageCSV, printCoverageReport,
 }: CoverageControlBarProps) {
   return (
@@ -270,27 +273,41 @@ export default function CoverageControlBar({
     盲区候选点
     </span>
     <span className="text-zinc-300">|</span>
-    <span className="text-zinc-500 font-semibold">分级</span>
-    <span className="flex items-center gap-1">
-    <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#EF4444" }} />
-    极差
-    </span>
-    <span className="flex items-center gap-1">
-    <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#F59E0B" }} />
-    较差
-    </span>
-    <span className="flex items-center gap-1">
-    <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#FACC15" }} />
-    一般
-    </span>
-    <span className="flex items-center gap-1">
-    <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#84CC16" }} />
-    良好
-    </span>
-    <span className="flex items-center gap-1">
-    <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#10B981" }} />
-    优秀
-    </span>
+    <span className="text-zinc-500 font-semibold">分级(可多选)</span>
+    {([
+      { key: "极差", color: "#EF4444" },
+      { key: "较差", color: "#F59E0B" },
+      { key: "一般", color: "#FACC15" },
+      { key: "良好", color: "#84CC16" },
+      { key: "优秀", color: "#10B981" },
+    ] as const).map(lv => {
+      const active = selectedCoverageLevels.has(lv.key);
+      return (
+        <button
+          key={lv.key}
+          onClick={() => onToggleCoverageLevel(lv.key)}
+          className="flex items-center gap-1 rounded px-1 py-0.5 transition-all"
+          style={{
+            border: active ? `1px solid ${lv.color}` : "1px solid transparent",
+            background: active ? `${lv.color}14` : "transparent",
+            opacity: active || selectedCoverageLevels.size === 0 ? 1 : 0.45,
+          }}
+          title={active ? `取消筛选「${lv.key}」` : `只显示「${lv.key}」区域`}
+        >
+          <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: lv.color }} />
+          <span>{lv.key}</span>
+        </button>
+      );
+    })}
+    {selectedCoverageLevels.size > 0 && (
+      <button
+        onClick={() => onToggleCoverageLevel("__clear__")}
+        className="text-[10px] px-1.5 py-0.5 rounded text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 transition-all"
+        title="清除筛选, 显示全部分级"
+      >
+        清除筛选
+      </button>
+    )}
     </div>
     )}
     {/* 阶段三 任务 3.4.1: 无分析结果时显示小提示（不再占用大卡片） */}

@@ -165,9 +165,25 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
+// 覆盖率分级筛选 (空/未设置 = 全部显示; 由图例点击切换, module 级供 style 函数读取)
+let selectedCoverageLevelsGlobal: Set<string> | null = null;
+
 function communityGradedStyle(feature: any): Style {
   const level = feature.get("coverageLevel") as string | undefined;
   const ratio = feature.get("coverageRatio") as number | undefined;
+  // 计算有效分级 (有 level 用之, 否则按覆盖率推断)
+  let effectiveLevel = level;
+  if (!effectiveLevel && typeof ratio === "number") {
+    if (ratio >= 90) effectiveLevel = "优秀";
+    else if (ratio >= 60) effectiveLevel = "良好";
+    else if (ratio >= 30) effectiveLevel = "一般";
+    else if (ratio >= 10) effectiveLevel = "较差";
+    else effectiveLevel = "极差";
+  }
+  // 分级筛选: 选中集合非空且该社区级别不在集合 → 不渲染
+  if (selectedCoverageLevelsGlobal && selectedCoverageLevelsGlobal.size > 0 && effectiveLevel && !selectedCoverageLevelsGlobal.has(effectiveLevel)) {
+    return new Style({});
+  }
   // 有 level 时按分级色着色
   if (level && COVERAGE_LEVEL_COLORS[level]) {
     const color = COVERAGE_LEVEL_COLORS[level];
@@ -385,7 +401,25 @@ export default function App() {
     coverageChartCollapsed, setCoverageChartCollapsed,
     coveragePieCollapsed, setCoveragePieCollapsed,
     stationEffCollapsed, setStationEffCollapsed,
+    selectedCoverageLevels, setSelectedCoverageLevels,
   } = useCoverageAnalysis();
+
+  // 覆盖率分级筛选切换 (图例点击): 支持多选, 空 = 全部显示
+  const toggleCoverageLevel = (level: string) => {
+    if (level === "__clear__") {
+      setSelectedCoverageLevels(new Set<string>());
+      selectedCoverageLevelsGlobal = new Set<string>();
+      communityLayerRef.current?.changed();
+      return;
+    }
+    setSelectedCoverageLevels(prev => {
+      const next = new Set<string>(prev);
+      if (next.has(level)) next.delete(level); else next.add(level);
+      selectedCoverageLevelsGlobal = next;
+      communityLayerRef.current?.changed();
+      return next;
+    });
+  };
 
   // 覆盖分析
   // 阶段五 等时圈: 服务区模式切换 + 等时圈覆盖率信息
@@ -981,8 +1015,8 @@ export default function App() {
     });
 
     const serviceAreaStyle = (feature: any) => {
-      const brand = feature.get("brand") || "";
-      const color = BRAND_CONFIG[brand]?.color || "#3b82f6";
+      // 服务区统一使用品牌主色 (青色), 不再按站点品牌着色, 避免地图颜色杂乱
+      const color = "#00C896";
       // 阶段五 等时圈: 等时圈用虚线 + 半透明填充, 缓冲区用实线 + 淡填充, 视觉可区分
       const source = feature.get("source");
       if (source === "isochrone") {
@@ -3595,6 +3629,8 @@ export default function App() {
             coverageResults={coverageResults}
             isochroneCoverage={isochroneCoverage}
             blindSpotClusters={blindSpotClusters}
+            selectedCoverageLevels={selectedCoverageLevels}
+            onToggleCoverageLevel={toggleCoverageLevel}
             runCoverageAnalysis={runCoverageAnalysis}
             exportCoverageCSV={exportCoverageCSV}
             printCoverageReport={printCoverageReport}
