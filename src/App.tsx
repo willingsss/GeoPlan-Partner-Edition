@@ -112,24 +112,36 @@ const DISTRICT_CENTERS: Record<string, [number, number]> = {
 // =========================================================================
 // 品牌图标样式映射
 // =========================================================================
+// 当前选中的站点 id（用于地图高亮样式，module 级以便 style 函数读取）
+let selectedStationId: number | null = null;
+
 function getStationStyle(feature: any): Style {
   const brand = feature.get("brand") || "国家电网";
   const config = BRAND_CONFIG[brand] || { color: "#3b82f6" };
-  const status = feature.get("status");
-  const radius = 7;
+  const isSelected = selectedStationId !== null && feature.get("id") === selectedStationId;
+  const radius = isSelected ? 11 : 7;
+  // 站点名取 "·" 后第一段（如 "蔚来换电站(鼓楼区…)" -> 简化名）
+  const namePart = feature.get("name")?.split("·")[1]?.split("充电")[0] || "";
+  // 选中时: 名称 + 快充/慢充数量（站点上方弹出，便于区分密集站点）
+  const text = isSelected
+    ? `${namePart}\n快充${feature.get("fast_chargers") ?? feature.get("fastChargers") ?? 0} · 慢充${feature.get("slow_chargers") ?? feature.get("slowChargers") ?? 0}`
+    : namePart;
   return new Style({
     image: new CircleStyle({
       radius,
-      fill: new Fill({ color: config.color }),
-      stroke: new Stroke({ color: "#ffffff", width: 2 }),
+      fill: new Fill({ color: isSelected ? "#FBBF24" : config.color }),
+      stroke: new Stroke({ color: "#ffffff", width: isSelected ? 3 : 2 }),
     }),
     text: new Text({
-      text: feature.get("name")?.split("·")[1]?.split("充电")[0] || "",
-      font: "10px sans-serif",
-      offsetY: -14,
+      text,
+      font: isSelected ? "bold 11px sans-serif" : "10px sans-serif",
+      offsetY: -14 - (isSelected ? 8 : 0),
       fill: new Fill({ color: "#1F2937" }),
       stroke: new Stroke({ color: "#ffffff", width: 2 }),
+      backgroundFill: isSelected ? new Fill({ color: "rgba(255,255,255,0.9)" }) : undefined,
+      padding: isSelected ? [2, 5, 2, 5] : undefined,
     }),
+    zIndex: isSelected ? 100 : undefined,
   });
 }
 
@@ -1260,6 +1272,9 @@ export default function App() {
       if (clickedStation) {
         // 任意 Tab 下点击充电站都弹出中央模态框 (集成属性展示 + 站点反馈)
         setSelectedStation(clickedStation);
+        // 地图高亮选中站点: 金色大圆点 + 上方弹出名称/桩数
+        selectedStationId = clickedStation.id;
+        stationLayerRef.current?.changed();
         setStationFeedback([]);
         setStationFeedbackForm({ description: "", rating: 5, type: "evaluation" });
         setFeedbackFilter("all");
@@ -1320,6 +1335,8 @@ export default function App() {
 
       // 点击空白处关闭模态框
       setSelectedStation(null);
+      selectedStationId = null;
+      stationLayerRef.current?.changed();
       setSelectedCluster(null);
       // 同时关闭 AI 高亮
       if (aiHighlightSourceRef.current) aiHighlightSourceRef.current.clear();
@@ -4105,7 +4122,11 @@ export default function App() {
           {selectedStation && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
               style={{ background: "rgba(9,9,11,0.45)" }}
-              onClick={() => setSelectedStation(null)}>
+              onClick={() => {
+                setSelectedStation(null);
+                selectedStationId = null;
+                stationLayerRef.current?.changed();
+              }}>
               <div className="w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-scale-in bento-tile"
                 style={{
                   background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
@@ -4133,7 +4154,11 @@ export default function App() {
                       </p>
                     </div>
                   </div>
-                  <button onClick={() => setSelectedStation(null)}
+                  <button onClick={() => {
+                    setSelectedStation(null);
+                    selectedStationId = null;
+                    stationLayerRef.current?.changed();
+                  }}
                     className="w-8 h-8 rounded-lg flex items-center justify-center transition-all shrink-0"
                     style={{ color: "var(--color-ink-4)" }}
                     onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
