@@ -36,6 +36,16 @@ function gcj02ToWgs84(lng: number, lat: number): [number, number] {
 
 const cache = new Map<string, any | null>();
 
+// 徐州各区行政区划代码 (adcode 唯一, 避免"鼓楼区"等重名区匹配到其他城市)
+// 320300=徐州市, 鼓楼320302/云龙320303/贾汪320305/泉山320311/铜山320312
+const XUZHOU_ADCODES: Record<string, string> = {
+  "鼓楼区": "320302",
+  "云龙区": "320303",
+  "贾汪区": "320305",
+  "泉山区": "320311",
+  "铜山区": "320312",
+};
+
 /**
  * 获取行政区的真实边界 (WGS84 GeoJSON 几何)
  * 优先高德官方行政区划边界, 失败返回 null
@@ -46,7 +56,9 @@ export async function fetchDistrictBoundary(district: string): Promise<any | nul
   try {
     const key = process.env.VITE_AMAP_KEY;
     if (!key) { cache.set(district, null); return null; }
-    const url = `https://restapi.amap.com/v3/config/district?keywords=${encodeURIComponent(district)}&subdistrict=0&extensions=all&key=${key}`;
+    // 用 adcode 查询 (唯一), 无 adcode 时回退区名 (仅徐州市区无歧义区名无歧义)
+    const query = XUZHOU_ADCODES[district] || district;
+    const url = `https://restapi.amap.com/v3/config/district?keywords=${encodeURIComponent(query)}&subdistrict=0&extensions=all&key=${key}`;
     const res = await fetch(url);
     const data = await res.json() as any;
     const polyline: string | undefined = data.districts?.[0]?.polyline;
