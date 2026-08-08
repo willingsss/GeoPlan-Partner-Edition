@@ -761,6 +761,9 @@ export default function App() {
   // 图层引用 (用于按 Tab 控制可见性, 保留数据不清除)
   const communityLayerRef = useRef<VectorLayer | null>(null);
   const serviceAreaLayerRef = useRef<VectorLayer | null>(null);
+  // 行政区边界图层 (分析时划定可视化界限)
+  const districtBoundarySourceRef = useRef<VectorSource | null>(null);
+  const districtBoundaryLayerRef = useRef<VectorLayer | null>(null);
   const blindSpotLayerRef = useRef<VectorLayer | null>(null);
   const intersectionLayerRef = useRef<VectorLayer | null>(null);
   const virtualStationLayerRef = useRef<VectorLayer | null>(null);
@@ -969,6 +972,8 @@ export default function App() {
     communitySourceRef.current = communitySource;
     const serviceAreaSource = new VectorSource();
     serviceAreaSourceRef.current = serviceAreaSource;
+    // 行政区边界源 (覆盖分析时高亮显示所选行政区范围)
+    districtBoundarySourceRef.current = new VectorSource();
     const blindSpotSource = new VectorSource();
     blindSpotSourceRef.current = blindSpotSource;
     const virtualStationSource = new VectorSource();
@@ -1127,6 +1132,15 @@ export default function App() {
         }),
         (() => { const l = new VectorLayer({ source: communitySource, style: communityStyle, visible: false }); communityLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: serviceAreaSource, style: serviceAreaStyle }); serviceAreaLayerRef.current = l; return l; })(),
+        // 行政区边界图层: 分析时高亮显示所选行政区范围 (橙色虚线轮廓)
+        (() => { const l = new VectorLayer({
+          source: districtBoundarySourceRef.current!,
+          style: new Style({
+            stroke: new Stroke({ color: "#f97316", width: 3, lineDash: [10, 5] }),
+            fill: new Fill({ color: "rgba(249,115,22,0.04)" }),
+          }),
+          zIndex: 30,
+        }); districtBoundaryLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: blindSpotSource, style: blindSpotStyle }); blindSpotLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: intersectionSource, style: intersectionStyle }); intersectionLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: stationSource, style: getStationStyle }); stationLayerRef.current = l; return l; })(),
@@ -1490,6 +1504,8 @@ export default function App() {
     const isCov = activeTab === "coverage";
     // 覆盖分析图层: 仅 coverage Tab 可见
     serviceAreaLayerRef.current?.setVisible(isCov);
+    // 行政区边界图层: 仅 coverage Tab 可见
+    districtBoundaryLayerRef.current?.setVisible(isCov);
     blindSpotLayerRef.current?.setVisible(isCov);
     // 候选点 (盲区聚类) 图层: 仅 coverage Tab 可见
     clusterLayerRef.current?.setVisible(isCov);
@@ -2094,6 +2110,14 @@ export default function App() {
   // =========================================================================
   const runCoverageAnalysis = async () => {
     setCoverageLoading(true);
+    // 清空上一次分析的地图结果 (避免行政区切换后旧结果残留)
+    serviceAreaSourceRef.current?.clear();
+    blindSpotSourceRef.current?.clear();
+    clusterSourceRef.current?.clear();
+    if (districtBoundarySourceRef.current) districtBoundarySourceRef.current.clear();
+    // 重置社区可见性 (等待新结果)
+    communitySourceRef.current?.getFeatures().forEach((f: any) => f.set("_visible", true));
+    communityLayerRef.current?.changed();
     // 阶段三 任务 3.4.2: 启动进度条动画 (0-90 随机增长, 完成后跳到 100)
     setCoverageProgress(0);
     const progressTimer = window.setInterval(() => {
@@ -2153,6 +2177,14 @@ export default function App() {
           serviceAreaSourceRef.current.clear();
           const saFeatures = readFeaturesFromWGS84(json.data.serviceAreas);
           serviceAreaSourceRef.current.addFeatures(saFeatures);
+        }
+        // 渲染行政区边界 (划定可视化界限)
+        if (districtBoundarySourceRef.current) {
+          districtBoundarySourceRef.current.clear();
+          if (json.data.districtBoundary) {
+            const bFeats = readFeaturesFromWGS84({ type: "FeatureCollection", features: [json.data.districtBoundary] });
+            districtBoundarySourceRef.current.addFeatures(bFeats);
+          }
         }
         // 渲染盲区
         if (blindSpotSourceRef.current) {

@@ -292,6 +292,16 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
       }
     });
 
+    // 行政区可视化边界: 目标行政区所有社区多边形 union 的外轮廓 (前端划定界限用)
+    let districtBoundary: any = null;
+    if (districtFilter && targetCommunities.length > 0) {
+      try {
+        const commGeoms = targetCommunities.map((comm: any) => turf.feature(comm.geometry));
+        const merged = turf.union(turf.featureCollection(commGeoms));
+        districtBoundary = merged ? (merged.geometry ?? merged) : null;
+      } catch { districtBoundary = null; }
+    }
+
     // 按 population 降序排序并格式化输出（center 保留6位小数）
     const blindSpotClusters = blindSpotClustersRaw
       .sort((a, b) => b.population - a.population)
@@ -412,6 +422,7 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
           redundancyScore,
         },
         // 服务区模式信息
+        districtBoundary,
         serviceAreaMode: saMode,
         isochroneCoverage: {
           covered: isochroneCoverageCount,
