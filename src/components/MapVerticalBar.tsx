@@ -1,13 +1,11 @@
 import React from "react";
 import {
   Zap, Building2, MessageSquare, Square, GripVertical, Activity, Flame, Search, Layers, X,
-  ChevronRight, ChevronLeft, MapIcon, Loader2
+  MapIcon, Loader2
 } from "lucide-react";
 import { BRAND_CONFIG } from "../types";
 
 export interface MapVerticalBarProps {
-  mapPanelCollapsed: boolean;
-  setMapPanelCollapsed: (v: boolean) => void;
   searchQuery: string;
   setSearchQuery: (v: string) => void;
   searching: boolean;
@@ -53,7 +51,6 @@ export interface MapVerticalBarProps {
  * 垂直功能栏（地图展示与查询：地点搜索 / 图层管理 / 品牌图层 / 叠加图层 / 区域统计）
  */
 export default function MapVerticalBar({
-  mapPanelCollapsed, setMapPanelCollapsed,
   searchQuery, setSearchQuery, searching, setSearching, searchResults, setSearchResults, setSearchResult,
   showSearchDropdown, setShowSearchDropdown, selectSearchResult, searchSourceRef,
   layerOrder, setLayerOrder, layerOpacity, setLayerOpacity,
@@ -66,44 +63,25 @@ export default function MapVerticalBar({
 }: MapVerticalBarProps) {
   const dragLayerIdRef = React.useRef<string | null>(null);
   return (
-        <aside
-          className="shrink-0 bg-white overflow-y-auto transition-all flex flex-col map-panel-auto-narrow mobile-map-panel-bottom-sheet"
-          style={{
-            width: mapPanelCollapsed ? 14 : 256,
-            borderRight: "1px solid var(--color-muted)",
-            transitionDuration: "var(--duration-normal)",
-            transitionTimingFunction: "var(--ease-out)",
-          }}
-        >
-          {mapPanelCollapsed ? (
-            <button
-              onClick={() => setMapPanelCollapsed(false)}
-              className="w-full h-10 flex items-center justify-center hover:bg-zinc-50 text-zinc-500 hover:text-zinc-900 transition-colors"
-              title="展开功能栏"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          ) : (
-            <>
-              <div
-                className="h-9 shrink-0 px-3 flex items-center justify-between sticky top-0 bg-white z-10"
-                style={{ borderBottom: "1px solid var(--color-muted)" }}
-              >
-                <div className="flex items-center gap-1.5">
-                  <MapIcon className="w-3 h-3 text-zinc-500" />
-                  <h3 className="text-[11px] font-semibold text-zinc-800">
-                    图层与搜索
-                  </h3>
-                </div>
-                <button
-                  onClick={() => setMapPanelCollapsed(true)}
-                  className="w-5 h-5 rounded flex items-center justify-center hover:bg-zinc-100 text-zinc-500 hover:text-zinc-900 transition-colors shrink-0"
-                  title="收起功能栏"
-                >
-                  <ChevronLeft className="w-3 h-3" />
-                </button>
-              </div>
-              <div className="p-3 space-y-3.5">
+    <aside
+      className="shrink-0 bg-white overflow-y-auto flex flex-col map-panel-auto-narrow mobile-map-panel-bottom-sheet"
+      style={{
+        width: 256,
+        borderRight: "1px solid var(--color-muted)",
+      }}
+    >
+      <div
+        className="h-9 shrink-0 px-3 flex items-center justify-between sticky top-0 bg-white z-10"
+        style={{ borderBottom: "1px solid var(--color-muted)" }}
+      >
+        <div className="flex items-center gap-1.5">
+          <MapIcon className="w-3 h-3 text-zinc-500" />
+          <h3 className="text-[11px] font-semibold text-zinc-800">
+            图层与搜索
+          </h3>
+        </div>
+      </div>
+      <div className="p-3 space-y-3.5">
                 {/* 地点搜索 - Linear 风: 简洁边框 + 等宽提示 */}
                 <div className="relative">
                   <div className="flex items-center gap-1.5 input-sys px-2 py-1.5">
@@ -372,7 +350,6 @@ export default function MapVerticalBar({
                   </div>
                 </div>
               </div>
-            </>
-          )}
-        </aside>  );
+        </aside>
+  );
 }

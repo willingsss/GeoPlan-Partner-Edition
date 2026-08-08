@@ -1,5 +1,5 @@
 import React from "react";
-import { Menu, ChevronRight, MapPin, Sun, Moon, Keyboard, Search } from "lucide-react";
+import { Menu, ChevronRight, MapPin, Sun, Moon, Keyboard, Search, LocateFixed } from "lucide-react";
 import type { SubsystemTab } from "../types";
 
 interface TopBarProps {
@@ -11,6 +11,8 @@ interface TopBarProps {
   toggleTheme: () => void;
   onOpenShortcutsHelp: () => void;
   onOpenCommandPalette: () => void;
+  locating: boolean;
+  onLocate: () => void;
 }
 
 /**
@@ -25,6 +27,8 @@ export default function TopBar({
   toggleTheme,
   onOpenShortcutsHelp,
   onOpenCommandPalette,
+  locating,
+  onLocate,
 }: TopBarProps) {
   return (
     <header
@@ -84,6 +88,18 @@ export default function TopBar({
         <span className="text-zinc-300">·</span>
         <span className="font-mono">{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" })}</span>
         <span className="text-zinc-300">·</span>
+        {/* 定位按钮 */}
+        <button
+          onClick={onLocate}
+          disabled={locating}
+          title="定位我的位置"
+          className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-zinc-100/80 text-zinc-500 hover:text-zinc-900 transition-all disabled:opacity-50"
+          style={{ border: "1px solid transparent" }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-muted)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+        >
+          <LocateFixed className={`w-3.5 h-3.5 ${locating ? "animate-spin" : ""}`} />
+        </button>
         {/* 主题切换按钮 */}
         <button
           onClick={toggleTheme}

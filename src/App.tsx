@@ -322,7 +322,6 @@ export default function App() {
   const [visibleBrands, setVisibleBrands] = useState<Set<string>>(new Set(BRANDS));
   const [showCommunities, setShowCommunities] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
-  const [mapPanelCollapsed, setMapPanelCollapsed] = useState(false);
 
   // ===== 阶段三/四新增状态 =====
   // 决策大屏全屏开关 (Task 3.1.8)
@@ -3215,6 +3214,8 @@ export default function App() {
           toggleTheme={toggleTheme}
           onOpenShortcutsHelp={() => setShortcutsHelpOpen(true)}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+          locating={locating}
+          onLocate={locateUser}
         />
 
         {/* 内容区域 (垂直功能栏 + 水平分析栏 + 地图) - 主背景改 Zinc-50 */}
@@ -3222,8 +3223,6 @@ export default function App() {
           {/* ===== 垂直功能栏: 地图展示与查询 (仅地图 Tab, Linear 风紧凑面板) - 阶段四 任务 4.4: 响应式自适应 ===== */}
         {activeTab === "map" && (
           <MapVerticalBar
-            mapPanelCollapsed={mapPanelCollapsed}
-            setMapPanelCollapsed={setMapPanelCollapsed}
             searchQuery={searchQuery}
             setSearchQuery={setSearchQuery}
             searching={searching}
@@ -4017,16 +4016,14 @@ export default function App() {
           {communityDetailOpen && communityDetail && (
             <div
               className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
-              style={{ background: "rgba(9,9,11,0.45)", backdropFilter: "blur(6px)" }}
+              style={{ background: "rgba(9,9,11,0.45)" }}
               onClick={() => { setCommunityDetailOpen(false); setCommunityDetail(null); }}
             >
               <div
                 className="w-[380px] overflow-hidden animate-scale-in bento-tile"
                 style={{
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(250,250,250,0.92) 100%)",
-                  backdropFilter: "blur(24px) saturate(1.4)",
-                  WebkitBackdropFilter: "blur(24px) saturate(1.4)",
-                  border: "1px solid rgba(255,255,255,0.4)",
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
+                  border: "1px solid rgba(255,255,255,0.6)",
                   boxShadow: "var(--shadow-elevated)",
                   borderRadius: 16,
                 }}
@@ -4161,14 +4158,12 @@ export default function App() {
           {/* AI 站点详情模态框 (Bento 玻璃拟态) */}
           {aiStationDetail && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
-              style={{ background: "rgba(9,9,11,0.45)", backdropFilter: "blur(6px)" }}
+              style={{ background: "rgba(9,9,11,0.45)" }}
               onClick={closeAiStationDetail}>
               <div className="w-[340px] overflow-hidden animate-scale-in bento-tile"
                 style={{
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(250,250,250,0.92) 100%)",
-                  backdropFilter: "blur(24px) saturate(1.4)",
-                  WebkitBackdropFilter: "blur(24px) saturate(1.4)",
-                  border: "1px solid rgba(255,255,255,0.4)",
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
+                  border: "1px solid rgba(255,255,255,0.6)",
                   boxShadow: "var(--shadow-elevated)",
                   borderRadius: 16,
                 }}
@@ -4216,14 +4211,12 @@ export default function App() {
           {/* 充电站详情模态框 (屏幕中央大框, Bento 玻璃拟态) */}
           {selectedStation && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
-              style={{ background: "rgba(9,9,11,0.45)", backdropFilter: "blur(6px)" }}
+              style={{ background: "rgba(9,9,11,0.45)" }}
               onClick={() => setSelectedStation(null)}>
               <div className="w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-scale-in bento-tile"
                 style={{
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(250,250,250,0.92) 100%)",
-                  backdropFilter: "blur(24px) saturate(1.4)",
-                  WebkitBackdropFilter: "blur(24px) saturate(1.4)",
-                  border: "1px solid rgba(255,255,255,0.4)",
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
+                  border: "1px solid rgba(255,255,255,0.6)",
                   boxShadow: "var(--shadow-elevated)",
                   borderRadius: 20,
                 }}
@@ -4596,22 +4589,6 @@ export default function App() {
           {/* 用户定位与导航浮窗 - Linear 风: 单色边框, 无毛玻璃 (右上角, 除管理页外) */}
           {activeTab !== "admin" && (
           <div className="absolute top-3 right-3 z-30 flex flex-col gap-1.5 items-end">
-            <button
-              onClick={locateUser}
-              disabled={locating}
-              title="定位我的位置"
-              className="w-9 h-9 flex items-center justify-center rounded-md transition-all disabled:opacity-50"
-              style={{
-                background: "var(--color-surface)",
-                border: "1px solid var(--color-muted)",
-                boxShadow: "var(--shadow-sm)",
-                color: "var(--color-ink-4)",
-              }}
-              onMouseEnter={(e) => { if (!locating) { e.currentTarget.style.borderColor = "var(--color-brand)"; e.currentTarget.style.color = "var(--color-brand)"; } }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-muted)"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
-            >
-              <LocateFixed className={`w-4 h-4 ${locating ? "animate-spin" : ""}`} style={{ color: locating ? "var(--color-brand)" : undefined }} />
-            </button>
             {userLocation && (
               <div
                 className="rounded-md px-2.5 py-1.5 text-[10px] w-auto text-center font-num no-select"
