@@ -408,17 +408,17 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
           populationCoverageRate: totalPopulation > 0 ? Math.round((totalCoveredPop / totalPopulation) * 1000) / 10 : 0,
           totalPopulation,
           blindSpotPopulation: communityResults.filter(c => c.isBlindSpot).reduce((s, c) => s + c.population, 0),
-          totalStations: activeStations.length,
+          totalStations: filteredStations.length,
           redundancyScore,
         },
         // 服务区模式信息
         serviceAreaMode: saMode,
         isochroneCoverage: {
           covered: isochroneCoverageCount,
-          total: activeStations.length,
+          total: filteredStations.length,
           fallback: fallbackCount,
-          ratio: activeStations.length > 0
-            ? Math.round((isochroneCoverageCount / activeStations.length) * 1000) / 10
+          ratio: filteredStations.length > 0
+            ? Math.round((isochroneCoverageCount / filteredStations.length) * 1000) / 10
             : 0,
         },
       },
