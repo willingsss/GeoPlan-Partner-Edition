@@ -4589,19 +4589,6 @@ export default function App() {
           {/* 用户定位与导航浮窗 - Linear 风: 单色边框, 无毛玻璃 (右上角, 除管理页外) */}
           {activeTab !== "admin" && (
           <div className="absolute top-3 right-3 z-30 flex flex-col gap-1.5 items-end">
-            {userLocation && (
-              <div
-                className="rounded-md px-2.5 py-1.5 text-[10px] w-auto text-center font-num no-select"
-                style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
-              >
-                <p className="whitespace-nowrap" style={{ color: "var(--color-ink-2)" }}>
-                  {userLocation.lng.toFixed(5)}, {userLocation.lat.toFixed(5)}
-                </p>
-                {userLocation.accuracy && (
-                  <p className="text-[9px]" style={{ color: "var(--color-brand-text)" }}>±{Math.round(userLocation.accuracy)}m</p>
-                )}
-              </div>
-            )}
             {locateError && (
               <div
                 className="rounded-md px-2.5 py-1.5 text-[9px] w-44 text-center"
