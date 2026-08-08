@@ -22,6 +22,8 @@ export interface CoverageControlBarProps {
   blindSpotClusters: any[];
   selectedCoverageLevels: Set<string>;
   onToggleCoverageLevel: (level: string) => void;
+  showServiceArea: boolean;
+  onToggleServiceArea: () => void;
   runCoverageAnalysis: () => void;
   exportCoverageCSV: () => void;
   printCoverageReport: () => void;
@@ -39,6 +41,7 @@ export default function CoverageControlBar({
   regionStats, onDistrictChange,
   coverageLoading, coverageSummary, coverageResults, isochroneCoverage, blindSpotClusters,
   selectedCoverageLevels, onToggleCoverageLevel,
+  showServiceArea, onToggleServiceArea,
   runCoverageAnalysis, exportCoverageCSV, printCoverageReport,
 }: CoverageControlBarProps) {
   return (
@@ -260,10 +263,19 @@ export default function CoverageControlBar({
     {coverageSummary && (
     <div className="flex items-center gap-3 mt-1 px-1 py-0.5 rounded text-[10px]" style={{ background: "var(--color-subtle)" }}>
     <span className="text-zinc-500 font-semibold">图例</span>
-    <span className="flex items-center gap-1">
-    <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "rgba(6,182,212,0.25)", border: "1px solid rgba(0,0,0,0.06)" }} />
-    服务区
-    </span>
+    <button
+      onClick={onToggleServiceArea}
+      className="flex items-center gap-1 rounded px-1 py-0.5 transition-all"
+      style={{
+        border: showServiceArea ? "1px solid rgba(6,182,212,0.4)" : "1px solid transparent",
+        background: showServiceArea ? "rgba(6,182,212,0.08)" : "transparent",
+        opacity: showServiceArea ? 1 : 0.45,
+      }}
+      title={showServiceArea ? "隐藏服务区" : "显示服务区"}
+    >
+      <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "rgba(6,182,212,0.25)", border: "1px solid rgba(0,0,0,0.06)" }} />
+      <span>服务区</span>
+    </button>
     <span className="flex items-center gap-1">
     <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#F59E0B", border: "1px solid rgba(0,0,0,0.06)" }} />
     重叠区

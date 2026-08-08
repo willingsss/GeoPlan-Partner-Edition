@@ -27,6 +27,8 @@ export function useCoverageAnalysis() {
   const [serviceAreaMode, setServiceAreaMode] = useState<"buffer" | "isochrone" | "hybrid">("buffer");
   const [isochroneCoverage, setIsochroneCoverage] = useState<{ covered: number; total: number; fallback: number; ratio: number } | null>(null);
   const [showIsochroneLayer, setShowIsochroneLayer] = useState<boolean>(true);
+  // 服务区图层显示开关 (图例点击切换)
+  const [showServiceArea, setShowServiceArea] = useState<boolean>(true);
   // 等时圈预计算进度 (管理员后台用)
   const [isochroneProgress, setIsochroneProgress] = useState<any>(null);
   const [isochronePolling, setIsochronePolling] = useState<boolean>(false);
@@ -68,6 +70,7 @@ export function useCoverageAnalysis() {
     serviceAreaMode, setServiceAreaMode,
     isochroneCoverage, setIsochroneCoverage,
     showIsochroneLayer, setShowIsochroneLayer,
+    showServiceArea, setShowServiceArea,
     isochroneProgress, setIsochroneProgress,
     isochronePolling, setIsochronePolling,
     blindSpotClusters, setBlindSpotClusters,

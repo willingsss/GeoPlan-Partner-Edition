@@ -167,6 +167,8 @@ function hexToRgba(hex: string, alpha: number): string {
 
 // 覆盖率分级筛选 (空/未设置 = 全部显示; 由图例点击切换, module 级供 style 函数读取)
 let selectedCoverageLevelsGlobal: Set<string> | null = null;
+// 服务区图层显示开关 (图例点击切换, module 级供 style 函数读取)
+let showServiceAreaGlobal = true;
 
 function communityGradedStyle(feature: any): Style {
   const level = feature.get("coverageLevel") as string | undefined;
@@ -402,7 +404,18 @@ export default function App() {
     coveragePieCollapsed, setCoveragePieCollapsed,
     stationEffCollapsed, setStationEffCollapsed,
     selectedCoverageLevels, setSelectedCoverageLevels,
+    showServiceArea, setShowServiceArea,
   } = useCoverageAnalysis();
+
+  // 服务区图层显示切换 (图例点击): 关闭时服务区多边形不渲染
+  const toggleServiceArea = () => {
+    setShowServiceArea(prev => {
+      const next = !prev;
+      showServiceAreaGlobal = next;
+      serviceAreaLayerRef.current?.changed();
+      return next;
+    });
+  };
 
   // 覆盖率分级筛选切换 (图例点击): 支持多选, 空 = 全部显示
   const toggleCoverageLevel = (level: string) => {
@@ -1015,9 +1028,13 @@ export default function App() {
     });
 
     const serviceAreaStyle = (feature: any) => {
+      // 服务区图层开关 (图例点击): 关闭时不渲染
+      if (!showServiceAreaGlobal) {
+        return new Style({});
+      }
       // 服务区统一使用品牌主色 (青色), 不再按站点品牌着色, 避免地图颜色杂乱
       const color = "#00C896";
-      // 阶段五 等时圈: 等时圈用虚线 + 半透明填充, 缓冲区用实线 + 淡填充, 视觉可区分
+      // 阶段五 等时圈: 等时圈用虚线 + 半透明填充, 缓冲区用实线 + 极淡填充, 视觉可区分且不遮底图
       const source = feature.get("source");
       if (source === "isochrone") {
         // 等时圈图层开关关闭时不渲染 (返回透明样式)
@@ -1025,13 +1042,13 @@ export default function App() {
           return new Style({});
         }
         return new Style({
-          stroke: new Stroke({ color: "#7c3aed", width: 2, lineDash: [6, 4] }),
-          fill: new Fill({ color: "rgba(124, 58, 237, 0.12)" }),
+          stroke: new Stroke({ color: "#7c3aed", width: 1.5, lineDash: [6, 4] }),
+          fill: new Fill({ color: "rgba(124, 58, 237, 0.05)" }),
         });
       }
       return new Style({
-        stroke: new Stroke({ color, width: 1.5 }),
-        fill: new Fill({ color: color + "15" }),
+        stroke: new Stroke({ color, width: 1 }),
+        fill: new Fill({ color: color + "08" }),
       });
     };
 
@@ -3631,6 +3648,8 @@ export default function App() {
             blindSpotClusters={blindSpotClusters}
             selectedCoverageLevels={selectedCoverageLevels}
             onToggleCoverageLevel={toggleCoverageLevel}
+            showServiceArea={showServiceArea}
+            onToggleServiceArea={toggleServiceArea}
             runCoverageAnalysis={runCoverageAnalysis}
             exportCoverageCSV={exportCoverageCSV}
             printCoverageReport={printCoverageReport}
