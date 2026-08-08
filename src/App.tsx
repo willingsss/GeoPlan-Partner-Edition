@@ -173,6 +173,10 @@ let showServiceAreaGlobal = true;
 let showOverlapAreaGlobal = true;
 
 function communityGradedStyle(feature: any): Style {
+  // 行政区过滤: 非目标区的社区不渲染 (分析后由 _visible 标记控制)
+  if (feature.get("_visible") === false) {
+    return new Style({});
+  }
   const level = feature.get("coverageLevel") as string | undefined;
   const ratio = feature.get("coverageRatio") as number | undefined;
   // 计算有效分级 (有 level 用之, 否则按覆盖率推断)
@@ -2109,6 +2113,12 @@ export default function App() {
         setCoverageSummary(json.data.summary);
         setCoverageResults(json.data.communityResults);
         setDistrictStats(json.data.districtStats);
+        // 行政区过滤: 只保留目标行政区的社区面, 其他区社区隐藏 (避免"乱入")
+        const coveredDistricts = new Set((json.data.communityResults || []).map((c: any) => c.district));
+        communitySourceRef.current?.getFeatures().forEach((f: any) => {
+          f.set("_visible", coveredDistricts.size === 0 || coveredDistricts.has(f.get("district")));
+        });
+        communityLayerRef.current?.changed();
         // 阶段五 等时圈: 保存等时圈覆盖率信息 (用于在分析面板展示来源比例)
         setIsochroneCoverage(json.data.isochroneCoverage || null);
         // 阶段三 任务 3.3: 保存分级统计与充电站效率, 供右侧饼图/柱图渲染
