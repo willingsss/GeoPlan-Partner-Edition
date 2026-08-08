@@ -122,25 +122,21 @@ function getStationStyle(feature: any): Style {
   const radius = isSelected ? 11 : 7;
   // 站点名取 "·" 后第一段（如 "蔚来换电站(鼓楼区…)" -> 简化名）
   const namePart = feature.get("name")?.split("·")[1]?.split("充电")[0] || "";
-  // 选中时: 名称 + 快充/慢充数量（站点上方弹出，便于区分密集站点）
-  const text = isSelected
-    ? `${namePart}\n快充${feature.get("fast_chargers") ?? feature.get("fastChargers") ?? 0} · 慢充${feature.get("slow_chargers") ?? feature.get("slowChargers") ?? 0}`
-    : namePart;
+  // 选中时信息由 Overlay 长窄弹窗显示（名称+桩数），这里只保留高亮圆点
+  const text = isSelected ? "" : namePart;
   return new Style({
     image: new CircleStyle({
       radius,
       fill: new Fill({ color: isSelected ? "#FBBF24" : config.color }),
       stroke: new Stroke({ color: "#ffffff", width: isSelected ? 3 : 2 }),
     }),
-    text: new Text({
+    text: text ? new Text({
       text,
-      font: isSelected ? "bold 11px sans-serif" : "10px sans-serif",
-      offsetY: -14 - (isSelected ? 8 : 0),
+      font: "10px sans-serif",
+      offsetY: -14,
       fill: new Fill({ color: "#1F2937" }),
       stroke: new Stroke({ color: "#ffffff", width: 2 }),
-      backgroundFill: isSelected ? new Fill({ color: "rgba(255,255,255,0.9)" }) : undefined,
-      padding: isSelected ? [2, 5, 2, 5] : undefined,
-    }),
+    }) : undefined,
     zIndex: isSelected ? 100 : undefined,
   });
 }
@@ -687,6 +683,8 @@ export default function App() {
   const gisBufferSourceRef = useRef<VectorSource | null>(null);
   const aiHighlightSourceRef = useRef<VectorSource | null>(null);
   const aiOverlayRef = useRef<Overlay | null>(null);
+  // 选中站点信息条 Overlay (长而窄: 名称 + 快充/慢充数量)
+  const stationInfoOverlayRef = useRef<Overlay | null>(null);
   const aiHighlightTimerRef = useRef<number | null>(null);
 
   // 图层引用 (用于按 Tab 控制可见性, 保留数据不清除)
@@ -823,6 +821,24 @@ export default function App() {
     if (aiHighlightSourceRef.current) aiHighlightSourceRef.current.clear();
     if (aiOverlayRef.current) aiOverlayRef.current.setPosition(undefined);
     if (aiHighlightTimerRef.current) { clearInterval(aiHighlightTimerRef.current); aiHighlightTimerRef.current = null; }
+  }, []);
+
+  // 显示选中站点信息条 (长窄弹窗: 名称 + 快充/慢充数量)
+  const showStationInfoPopup = useCallback((station: any) => {
+    const overlay = stationInfoOverlayRef.current;
+    if (!overlay || !station) return;
+    const el = overlay.getElement() as HTMLElement;
+    const color = BRAND_CONFIG[station.brand]?.color || "#3b82f6";
+    el.innerHTML = `
+      <span class="sip-dot" style="background:${color}"></span>
+      <span class="sip-name">${station.name || "充电站"}</span>
+      <span class="sip-meta">快充 ${station.fastChargers ?? station.fast_chargers ?? 0} · 慢充 ${station.slowChargers ?? station.slow_chargers ?? 0}</span>`;
+    overlay.setPosition(fromLonLat([station.lng, station.lat]));
+  }, []);
+
+  // 隐藏选中站点信息条
+  const hideStationInfoPopup = useCallback(() => {
+    stationInfoOverlayRef.current?.setPosition(undefined);
   }, []);
 
   // 在地图上可视化 GIS 分析结果
@@ -1222,6 +1238,18 @@ export default function App() {
     // 标记地图就绪, 触发 MapToolbar 渲染
     setMapReady(true);
 
+    // 选中站点信息条 Overlay (长而窄 HTML 弹窗: 站点名 + 快充/慢充数量)
+    const stationInfoEl = document.createElement("div");
+    stationInfoEl.className = "station-info-popup";
+    const stationInfoOverlay = new Overlay({
+      element: stationInfoEl,
+      offset: [0, -20],
+      positioning: "bottom-center",
+      stopEvent: true,
+    });
+    map.addOverlay(stationInfoOverlay);
+    stationInfoOverlayRef.current = stationInfoOverlay;
+
     // 注意: AI 站点详情原通过 OpenLayers Overlay 渲染, 但 Overlay 会把 React 管理的
     // DOM 节点移到地图 overlay 容器, 导致 React reconciliation 时 insertBefore 失败.
     // 现改为普通 React 模态框 (屏幕中央), 不再使用 map.addOverlay.
@@ -1275,6 +1303,7 @@ export default function App() {
         // 地图高亮选中站点: 金色大圆点 + 上方弹出名称/桩数
         selectedStationId = clickedStation.id;
         stationLayerRef.current?.changed();
+        showStationInfoPopup(clickedStation);
         setStationFeedback([]);
         setStationFeedbackForm({ description: "", rating: 5, type: "evaluation" });
         setFeedbackFilter("all");
@@ -1336,6 +1365,7 @@ export default function App() {
       // 点击空白处关闭模态框
       setSelectedStation(null);
       selectedStationId = null;
+        hideStationInfoPopup();
       stationLayerRef.current?.changed();
       setSelectedCluster(null);
       // 同时关闭 AI 高亮
@@ -4125,6 +4155,7 @@ export default function App() {
               onClick={() => {
                 setSelectedStation(null);
                 selectedStationId = null;
+        hideStationInfoPopup();
                 stationLayerRef.current?.changed();
               }}>
               <div className="w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-scale-in bento-tile"
@@ -4157,6 +4188,7 @@ export default function App() {
                   <button onClick={() => {
                     setSelectedStation(null);
                     selectedStationId = null;
+        hideStationInfoPopup();
                     stationLayerRef.current?.changed();
                   }}
                     className="w-8 h-8 rounded-lg flex items-center justify-center transition-all shrink-0"
@@ -6273,6 +6305,7 @@ export default function App() {
             // 与地图点击一致的选中交互: 金色高亮 + 上方弹出名称/桩数
             selectedStationId = s.id;
             stationLayerRef.current?.changed();
+            showStationInfoPopup(s);
           }}
           onFocusCommunity={(c) => {
             const map = mapRef.current;
