@@ -3,10 +3,11 @@ import * as turf from "@turf/turf";
 import { chargingStations, communitiesDatabase, schemesDatabase } from "../db";
 import { toEPSG3857, projectGeometryTo3857, projectGeometryTo4326, getPlanarPolygonArea3857, createPlanarBuffer3857, getCachedBBox3857, getCachedCentroid3857, getCachedProj3857, bboxIntersect } from "../lib/geo";
 import { requireAuth, requireRole } from "../middleware/auth";
+import { fetchDistrictBoundary } from "../services/districtBoundary";
 import type { BBox } from "../types";
 
 export default function registerAnalysisRoutes(app: express.Express) {
-app.post("/api/v1/analysis/coverage", (req, res) => {
+app.post("/api/v1/analysis/coverage", async (req, res) => {
   try {
     const { chargeMode, radius, district, serviceAreaMode } = req.body; // "fast" | "slow"
     // serviceAreaMode: "buffer"（默认，圆形缓冲区）/ "isochrone"（路网等时圈）/ "hybrid"（混合，缺失回退缓冲区）
@@ -292,19 +293,23 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
       }
     });
 
-    // 行政区可视化边界: 目标行政区所有社区多边形 union 的外轮廓 (前端划定界限用)
-    // 缓冲粘连碎片 + 简化, 形成连续规整的行政区轮廓
+    // 行政区可视化边界: 优先高德官方行政区划边界 (真实边界), 失败回退社区 union 近似轮廓
     let districtBoundary: any = null;
-    if (districtFilter && targetCommunities.length > 0) {
+    if (districtFilter) {
       try {
-        const commGeoms = targetCommunities.map((comm: any) => turf.feature(comm.geometry));
-        let merged: any = turf.union(turf.featureCollection(commGeoms));
-        if (merged) {
-          merged = turf.buffer(merged, 0.4, { units: "kilometers" });
-          merged = turf.simplify(merged, { tolerance: 0.001, highQuality: true });
-          districtBoundary = merged.geometry ?? merged;
-        }
+        districtBoundary = await fetchDistrictBoundary(districtFilter);
       } catch { districtBoundary = null; }
+      if (!districtBoundary && targetCommunities.length > 0) {
+        try {
+          const commGeoms = targetCommunities.map((comm: any) => turf.feature(comm.geometry));
+          let merged: any = turf.union(turf.featureCollection(commGeoms));
+          if (merged) {
+            merged = turf.buffer(merged, 0.4, { units: "kilometers" });
+            merged = turf.simplify(merged, { tolerance: 0.001, highQuality: true });
+            districtBoundary = merged.geometry ?? merged;
+          }
+        } catch { districtBoundary = null; }
+      }
     }
 
     // 按 population 降序排序并格式化输出（center 保留6位小数）
