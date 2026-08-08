@@ -24,6 +24,8 @@ export interface CoverageControlBarProps {
   onToggleCoverageLevel: (level: string) => void;
   showServiceArea: boolean;
   onToggleServiceArea: () => void;
+  showOverlapArea: boolean;
+  onToggleOverlapArea: () => void;
   runCoverageAnalysis: () => void;
   exportCoverageCSV: () => void;
   printCoverageReport: () => void;
@@ -42,6 +44,7 @@ export default function CoverageControlBar({
   coverageLoading, coverageSummary, coverageResults, isochroneCoverage, blindSpotClusters,
   selectedCoverageLevels, onToggleCoverageLevel,
   showServiceArea, onToggleServiceArea,
+  showOverlapArea, onToggleOverlapArea,
   runCoverageAnalysis, exportCoverageCSV, printCoverageReport,
 }: CoverageControlBarProps) {
   return (
@@ -276,10 +279,19 @@ export default function CoverageControlBar({
       <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "rgba(6,182,212,0.25)", border: "1px solid rgba(0,0,0,0.06)" }} />
       <span>服务区</span>
     </button>
-    <span className="flex items-center gap-1">
-    <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#F59E0B", border: "1px solid rgba(0,0,0,0.06)" }} />
-    重叠区
-    </span>
+    <button
+      onClick={onToggleOverlapArea}
+      className="flex items-center gap-1 rounded px-1 py-0.5 transition-all"
+      style={{
+        border: showOverlapArea ? "1px solid rgba(245,158,11,0.4)" : "1px solid transparent",
+        background: showOverlapArea ? "rgba(245,158,11,0.08)" : "transparent",
+        opacity: showOverlapArea ? 1 : 0.45,
+      }}
+      title={showOverlapArea ? "隐藏重叠区" : "显示重叠区"}
+    >
+      <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#F59E0B", border: "1px solid rgba(0,0,0,0.06)" }} />
+      <span>重叠区</span>
+    </button>
     <span className="flex items-center gap-1">
     <MapPin className="w-2.5 h-2.5 text-amber-500 shrink-0" />
     盲区候选点

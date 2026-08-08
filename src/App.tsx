@@ -169,6 +169,8 @@ function hexToRgba(hex: string, alpha: number): string {
 let selectedCoverageLevelsGlobal: Set<string> | null = null;
 // 服务区图层显示开关 (图例点击切换, module 级供 style 函数读取)
 let showServiceAreaGlobal = true;
+// 重叠区图层显示开关 (图例点击切换)
+let showOverlapAreaGlobal = true;
 
 function communityGradedStyle(feature: any): Style {
   const level = feature.get("coverageLevel") as string | undefined;
@@ -405,6 +407,7 @@ export default function App() {
     stationEffCollapsed, setStationEffCollapsed,
     selectedCoverageLevels, setSelectedCoverageLevels,
     showServiceArea, setShowServiceArea,
+    showOverlapArea, setShowOverlapArea,
   } = useCoverageAnalysis();
 
   // 服务区图层显示切换 (图例点击): 关闭时服务区多边形不渲染
@@ -413,6 +416,16 @@ export default function App() {
       const next = !prev;
       showServiceAreaGlobal = next;
       serviceAreaLayerRef.current?.changed();
+      return next;
+    });
+  };
+
+  // 重叠区图层显示切换 (图例点击): 关闭时重叠区斜线不渲染
+  const toggleOverlapArea = () => {
+    setShowOverlapArea(prev => {
+      const next = !prev;
+      showOverlapAreaGlobal = next;
+      overlapLayerRef.current?.changed();
       return next;
     });
   };
@@ -1015,6 +1028,8 @@ export default function App() {
       fill: new Fill({ color: overlapPattern as any }),
       stroke: new Stroke({ color: "#F59E0B", width: 1 }),
     });
+    // 重叠区显示开关 (图例点击): 关闭时不渲染
+    const overlapStyleFn = () => (showOverlapAreaGlobal ? overlapStyle : new Style({}));
 
     const blindSpotStyle = new Style({
       stroke: new Stroke({ color: "#ef4444", width: 2.5 }),
@@ -1172,7 +1187,7 @@ export default function App() {
           },
         }); clusterLayerRef.current = l; return l; })(),
         // 服务区重叠图层 (阶段二 任务 2.3): 斜线 pattern, 仅 coverage Tab 可见
-        (() => { const l = new VectorLayer({ source: overlapSource, style: overlapStyle, visible: false }); overlapLayerRef.current = l; return l; })(),
+        (() => { const l = new VectorLayer({ source: overlapSource, style: overlapStyleFn, visible: false }); overlapLayerRef.current = l; return l; })(),
         // GIS 分析缓冲区图层
         new VectorLayer({
           source: gisBufferSource,
@@ -3650,6 +3665,8 @@ export default function App() {
             onToggleCoverageLevel={toggleCoverageLevel}
             showServiceArea={showServiceArea}
             onToggleServiceArea={toggleServiceArea}
+            showOverlapArea={showOverlapArea}
+            onToggleOverlapArea={toggleOverlapArea}
             runCoverageAnalysis={runCoverageAnalysis}
             exportCoverageCSV={exportCoverageCSV}
             printCoverageReport={printCoverageReport}
