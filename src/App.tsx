@@ -86,6 +86,7 @@ import { ToastProvider, useToast } from "./components/Toast";
 import Skeleton from "./components/Skeleton";
 import EmptyState from "./components/EmptyState";
 import LoginView from "./components/LoginView";
+import QueryResultPanel from "./components/QueryResultPanel";
 import Sidebar from "./components/Sidebar";
 import TopBar from "./components/TopBar";
 import MapVerticalBar from "./components/MapVerticalBar";
@@ -1739,6 +1740,10 @@ export default function App() {
           "success"
         );
         // 绘制完成自动回到平移模式（避免停留在框选状态误触继续绘制）
+        // 立即移除绘制交互 + 重置光标（不依赖 effect 重跑，杜绝多余点击）
+        map.removeInteraction(draw);
+        drawInteractionRef.current = null;
+        map.getViewport().style.cursor = "";
         setActiveTool(null);
       });
 
@@ -6226,118 +6231,26 @@ export default function App() {
         open={shortcutsHelpOpen}
         onClose={() => setShortcutsHelpOpen(false)}
       />
-      {/* 空间查询结果浮窗 (右下角, Bento 3D 玻璃) */}
+      {/* 空间查询结果弹窗 (右上角横栏下方) */}
       {queryResult && (queryResult.stations.length > 0 || queryResult.communities.length > 0) && (
-      <div
-      className="fixed right-4 bottom-4 z-[60] w-[340px] max-h-[320px] flex flex-col overflow-hidden animate-panel-enter bento-tile"
-      style={{
-      background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
-      backdropFilter: "blur(20px) saturate(1.4)",
-      WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-      border: "1px solid rgba(255,255,255,0.4)",
-      boxShadow: "var(--shadow-elevated)",
-      borderRadius: 16,
-      }}
-      >
-      {/* 标题栏 */}
-      <div className="px-3.5 py-2.5 flex items-center justify-between shrink-0" style={{ borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
-      <div className="flex items-center gap-2">
-      <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: "rgba(0,200,150,0.08)" }}>
-      <Layers className="w-3.5 h-3.5" style={{ color: "var(--color-brand-text)" }} />
-      </div>
-      <span className="text-[12px] font-semibold" style={{ color: "var(--color-ink-1)" }}>查询结果</span>
-      </div>
-      <button
-      onClick={() => {
-      setQueryResult(null);
-      querySourceRef.current?.clear();
-      }}
-      className="w-6 h-6 rounded-md flex items-center justify-center transition-all"
-      style={{ color: "var(--color-ink-4)" }}
-      onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
-      onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
-      title="关闭"
-      >
-      <X className="w-3.5 h-3.5" />
-      </button>
-      </div>
-      {/* Tab 切换 */}
-      <div className="flex shrink-0" style={{ borderBottom: "1px solid var(--color-muted)" }}>
-      <button
-      onClick={() => setQueryResultTab("stations")}
-      className="flex-1 px-3 py-1.5 text-[11px] font-medium transition-colors"
-      style={{
-      color: queryResultTab === "stations" ? "var(--color-brand-text)" : "var(--color-ink-4)",
-      borderBottom: queryResultTab === "stations" ? "2px solid var(--color-brand)" : "2px solid transparent",
-      background: queryResultTab === "stations" ? "rgba(0,200,150,0.06)" : "transparent",
-      }}
-      >
-      充电站 ({queryResult.stations.length})
-      </button>
-      <button
-      onClick={() => setQueryResultTab("communities")}
-      className="flex-1 px-3 py-1.5 text-[11px] font-medium transition-colors"
-      style={{
-      color: queryResultTab === "communities" ? "var(--color-brand-text)" : "var(--color-ink-4)",
-      borderBottom: queryResultTab === "communities" ? "2px solid var(--color-brand)" : "2px solid transparent",
-      background: queryResultTab === "communities" ? "rgba(0,200,150,0.06)" : "transparent",
-      }}
-      >
-      社区 ({queryResult.communities.length})
-      </button>
-      </div>
-      {/* 列表内容 */}
-      <div className="flex-1 overflow-y-auto">
-      {queryResultTab === "stations" ? (
-      queryResult.stations.length === 0 ? (
-      <div className="p-4 text-center text-[11px] text-zinc-400">该范围内无充电站</div>
-      ) : (
-      queryResult.stations.map((s, i) => (
-      <button
-      key={`st-${s.id ?? i}`}
-      onClick={() => {
-      const map = mapRef.current;
-      if (map) map.getView().animate({ center: fromLonLat([s.lng, s.lat]), zoom: 15 });
-      }}
-      className="w-full text-left px-3 py-2 hover:bg-zinc-50 border-b border-zinc-100 last:border-b-0 transition-colors"
-      >
-      <div className="flex items-center gap-1.5">
-      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: BRAND_CONFIG[s.brand]?.color || "#3b82f6" }} />
-      <span className="text-[12px] font-medium text-zinc-800 truncate flex-1">{s.name}</span>
-      <span className="text-[10px] text-zinc-500 shrink-0">{s.brand}</span>
-      </div>
-      <p className="text-[10px] text-zinc-500 truncate mt-0.5">{s.address || s.district}</p>
-      </button>
-      ))
-      )
-      ) : (
-      queryResult.communities.length === 0 ? (
-      <div className="p-4 text-center text-[11px] text-zinc-400">该范围内无社区</div>
-      ) : (
-      queryResult.communities.map((c: any, i) => (
-      <button
-      key={`cm-${c.id ?? i}`}
-      onClick={() => {
-      const map = mapRef.current;
-      if (map && c._center) map.getView().animate({ center: c._center, zoom: 15 });
-      }}
-      className="w-full text-left px-3 py-2 hover:bg-zinc-50 border-b border-zinc-100 last:border-b-0 transition-colors"
-      >
-      <div className="flex items-center gap-1.5">
-      <Building2 className="w-3 h-3 text-sky-500 shrink-0" />
-      <span className="text-[12px] font-medium text-zinc-800 truncate flex-1">{c.name}</span>
-      <span className="text-[10px] text-zinc-500 shrink-0">{c.district}</span>
-      </div>
-      <p className="text-[10px] text-zinc-500 mt-0.5">
-      人口 {(c.population ?? 0).toLocaleString()}
-      {c.isBlindSpot && <span className="ml-2 text-red-500">盲区</span>}
-      </p>
-      </button>
-      ))
-      )
-      )}
-      </div>
-      </div>
+        <QueryResultPanel
+          stations={queryResult.stations}
+          communities={queryResult.communities}
+          tab={queryResultTab}
+          onTabChange={setQueryResultTab}
+          onClose={() => {
+            setQueryResult(null);
+            querySourceRef.current?.clear();
+          }}
+          onFocusStation={(s) => {
+            const map = mapRef.current;
+            if (map) map.getView().animate({ center: fromLonLat([s.lng, s.lat]), zoom: 15 });
+          }}
+          onFocusCommunity={(c) => {
+            const map = mapRef.current;
+            if (map && c._center) map.getView().animate({ center: c._center, zoom: 15 });
+          }}
+        />
       )}
     </div>
   );
