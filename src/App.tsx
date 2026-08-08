@@ -29,12 +29,13 @@ function DirectionIcon({ action }: { action: any }) {
   );
 }
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import "ol/ol.css";
-import Map from "ol/Map";
+import OlMap from "ol/Map";
 import View from "ol/View";
 import TileLayer from "ol/layer/Tile";
 import VectorLayer from "ol/layer/Vector";
+import HeatmapLayer from "ol/layer/Heatmap";
 import OSM from "ol/source/OSM";
 import XYZ from "ol/source/XYZ";
 import VectorSource from "ol/source/Vector";
@@ -46,25 +47,62 @@ import Feature from "ol/Feature";
 import Point from "ol/geom/Point";
 import LineString from "ol/geom/LineString";
 import Circle from "ol/geom/Circle";
-import { Translate } from "ol/interaction";
+import { Translate, Draw } from "ol/interaction";
+import { createBox } from "ol/interaction/Draw";
+import { defaults as defaultControls } from "ol/control";
 import Overlay from "ol/Overlay";
 import * as echarts from "echarts";
+import * as turf from "@turf/turf";
 import {
   Map as MapIcon, Radar, Target, MessageSquare, Bot, Settings,
   Zap, RefreshCw, Save, Send, Building2, Layers, Database, BarChart3,
   Sparkles, X, Gauge, LogOut, User as UserIcon, ShieldCheck,
   MapPin, Navigation, LocateFixed, Route as RouteIcon,
-  ChevronLeft, ChevronRight, Search, Loader2, Square, RotateCcw,
-  Copy, Check, Trash2,
+  ChevronLeft, ChevronRight, ChevronDown, Search, Loader2, Square, RotateCcw,
+  Copy, Check, Trash2, Menu, GripVertical,
+  Flame, Calculator, GitCompare, TrendingUp, FileText,
+  LayoutDashboard, Moon, Sun, Keyboard,
+  Download, Printer, Activity, Clock, AlertCircle, CheckCircle2,
+  Users, Info,
 } from "lucide-react";
 import {
   BRAND_CONFIG, BRANDS, SubsystemTab,
-  CommunityResult, CoverageSummary, SiteMetrics, SavedScheme,
-  BlindSpotCluster,
+  ChargingStation, CommunityResult, CoverageSummary, SiteMetrics, SavedScheme,
+  BlindSpotCluster, CoverageLevel, StationEfficiency, CoverageHistoryItem,
   User, UserRole, ROLE_PERMISSIONS, ROLE_CONFIG, DEMO_ACCOUNTS,
 } from "./types";
 import { XUZHOU_CENTER } from "./config/map";
 import { gcj02ToWgs84, wgs84ToGcj02 } from "./lib/coordinate";
+import MapToolbar, { type MapTool } from "./components/MapToolbar";
+import PrintDialog from "./components/PrintDialog";
+import RoiDialog from "./components/RoiDialog";
+import SchemeCompareDialog from "./components/SchemeCompareDialog";
+import CompetitionReport from "./components/CompetitionReport";
+import GapPredictionDialog from "./components/GapPredictionDialog";
+import { SchemeReportButton } from "./components/SchemeReportPrint";
+import Dashboard from "./components/Dashboard";
+import ReportCenter from "./components/ReportCenter";
+import { ToastProvider, useToast } from "./components/Toast";
+import Skeleton from "./components/Skeleton";
+import EmptyState from "./components/EmptyState";
+import ShortcutsHelp from "./components/ShortcutsHelp";
+import CommandPalette from "./components/CommandPalette";
+import MapLegend, { LegendGradient } from "./components/MapLegend";
+import CoverageCommunityList from "./components/CoverageCommunityList";
+import CoverageHistoryCompare from "./components/CoverageHistoryCompare";
+
+// =========================================================================
+// 阶段三 任务 3.1.1: 徐州市各区中心坐标 (WGS84 [lng, lat])
+// 切换行政区下拉时调用 map.getView().animate 飞行至此坐标
+// =========================================================================
+const DISTRICT_CENTERS: Record<string, [number, number]> = {
+  "泉山区": [117.194, 34.244],
+  "云龙区": [117.251, 34.253],
+  "鼓楼区": [117.185, 34.288],
+  "铜山区": [117.169, 34.181],
+  "贾汪区": [117.454, 34.443],
+  "经济技术开发区": [117.348, 34.285],
+};
 
 // =========================================================================
 // 品牌图标样式映射
@@ -87,6 +125,64 @@ function getStationStyle(feature: any): Style {
       fill: new Fill({ color: "#1F2937" }),
       stroke: new Stroke({ color: "#ffffff", width: 2 }),
     }),
+  });
+}
+
+// =========================================================================
+// 社区按覆盖率分级着色 (阶段二 任务 2.2)
+// 分级色阶: 极差#EF4444 / 较差#F59E0B / 一般#FACC15 / 良好#84CC16 / 优秀#10B981
+// 填充透明度 0.35, 描边同色 1px
+// =========================================================================
+const COVERAGE_LEVEL_COLORS: Record<string, string> = {
+  "极差": "#EF4444",
+  "较差": "#F59E0B",
+  "一般": "#FACC15",
+  "良好": "#84CC16",
+  "优秀": "#10B981",
+};
+
+// 将 hex 色 + alpha 转为 rgba 字符串
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function communityGradedStyle(feature: any): Style {
+  const level = feature.get("coverageLevel") as string | undefined;
+  const ratio = feature.get("coverageRatio") as number | undefined;
+  // 有 level 时按分级色着色
+  if (level && COVERAGE_LEVEL_COLORS[level]) {
+    const color = COVERAGE_LEVEL_COLORS[level];
+    return new Style({
+      fill: new Fill({ color: hexToRgba(color, 0.35) }),
+      stroke: new Stroke({ color, width: 1 }),
+      text: new Text({
+        text: feature.get("name") || "",
+        font: "bold 10px sans-serif",
+        fill: new Fill({ color: "#1F2937" }),
+        stroke: new Stroke({ color: "#ffffff", width: 2 }),
+      }),
+    });
+  }
+  // 无 level: 兜底用 coverageRatio 推断
+  if (typeof ratio === "number") {
+    let inferred = "极差";
+    if (ratio >= 90) inferred = "优秀";
+    else if (ratio >= 60) inferred = "良好";
+    else if (ratio >= 30) inferred = "一般";
+    else if (ratio >= 10) inferred = "较差";
+    const color = COVERAGE_LEVEL_COLORS[inferred];
+    return new Style({
+      fill: new Fill({ color: hexToRgba(color, 0.35) }),
+      stroke: new Stroke({ color, width: 1 }),
+    });
+  }
+  // 默认灰色填充 (未分析)
+  return new Style({
+    fill: new Fill({ color: "rgba(161,161,170,0.15)" }),
+    stroke: new Stroke({ color: "var(--color-line-strong)", width: 1 }),
   });
 }
 
@@ -223,6 +319,21 @@ export default function App() {
   const [showCommunities, setShowCommunities] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [mapPanelCollapsed, setMapPanelCollapsed] = useState(false);
+
+  // ===== 阶段三/四新增状态 =====
+  // 决策大屏全屏开关 (Task 3.1.8)
+  const [showDashboard, setShowDashboard] = useState(false);
+  // 反馈热力图开关 + 筛选 (Task 3.3)
+  const [showFeedbackHeatmap, setShowFeedbackHeatmap] = useState(false);
+  const [feedbackHeatmapType, setFeedbackHeatmapType] = useState<"all" | "demand" | "evaluation">("all");
+  const [feedbackHeatmapRating, setFeedbackHeatmapRating] = useState<number>(0); // 0 = 不限
+  // 命令面板 + 快捷键帮助 (Task 4.1/4.2)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [shortcutsHelpOpen, setShortcutsHelpOpen] = useState(false);
+  // 暗色主题 (Task 4.5)
+  const [darkTheme, setDarkTheme] = useState<boolean>(() => {
+    try { return localStorage.getItem("geoplan-theme") === "dark"; } catch { return false; }
+  });
   const [coverageRadius, setCoverageRadius] = useState<number>(0); // 0 = 使用 chargeMode 预设
   const [coverageDistrict, setCoverageDistrict] = useState<string>("all");
   const [siteChargeMode, setSiteChargeMode] = useState<"fast" | "slow">("fast");
@@ -240,6 +351,13 @@ export default function App() {
   const [coverageSummary, setCoverageSummary] = useState<CoverageSummary | null>(null);
   const [coverageResults, setCoverageResults] = useState<CommunityResult[]>([]);
   const [districtStats, setDistrictStats] = useState<any[]>([]);
+  // 阶段五 等时圈: 服务区模式切换 + 等时圈覆盖率信息
+  const [serviceAreaMode, setServiceAreaMode] = useState<"buffer" | "isochrone" | "hybrid">("buffer");
+  const [isochroneCoverage, setIsochroneCoverage] = useState<{ covered: number; total: number; fallback: number; ratio: number } | null>(null);
+  const [showIsochroneLayer, setShowIsochroneLayer] = useState<boolean>(true);
+  // 等时圈预计算进度 (管理员后台用)
+  const [isochroneProgress, setIsochroneProgress] = useState<any>(null);
+  const [isochronePolling, setIsochronePolling] = useState<boolean>(false);
   // 盲区聚类候选点 (覆盖分析返回)
   const [blindSpotClusters, setBlindSpotClusters] = useState<BlindSpotCluster[]>([]);
   // 跨 Tab 保留的最近一次覆盖分析摘要 (供选址面板联动展示)
@@ -248,6 +366,30 @@ export default function App() {
   const [siteInBlindSpot, setSiteInBlindSpot] = useState(false);
   // 地图点击候选点时选中的聚类 (用于弹窗)
   const [selectedCluster, setSelectedCluster] = useState<BlindSpotCluster | null>(null);
+  // 社区详情弹窗 (覆盖分析 Tab 点击社区时显示)
+  const [communityDetail, setCommunityDetail] = useState<CommunityResult | null>(null);
+  const [communityDetailOpen, setCommunityDetailOpen] = useState(false);
+  // 候选点面板排序方式 (覆盖分析右下角浮层)
+  const [clusterSortBy, setClusterSortBy] = useState<"population" | "communityCount">("population");
+  // 候选点面板展开项 (一次展开一个)
+  const [expandedClusterId, setExpandedClusterId] = useState<number | null>(null);
+
+  // 阶段三: 覆盖率分级统计 + 充电站效率 (供饼图/柱图渲染)
+  const [coverageLevels, setCoverageLevels] = useState<CoverageLevel[]>([]);
+  const [stationEfficiency, setStationEfficiency] = useState<StationEfficiency[]>([]);
+  // 阶段三 任务 3.3.3: 右侧三个图表面板 (默认全部展开, 不再折叠)
+  const [coverageChartCollapsed, setCoverageChartCollapsed] = useState(false);
+  const [coveragePieCollapsed, setCoveragePieCollapsed] = useState(false);
+  const [stationEffCollapsed, setStationEffCollapsed] = useState(false);
+  // 右侧面板二级 Tab (收纳图表/社区列表/候选点, 避免卡片堆叠混乱)
+  const [rightPanelTab, setRightPanelTab] = useState<"charts" | "communities" | "candidates">("charts");
+  // 阶段三 任务 3.4.2: 分析进度 (0-100, 分析中 0-90, 完成时 100)
+  const [coverageProgress, setCoverageProgress] = useState(0);
+
+  // 阶段四 任务 4.1: 覆盖率渲染模式 (分级着色 / 热力图), 默认分级着色
+  const [coverageViewMode, setCoverageViewMode] = useState<"graded" | "heatmap">("graded");
+  // 阶段四 任务 4.2: 覆盖分析历史记录 (最多 3 条, 用于并排对比)
+  const [coverageHistory, setCoverageHistory] = useState<CoverageHistoryItem[]>([]);
 
   // 选址决策
   const [virtualStation, setVirtualStation] = useState<{ lng: number; lat: number } | null>(null);
@@ -257,6 +399,18 @@ export default function App() {
   const [schemes, setSchemes] = useState<SavedScheme[]>([]);
   const [schemeName, setSchemeName] = useState("");
   const [compareSchemes, setCompareSchemes] = useState<number[]>([]);
+
+  // 阶段二: 决策分析能力深化 - 弹窗与热力图状态
+  const [showHeatmap, setShowHeatmap] = useState(false);           // 负荷热力图开关
+  const [heatmapData, setHeatmapData] = useState<any[]>([]);      // 热力图数据
+  const [roiDialogOpen, setRoiDialogOpen] = useState(false);       // ROI 估算弹窗
+  const [compareDialogOpen, setCompareDialogOpen] = useState(false); // 深度对比弹窗
+  const [competitionDialogOpen, setCompetitionDialogOpen] = useState(false); // 竞争态势弹窗
+  const [gapDialogOpen, setGapDialogOpen] = useState(false);       // 缺口预测弹窗
+  // 当前选址的 ROI 初始参数
+  const [roiInitParams, setRoiInitParams] = useState<{ fastChargers: number; slowChargers: number; coveredPopulation: number }>({
+    fastChargers: 4, slowChargers: 4, coveredPopulation: 0,
+  });
 
   // 公众反馈 (全局反馈列表, 用于系统管理面板统计)
   const [feedbackList, setFeedbackList] = useState<any[]>([]);
@@ -298,7 +452,9 @@ export default function App() {
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [aiDragging, setAiDragging] = useState(false);
   const [aiBotBounce, setAiBotBounce] = useState(false);
-  const aiDragRef = useRef<{ startX: number; startY: number; moved: boolean }>({ startX: 0, startY: 0, moved: false });
+  // AI 浮球位置 (右下角为锚点, 用 bottom/right 表示, null = 默认位置)
+  const [aiBallPos, setAiBallPos] = useState<{ bottom: number; right: number } | null>(null);
+  const aiDragRef = useRef<{ startX: number; startY: number; startBottom: number; startRight: number; moved: boolean }>({ startX: 0, startY: 0, startBottom: 0, startRight: 0, moved: false });
   const aiAbortRef = useRef<AbortController | null>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const aiInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -309,11 +465,13 @@ export default function App() {
   const [logs, setLogs] = useState<any[]>([]);
   const [regionStats, setRegionStats] = useState<any[]>([]);
   // 管理界面分类 Tab
-  const [adminTab, setAdminTab] = useState<"overview" | "stations" | "users" | "feedback" | "schemes" | "logs">("overview");
+  const [adminTab, setAdminTab] = useState<"overview" | "stations" | "users" | "feedback" | "schemes" | "logs" | "report" | "isochrone">("overview");
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarAnimating, setSidebarAnimating] = useState(false);
   const sidebarLockRef = useRef(false);
+  // 阶段四 任务 4.4.2: 移动端侧边栏抽屉式开关
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const toggleSidebar = useCallback(() => {
     if (sidebarLockRef.current) return;
@@ -322,6 +480,102 @@ export default function App() {
     setSidebarCollapsed(prev => !prev);
     setTimeout(() => { setSidebarAnimating(false); sidebarLockRef.current = false; }, 500);
   }, []);
+
+  // ===== 地图工具栏: Toast 通知 =====
+  // 显示全局 Toast (2.5 秒后自动消失)
+  const showToast = useCallback((msg: string, type: "info" | "success" = "info") => {
+    setToast({ msg, type });
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2500);
+  }, []);
+
+  // ===== 全局 Toast Hook (阶段四 任务 4.3.1) =====
+  // 同时拿到 Context 版的 showToast, 供接入写操作. 优先用 Context 版本 (支持 success/warning/error)
+  const { showToast: showToastCtx } = useToast();
+
+  // ===== 暗色主题切换 (阶段四 任务 4.5) =====
+  const toggleTheme = useCallback(() => {
+    setDarkTheme(prev => {
+      const next = !prev;
+      try { localStorage.setItem("geoplan-theme", next ? "dark" : "light"); } catch {}
+      // 切换 <html> 上的 .dark 类
+      if (next) {
+        document.documentElement.classList.add("dark");
+      } else {
+        document.documentElement.classList.remove("dark");
+      }
+      // 同步切换地图底图 (重新加载瓦片图层)
+      const map = mapRef.current;
+      if (map) {
+        const layers = map.getLayers().getArray();
+        // 第一个图层是底图 TileLayer
+        const baseLayer = layers[0] as TileLayer | undefined;
+        if (baseLayer && baseLayer.getSource() instanceof XYZ) {
+          const source = baseLayer.getSource() as XYZ;
+          const darkUrl = "https://webrd0{1-4}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}";
+          const lightUrl = "https://webrd0{1-4}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}";
+          source.setUrl(next ? darkUrl : lightUrl);
+          source.refresh();
+        }
+      }
+      showToastCtx(`已切换到${next ? "暗色" : "亮色"}主题`, "success");
+      return next;
+    });
+  }, [showToastCtx]);
+
+  // 初始化时同步主题到 <html> (阶段四 任务 4.5.3)
+  useEffect(() => {
+    if (darkTheme) {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+  }, []); // 仅初始化一次
+
+  // ===== 地图工具栏: 工具切换处理 =====
+  // 处理工具按钮点击: 放大/缩小为一次性操作, 框选/多边形/打印暂未实现
+  const handleToolChange = useCallback((tool: MapTool | null) => {
+    // 平移 = 恢复默认 (清除活动工具)
+    if (tool === "pan" || tool === null) {
+      setActiveTool(null);
+      return;
+    }
+    // 放大/缩小: 一次性缩放, 不改变活动工具
+    if (tool === "zoom-in" || tool === "zoom-out") {
+      const map = mapRef.current;
+      if (map) {
+        const view = map.getView();
+        const zoom = view.getZoom() ?? 12;
+        view.animate({ zoom: zoom + (tool === "zoom-in" ? 1 : -1), duration: 250 });
+      }
+      return;
+    }
+    // 框选查询/多边形查询: 激活对应绘制工具
+    if (tool === "query-rectangle" || tool === "query-polygon") {
+      setActiveTool(tool);
+      return;
+    }
+    // 打印出图: 打开打印对话框
+    if (tool === "print") {
+      setPrintDialogOpen(true);
+      return;
+    }
+    // 测距/测面/拾取坐标: 激活对应工具
+    setActiveTool(tool);
+  }, [showToast]);
+
+  // ===== 地图工具栏: 清除测量结果 =====
+  const handleClearMeasurements = useCallback(() => {
+    const map = mapRef.current;
+    // 清空测量图层
+    if (measureSourceRef.current) measureSourceRef.current.clear();
+    // 移除所有测量标注 Overlay
+    if (map) {
+      measureOverlaysRef.current.forEach(o => map.removeOverlay(o));
+    }
+    measureOverlaysRef.current = [];
+    showToast("测量结果已清除");
+  }, [showToast]);
 
   // 用户定位与导航
   const [userLocation, setUserLocation] = useState<{ lng: number; lat: number; accuracy?: number } | null>(null);
@@ -345,14 +599,48 @@ export default function App() {
   const [adminEditing, setAdminEditing] = useState<any>(null); // 正在编辑的记录 (null=关闭, 空对象=新增)
   const [adminLogFilter, setAdminLogFilter] = useState("all");
 
+  // ===== 地图工具栏相关状态 =====
+  // 当前激活的地图工具 (null = 默认平移)
+  const [activeTool, setActiveTool] = useState<MapTool | null>(null);
+  // 地图是否已初始化完成 (用于传递给 MapToolbar)
+  const [mapReady, setMapReady] = useState(false);
+  // 全局 Toast 通知 (简单实现, 2.5 秒后自动消失)
+  const [toast, setToast] = useState<{ msg: string; type?: "info" | "success" } | null>(null);
+
+  // ===== 空间查询相关状态 =====
+  // 查询结果 (命中要素列表 + 查询几何), null = 不显示浮窗
+  const [queryResult, setQueryResult] = useState<{
+    stations: ChargingStation[];
+    communities: CommunityResult[];
+    geometry: any;
+  } | null>(null);
+  // 查询结果浮窗当前激活的 Tab
+  const [queryResultTab, setQueryResultTab] = useState<"stations" | "communities">("stations");
+
+  // ===== 打印对话框状态 =====
+  const [printDialogOpen, setPrintDialogOpen] = useState(false);
+
+  // ===== 图层管理状态 =====
+  // 图层顺序 (从上到下, 数组前 = 地图顶层), 拖拽可重排
+  const [layerOrder, setLayerOrder] = useState<string[]>(["measure", "feedback", "communities", "stations"]);
+  // 图层透明度 (0-100), 实时同步到 layer.setOpacity
+  const [layerOpacity, setLayerOpacity] = useState<Record<string, number>>({
+    stations: 100, communities: 100, feedback: 100, measure: 100,
+  });
+  // 充电站/测量图层可见性 (小区/反馈复用已有 showCommunities/showFeedback)
+  const [showStations, setShowStations] = useState(true);
+  const [showMeasure, setShowMeasure] = useState(true);
+
   // =========================================================================
   // 地图 Refs
   // =========================================================================
   const mapContainerRef = useRef<HTMLDivElement>(null);
-  const mapRef = useRef<Map | null>(null);
+  const mapRef = useRef<OlMap | null>(null);
   const stationSourceRef = useRef<VectorSource | null>(null);
   const communitySourceRef = useRef<VectorSource | null>(null);
   const serviceAreaSourceRef = useRef<VectorSource | null>(null);
+  // 阶段五 等时圈: 通过 ref 让样式函数读取最新开关状态 (避免重建图层)
+  const showIsochroneLayerRef = useRef<boolean>(true);
   const blindSpotSourceRef = useRef<VectorSource | null>(null);
   const virtualStationSourceRef = useRef<VectorSource | null>(null);
   const searchSourceRef = useRef<VectorSource | null>(null);
@@ -365,11 +653,18 @@ export default function App() {
   const coverageChartRef = useRef<HTMLDivElement>(null);
   const siteChartRef = useRef<HTMLDivElement>(null);
   const radarChartRef = useRef<HTMLDivElement>(null);
+  // 阶段三 任务 3.3: 覆盖率分级饼图 + 充电站效率柱图容器
+  const coveragePieChartRef = useRef<HTMLDivElement>(null);
+  const stationEffChartRef = useRef<HTMLDivElement>(null);
+  // 阶段三 任务 3.4.3: 上次分析的社区总数 (供加载态文案使用, 首次为 0)
+  const lastCommunityCountRef = useRef<number>(0);
 
   // 用于在地图事件回调中访问最新值，避免闭包过期
   const activeTabRef = useRef<SubsystemTab>("map");
   const placeVirtualStationRef = useRef<(lng: number, lat: number) => void>(() => {});
   const siteRadiusRef = useRef(siteRadius);
+  // 覆盖分析结果 ref (供地图点击回调读取最新值, 避免闭包过期)
+  const coverageResultsRef = useRef<CommunityResult[]>([]);
 
   // GIS 分析结果缓存
   const gisResultRef = useRef<{ stations: number[]; communities: number[]; center?: [number, number]; radius?: number } | null>(null);
@@ -389,8 +684,55 @@ export default function App() {
   // 候选点 (盲区聚类) 图层引用
   const clusterSourceRef = useRef<VectorSource | null>(null);
   const clusterLayerRef = useRef<VectorLayer | null>(null);
+  // 服务区重叠图层引用 (阶段二 任务 2.3)
+  const overlapSourceRef = useRef<VectorSource | null>(null);
+  const overlapLayerRef = useRef<VectorLayer | null>(null);
+  // 原始社区样式函数引用 (切换分级着色时保留原样式以恢复)
+  const communityStyleRef = useRef<((feature: any) => Style) | null>(null);
   // 跨 Tab 保留盲区几何 (WGS84 GeoJSON Polygon 数组), 供 evaluate-site 联动判断
   const lastCoverageBlindSpotsRef = useRef<any[] | null>(null);
+
+  // ===== 地图工具栏相关 Refs =====
+  // 测量图层 source/layer (存储绘制的折线和多边形)
+  const measureSourceRef = useRef<VectorSource | null>(null);
+  const measureLayerRef = useRef<VectorLayer | null>(null);
+  // 当前 Draw 交互实例 (切换工具时移除)
+  const drawInteractionRef = useRef<Draw | null>(null);
+  // 测量结果标注 Overlay 列表 (清除时遍历移除)
+  const measureOverlaysRef = useRef<Overlay[]>([]);
+  // 坐标拾取浮窗 Overlay
+  const coordPickerOverlayRef = useRef<Overlay | null>(null);
+  // 坐标拾取事件处理函数引用 (切换工具时取消监听)
+  const coordPointerMoveHandlerRef = useRef<((e: any) => void) | null>(null);
+  const coordClickHandlerRef = useRef<((e: any) => void) | null>(null);
+  // activeTool 的 ref (供地图事件回调读取最新值, 避免闭包过期)
+  const activeToolRef = useRef<MapTool | null>(null);
+  // Toast 定时器引用
+  const toastTimerRef = useRef<number | null>(null);
+
+  // ===== 空间查询相关 Refs =====
+  // 查询高亮 source/layer (半透明黄色填充, 标记查询几何)
+  const querySourceRef = useRef<VectorSource | null>(null);
+  const queryLayerRef = useRef<VectorLayer | null>(null);
+  // 充电站图层引用 (用于图层管理: 透明度/可见性/z-index)
+  const stationLayerRef = useRef<VectorLayer | null>(null);
+  // 拖拽排序: 正在拖拽的图层 ID
+  const dragLayerIdRef = useRef<string | null>(null);
+  // 负荷热力图图层引用 (阶段二 任务 2.1)
+  const heatmapLayerRef = useRef<HeatmapLayer | null>(null);
+  const heatmapSourceRef = useRef<VectorSource | null>(null);
+  // 充电站负荷数据缓存 (供弹窗显示, key = stationId)
+  const stationLoadCacheRef = useRef<Map<number, { load: number; level: string }>>(new Map());
+  // 反馈热力图图层引用 (阶段三 任务 3.3)
+  const feedbackHeatmapLayerRef = useRef<HeatmapLayer | null>(null);
+  const feedbackHeatmapSourceRef = useRef<VectorSource | null>(null);
+  // 反馈数据缓存 (供热力图按类型/评分筛选)
+  const feedbackDataRef = useRef<any[]>([]);
+  // 阶段四 任务 4.1: 覆盖率热力图图层引用 (社区质心, 权重 = 1 - 覆盖率)
+  const coverageHeatmapLayerRef = useRef<HeatmapLayer | null>(null);
+  const coverageHeatmapSourceRef = useRef<VectorSource | null>(null);
+  // 阶段四 任务 4.2: 覆盖分析历史记录 ref (供 runCoverageAnalysis 写入, 与 state 同步)
+  const coverageHistoryRef = useRef<CoverageHistoryItem[]>([]);
 
   // =========================================================================
   // AI 交互：跳转到指定充电站
@@ -530,6 +872,9 @@ export default function App() {
     virtualStationSourceRef.current = virtualStationSource;
     const intersectionSource = new VectorSource();
     intersectionSourceRef.current = intersectionSource;
+    // 测量图层 source (存储绘制的折线和多边形)
+    const measureSource = new VectorSource();
+    measureSourceRef.current = measureSource;
     const feedbackSource = new VectorSource();
     feedbackSourceRef.current = feedbackSource;
     const userLocationSource = new VectorSource();
@@ -545,6 +890,9 @@ export default function App() {
     // 候选点 (盲区聚类) 数据源
     const clusterSource = new VectorSource();
     clusterSourceRef.current = clusterSource;
+    // 服务区重叠数据源 (阶段二 任务 2.3)
+    const overlapSource = new VectorSource();
+    overlapSourceRef.current = overlapSource;
 
     const communityStyle = (feature: any) => {
       const popCount = feature.get("population_total") || 10000;
@@ -562,6 +910,25 @@ export default function App() {
         }),
       });
     };
+    // 保存原始社区样式引用, 供 Tab 切换时恢复 (阶段二 任务 2.2)
+    communityStyleRef.current = communityStyle;
+
+    // 服务区重叠区样式: 45° 斜线 pattern 填充 (阶段二 任务 2.3)
+    const overlapPatternCanvas = document.createElement("canvas");
+    overlapPatternCanvas.width = 8;
+    overlapPatternCanvas.height = 8;
+    const overlapPctx = overlapPatternCanvas.getContext("2d")!;
+    overlapPctx.strokeStyle = "rgba(245, 158, 11, 0.6)";
+    overlapPctx.lineWidth = 1;
+    overlapPctx.beginPath();
+    overlapPctx.moveTo(0, 8);
+    overlapPctx.lineTo(8, 0);
+    overlapPctx.stroke();
+    const overlapPattern = overlapPctx.createPattern(overlapPatternCanvas, "repeat")!;
+    const overlapStyle = new Style({
+      fill: new Fill({ color: overlapPattern as any }),
+      stroke: new Stroke({ color: "#F59E0B", width: 1 }),
+    });
 
     const blindSpotStyle = new Style({
       stroke: new Stroke({ color: "#ef4444", width: 2.5 }),
@@ -577,8 +944,20 @@ export default function App() {
     const serviceAreaStyle = (feature: any) => {
       const brand = feature.get("brand") || "";
       const color = BRAND_CONFIG[brand]?.color || "#3b82f6";
+      // 阶段五 等时圈: 等时圈用虚线 + 半透明填充, 缓冲区用实线 + 淡填充, 视觉可区分
+      const source = feature.get("source");
+      if (source === "isochrone") {
+        // 等时圈图层开关关闭时不渲染 (返回透明样式)
+        if (!showIsochroneLayerRef.current) {
+          return new Style({});
+        }
+        return new Style({
+          stroke: new Stroke({ color: "#7c3aed", width: 2, lineDash: [6, 4] }),
+          fill: new Fill({ color: "rgba(124, 58, 237, 0.12)" }),
+        });
+      }
       return new Style({
-        stroke: new Stroke({ color, width: 1.5, lineDash: [4, 4] }),
+        stroke: new Stroke({ color, width: 1.5 }),
         fill: new Fill({ color: color + "15" }),
       });
     };
@@ -624,8 +1003,9 @@ export default function App() {
       });
     };
 
-    const map = new Map({
+    const map = new OlMap({
       target: mapContainerRef.current,
+      controls: defaultControls({ zoom: false, attribution: false, rotate: false }),
       layers: [
         // 高德地图标准矢量底图 (GCJ02坐标系)
         new TileLayer({
@@ -640,7 +1020,7 @@ export default function App() {
         (() => { const l = new VectorLayer({ source: serviceAreaSource, style: serviceAreaStyle }); serviceAreaLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: blindSpotSource, style: blindSpotStyle }); blindSpotLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: intersectionSource, style: intersectionStyle }); intersectionLayerRef.current = l; return l; })(),
-        new VectorLayer({ source: stationSource, style: getStationStyle }),
+        (() => { const l = new VectorLayer({ source: stationSource, style: getStationStyle }); stationLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: virtualStationSource, style: virtualStationStyle }); virtualStationLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: feedbackSource, style: feedbackStyle }); feedbackLayerRef.current = l; return l; })(),
         // 导航路线图层 (最上层)
@@ -701,6 +1081,8 @@ export default function App() {
             });
           },
         }); clusterLayerRef.current = l; return l; })(),
+        // 服务区重叠图层 (阶段二 任务 2.3): 斜线 pattern, 仅 coverage Tab 可见
+        (() => { const l = new VectorLayer({ source: overlapSource, style: overlapStyle, visible: false }); overlapLayerRef.current = l; return l; })(),
         // GIS 分析缓冲区图层
         new VectorLayer({
           source: gisBufferSource,
@@ -720,6 +1102,97 @@ export default function App() {
             }),
           }),
         }),
+        // 测量图层 (测距折线 + 测面多边形, 品牌色 #00C896)
+        (() => { const l = new VectorLayer({
+          source: measureSource,
+          style: new Style({
+            stroke: new Stroke({ color: "#00C896", width: 2.5, lineCap: "round", lineJoin: "round" }),
+            fill: new Fill({ color: "rgba(0,200,150,0.12)" }),
+            image: new CircleStyle({
+              radius: 4,
+              fill: new Fill({ color: "#00C896" }),
+              stroke: new Stroke({ color: "#ffffff", width: 2 }),
+            }),
+          }),
+        }); measureLayerRef.current = l; return l; })(),
+        // 空间查询高亮图层 (半透明黄色填充, 标记查询几何范围)
+        (() => {
+          const querySource = new VectorSource();
+          querySourceRef.current = querySource;
+          const l = new VectorLayer({
+            source: querySource,
+            style: new Style({
+              stroke: new Stroke({ color: "rgba(250,204,21,0.95)", width: 2.5, lineDash: [6, 4] }),
+              fill: new Fill({ color: "rgba(250,204,21,0.15)" }),
+              image: new CircleStyle({
+                radius: 4,
+                fill: new Fill({ color: "#facc15" }),
+                stroke: new Stroke({ color: "#ffffff", width: 2 }),
+              }),
+            }),
+          });
+          queryLayerRef.current = l;
+          return l;
+        })(),
+        // 负荷热力图图层 (阶段二 任务 2.1, 颜色蓝→红, 默认隐藏)
+        (() => {
+          const hmSource = new VectorSource();
+          heatmapSourceRef.current = hmSource;
+          const l = new HeatmapLayer({
+            source: hmSource,
+            visible: false,
+            radius: 25,
+            blur: 15,
+            // 渐变颜色: 蓝 → 青 → 绿 → 黄 → 红
+            gradient: ["#0000FF", "#00FFFF", "#00FF00", "#FFFF00", "#FF0000"],
+            weight: (feature: any) => {
+              const load = feature.get("load") || 0;
+              // 归一化到 0-1 (load 30+ 视为最大)
+              return Math.min(1, load / 30);
+            },
+          });
+          heatmapLayerRef.current = l;
+          return l;
+        })(),
+        // 反馈热力图图层 (阶段三 任务 3.3, 紫→橙, 默认隐藏)
+        (() => {
+          const fbSource = new VectorSource();
+          feedbackHeatmapSourceRef.current = fbSource;
+          const l = new HeatmapLayer({
+            source: fbSource,
+            visible: false,
+            radius: 28,
+            blur: 18,
+            gradient: ["#1E1B4B", "#7C3AED", "#EC4899", "#F59E0B", "#F97316"],
+            weight: (feature: any) => {
+              const rating = feature.get("rating") || 3;
+              return Math.min(1, rating / 5);
+            },
+          });
+          feedbackHeatmapLayerRef.current = l;
+          return l;
+        })(),
+        // 覆盖率热力图图层 (阶段四 任务 4.1, 蓝→红, 默认隐藏)
+        // 权重 = 1 - coverageRatio/100, 覆盖率越低权重越高 (突出盲区)
+        (() => {
+          const covSource = new VectorSource();
+          coverageHeatmapSourceRef.current = covSource;
+          const l = new HeatmapLayer({
+            source: covSource,
+            visible: false,
+            radius: 30,
+            blur: 20,
+            // 渐变颜色: 蓝(高覆盖) → 青 → 黄 → 橙 → 红(低覆盖盲区)
+            gradient: ["#0000FF", "#00FFFF", "#FFFF00", "#FFA500", "#FF0000"],
+            weight: (feature: any) => {
+              const ratio = feature.get("coverageRatio") ?? 0;
+              // 覆盖率越低权重越高 (0% 覆盖 → 权重 1, 100% 覆盖 → 权重 0)
+              return Math.max(0, Math.min(1, 1 - ratio / 100));
+            },
+          });
+          coverageHeatmapLayerRef.current = l;
+          return l;
+        })(),
       ],
       view: new View({
         // 高德地图使用 GCJ02，需将 WGS84 中心点转换后投影到 3857
@@ -730,19 +1203,12 @@ export default function App() {
       }),
     });
     mapRef.current = map;
+    // 标记地图就绪, 触发 MapToolbar 渲染
+    setMapReady(true);
 
-    // 初始化 AI 站点详情 Overlay
-    const overlayEl = document.getElementById("ai-station-overlay");
-    if (overlayEl) {
-      const overlay = new Overlay({
-        element: overlayEl,
-        positioning: "bottom-center" as any,
-        offset: [0, -30],
-        stopEvent: false,
-      });
-      map.addOverlay(overlay);
-      aiOverlayRef.current = overlay;
-    }
+    // 注意: AI 站点详情原通过 OpenLayers Overlay 渲染, 但 Overlay 会把 React 管理的
+    // DOM 节点移到地图 overlay 容器, 导致 React reconciliation 时 insertBefore 失败.
+    // 现改为普通 React 模态框 (屏幕中央), 不再使用 map.addOverlay.
 
     // 鼠标移动
     map.on("pointermove", (e) => {
@@ -752,6 +1218,9 @@ export default function App() {
 
     // 地图点击
     map.on("singleclick", (e) => {
+      // 坐标拾取/测量模式下, 由专用处理器响应, 跳过默认点击逻辑
+      const tool = activeToolRef.current;
+      if (tool === "pick-coordinate" || tool === "measure-distance" || tool === "measure-area") return;
       const coord3857 = e.coordinate;
       const coordGcj02 = toLonLat(coord3857);
       // 高德底图坐标为 GCJ02，需转回 WGS84 传给后端
@@ -759,9 +1228,11 @@ export default function App() {
       const lng = parseFloat(wgsLng.toFixed(6));
       const lat = parseFloat(wgsLat.toFixed(6));
 
-      // 检查是否点击了充电站 / 候选点
+      // 检查是否点击了充电站 / 候选点 / 重叠区 / 社区
       let clickedStation: any = null;
       let clickedCluster: BlindSpotCluster | null = null;
+      let clickedOverlap: any = null;
+      let clickedCommunityFeature: any = null;
       map.forEachFeatureAtPixel(e.pixel, (feature, layer) => {
         const props = feature.getProperties();
         if (props.brand && props.name) {
@@ -770,6 +1241,14 @@ export default function App() {
         // 候选点 feature 携带 cluster 属性
         if (props.cluster) {
           clickedCluster = props.cluster as BlindSpotCluster;
+        }
+        // 服务区重叠区 feature (阶段二 任务 2.3.4)
+        if (layer === overlapLayerRef.current) {
+          clickedOverlap = props;
+        }
+        // 社区 feature (阶段二 任务 2.5.2)
+        if (layer === communityLayerRef.current) {
+          clickedCommunityFeature = feature;
         }
       });
 
@@ -798,6 +1277,43 @@ export default function App() {
         return;
       }
 
+      // 覆盖分析 Tab: 点击重叠区显示信息 (阶段二 任务 2.3.4)
+      if (currentTab === "coverage" && clickedOverlap) {
+        const stations = clickedOverlap.stations || [];
+        const area = clickedOverlap.area;
+        const stationText = stations.length >= 2 ? `${stations[0]} 与 ${stations[1]}` : stations.join("、");
+        const areaText = area != null ? ` / 面积 ${Math.round(area).toLocaleString()} 平方米` : "";
+        showToast(`${stationText} 服务区重叠${areaText}`);
+        return;
+      }
+
+      // 覆盖分析 Tab: 点击社区弹出详情弹窗 (阶段二 任务 2.5.2)
+      if (currentTab === "coverage" && clickedCommunityFeature) {
+        const commId = clickedCommunityFeature.getId() ?? clickedCommunityFeature.get("id");
+        const result = coverageResultsRef.current.find((c) => c.id === commId);
+        if (result) {
+          setCommunityDetail(result);
+          setCommunityDetailOpen(true);
+          return;
+        }
+        // 兜底: feature 未匹配到 coverageResults, 用 properties 构造一个临时对象
+        const name = clickedCommunityFeature.get("name") || "未命名社区";
+        const district = clickedCommunityFeature.get("district") || "未知";
+        const population = clickedCommunityFeature.get("population_total") || 0;
+        const ratio = clickedCommunityFeature.get("coverageRatio") ?? 0;
+        const level = clickedCommunityFeature.get("coverageLevel") ?? "极差";
+        const tempResult: CommunityResult = {
+          id: typeof commId === "number" ? commId : 0,
+          name, district, population,
+          coverageRatio: ratio,
+          isBlindSpot: level === "极差",
+          coveredBy: null,
+        };
+        setCommunityDetail(tempResult);
+        setCommunityDetailOpen(true);
+        return;
+      }
+
       // 点击空白处关闭模态框
       setSelectedStation(null);
       setSelectedCluster(null);
@@ -813,7 +1329,7 @@ export default function App() {
       }
     });
 
-    return () => { map.setTarget(undefined); };
+    return () => { map.setTarget(undefined); setMapReady(false); };
   }, [currentUser]);
 
   // 页面加载时自动定位用户（触发浏览器位置权限弹窗）
@@ -827,6 +1343,18 @@ export default function App() {
     activeTabRef.current = activeTab;
   }, [activeTab]);
 
+  // 保持 coverageResultsRef 与 coverageResults 同步, 供地图点击回调读取最新值
+  useEffect(() => {
+    coverageResultsRef.current = coverageResults;
+  }, [coverageResults]);
+
+  // 阶段五 等时圈: 同步图层开关到 ref 并触发服务区图层重新渲染样式
+  useEffect(() => {
+    showIsochroneLayerRef.current = showIsochroneLayer;
+    serviceAreaSourceRef.current?.changed();
+    serviceAreaLayerRef.current?.changed();
+  }, [showIsochroneLayer]);
+
   // 按 Tab 控制图层可见性 (保留数据, 切回可继续使用, 不串到别的功能页)
   useEffect(() => {
     const isMap = activeTab === "map";
@@ -837,14 +1365,386 @@ export default function App() {
     blindSpotLayerRef.current?.setVisible(isCov);
     // 候选点 (盲区聚类) 图层: 仅 coverage Tab 可见
     clusterLayerRef.current?.setVisible(isCov);
+    // 服务区重叠图层: 仅 coverage Tab 可见 (阶段二 任务 2.3.3)
+    overlapLayerRef.current?.setVisible(isCov);
     // 选址决策图层: 仅 site Tab 可见
     virtualStationLayerRef.current?.setVisible(isSite);
     intersectionLayerRef.current?.setVisible(isSite);
     // 地图查询图层: 仅 map Tab 可见 (community/feedback 受复选框控制)
     searchLayerRef.current?.setVisible(isMap);
-    communityLayerRef.current?.setVisible(isMap && showCommunities);
+    stationLayerRef.current?.setVisible(isMap && showStations);
+    // 社区图层: map Tab 受复选框控制, coverage Tab 在分级着色模式下显示 (阶段二 任务 2.2)
+    // 阶段四 任务 4.1.3: coverage Tab 切换到热力图模式时隐藏 communityLayer
+    const showCommunityInCoverage = isCov && coverageViewMode === "graded";
+    communityLayerRef.current?.setVisible((isMap && showCommunities) || showCommunityInCoverage);
+    // 阶段四 任务 4.1.3: 覆盖率热力图图层仅在 coverage Tab + heatmap 模式下可见
+    coverageHeatmapLayerRef.current?.setVisible(isCov && coverageViewMode === "heatmap");
     feedbackLayerRef.current?.setVisible(isMap && showFeedback);
-  }, [activeTab, showCommunities, showFeedback]);
+    measureLayerRef.current?.setVisible(isMap && showMeasure);
+    queryLayerRef.current?.setVisible(isMap);
+  }, [activeTab, showStations, showCommunities, showFeedback, showMeasure, coverageViewMode]);
+
+  // 阶段四 任务 4.1.2: 切换到热力图模式时, 用 turf.centroid 计算社区质心并填充热力图 source
+  // 权重 = 1 - coverageRatio/100 (覆盖率越低权重越高, 突出盲区)
+  useEffect(() => {
+    if (!coverageHeatmapSourceRef.current) return;
+    // 切换到热力图模式且有分析结果时填充 features
+    if (activeTab === "coverage" && coverageViewMode === "heatmap" && coverageResults.length > 0) {
+      coverageHeatmapSourceRef.current.clear();
+      coverageResults.forEach((comm) => {
+        // 从 communitySource 中取对应 Feature 的几何, 用 turf.centroid 计算质心
+        const feat = communitySourceRef.current?.getFeatureById(comm.id);
+        if (!feat) return;
+        const geom = feat.getGeometry();
+        if (!geom) return;
+        // 将 OL 几何转为 GeoJSON (WGS84), 用 turf 计算质心
+        let centerCoord: [number, number] | null = null;
+        try {
+          const extent = geom.getExtent();
+          // 兜底: 用 extent 中心点 (EPSG:3857) 作为质心
+          const cx = (extent[0] + extent[2]) / 2;
+          const cy = (extent[1] + extent[3]) / 2;
+          // 转回经纬度 (GCJ02)
+          const [lng, lat] = toLonLat([cx, cy]);
+          centerCoord = [lng, lat];
+        } catch {
+          return;
+        }
+        if (!centerCoord) return;
+        // turf.centroid 输入需为 WGS84, 但底图为 GCJ02; 简化处理: 直接用 GCJ02 坐标投影到 3857
+        const feat3857 = new Feature({
+          geometry: new Point(fromLonLat(centerCoord)),
+        });
+        feat3857.set("coverageRatio", comm.coverageRatio);
+        feat3857.set("communityId", comm.id);
+        feat3857.set("communityName", comm.name);
+        coverageHeatmapSourceRef.current!.addFeature(feat3857);
+      });
+    }
+  }, [activeTab, coverageViewMode, coverageResults]);
+
+  // 社区图层样式切换: coverage Tab 用分级着色, 其他 Tab 恢复原样式 (阶段二 任务 2.2.3)
+  useEffect(() => {
+    if (!communityLayerRef.current) return;
+    if (activeTab === "coverage") {
+      communityLayerRef.current.setStyle(communityGradedStyle);
+    } else {
+      communityLayerRef.current.setStyle(communityStyleRef.current || undefined);
+    }
+  }, [activeTab]);
+
+  // 保持 activeToolRef 与 activeTool 同步, 供地图事件回调读取最新值
+  useEffect(() => {
+    activeToolRef.current = activeTool;
+  }, [activeTool]);
+
+  // 切换子系统 Tab 时重置地图工具 (避免测量/拾取状态串到其他功能页)
+  useEffect(() => {
+    setActiveTool(null);
+  }, [activeTab]);
+
+  // ===== 图层管理: 按图层 ID 获取对应 layer ref =====
+  const getLayerRefById = useCallback((id: string): React.RefObject<VectorLayer | null> | null => {
+    switch (id) {
+      case "stations": return stationLayerRef;
+      case "communities": return communityLayerRef;
+      case "feedback": return feedbackLayerRef;
+      case "measure": return measureLayerRef;
+      default: return null;
+    }
+  }, []);
+
+  // ===== 图层管理: 透明度实时同步 =====
+  useEffect(() => {
+    Object.entries(layerOpacity).forEach(([id, value]) => {
+      const ref = getLayerRefById(id);
+      ref?.current?.setOpacity((value as number) / 100);
+    });
+  }, [layerOpacity, getLayerRefById]);
+
+  // ===== 图层管理: 拖拽排序后更新 z-index =====
+  useEffect(() => {
+    // layerOrder 数组前 = 地图顶层, 设置较高的 zIndex
+    layerOrder.forEach((id, idx) => {
+      const ref = getLayerRefById(id);
+      // zIndex: 数组第 0 项 = 4, 第 1 项 = 3, ... (确保顺序正确)
+      ref?.current?.setZIndex(layerOrder.length - idx);
+    });
+  }, [layerOrder, getLayerRefById]);
+
+  // =========================================================================
+  // 地图工具栏: 测量与坐标拾取逻辑
+  // 监听 activeTool 变化, 切换 Draw 交互和事件监听
+  // =========================================================================
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !mapReady) return;
+
+    // ===== 清理上一个工具的状态 =====
+    // 移除上一个 Draw 交互
+    if (drawInteractionRef.current) {
+      map.removeInteraction(drawInteractionRef.current);
+      drawInteractionRef.current = null;
+    }
+    // 隐藏坐标拾取浮窗
+    if (coordPickerOverlayRef.current) {
+      coordPickerOverlayRef.current.setPosition(undefined);
+    }
+    // 移除坐标拾取的 pointermove / singleclick 监听
+    if (coordPointerMoveHandlerRef.current) {
+      map.un("pointermove", coordPointerMoveHandlerRef.current);
+      coordPointerMoveHandlerRef.current = null;
+    }
+    if (coordClickHandlerRef.current) {
+      map.un("singleclick", coordClickHandlerRef.current);
+      coordClickHandlerRef.current = null;
+    }
+    // 恢复默认光标
+    map.getViewport().style.cursor = "";
+
+    const tool = activeTool;
+
+    // ===== 测距: 绘制折线, turf.length 计算累计距离 =====
+    if (tool === "measure-distance" || tool === "measure-area") {
+      const type = tool === "measure-distance" ? "LineString" : "Polygon";
+      const draw = new Draw({
+        source: measureSourceRef.current!,
+        type: type as any,
+        // 绘制过程中的临时样式 (虚线 + 半透明填充)
+        style: new Style({
+          stroke: new Stroke({ color: "rgba(0,200,150,0.7)", width: 2, lineDash: [5, 5] }),
+          fill: new Fill({ color: "rgba(0,200,150,0.08)" }),
+          image: new CircleStyle({
+            radius: 4,
+            fill: new Fill({ color: "#00C896" }),
+            stroke: new Stroke({ color: "#ffffff", width: 2 }),
+          }),
+        }),
+      });
+
+      draw.on("drawend", (e) => {
+        const feature = e.feature;
+        const geom = feature.getGeometry();
+        if (!geom) return;
+
+        // 将 feature 转 GeoJSON (3857 -> 4326), 供 turf 计算
+        const geojson = new GeoJSON().writeFeatureObject(feature, {
+          featureProjection: "EPSG:3857",
+          dataProjection: "EPSG:4326",
+        });
+
+        let label = "";
+        let position: number[];
+
+        if (tool === "measure-distance") {
+          // turf.length 计算累计距离 (公里)
+          const length = turf.length(geojson as any, { units: "kilometers" });
+          label = length < 1
+            ? `距离 ${(length * 1000).toFixed(1)} 米`
+            : `距离 ${length.toFixed(3)} 公里`;
+          position = (geom as LineString).getLastCoordinate();
+        } else {
+          // turf.area 计算面积 (平方米), turf.length 计算周长 (公里)
+          const area = turf.area(geojson as any);
+          const perimeter = turf.length(geojson as any, { units: "kilometers" });
+          const areaLabel = area < 1000000
+            ? `${area.toFixed(0)} 平方米`
+            : `${(area / 1000000).toFixed(3)} 平方公里`;
+          label = `面积 ${areaLabel} · 周长 ${perimeter.toFixed(3)} 公里`;
+          // 多边形取内部点作为标注位置
+          position = (geom as any).getInteriorPoint().getCoordinates();
+        }
+
+        // 创建标注 Overlay (半透明黑底白字)
+        const el = document.createElement("div");
+        el.style.cssText =
+          "background:rgba(0,0,0,0.78);color:#fff;padding:3px 8px;border-radius:4px;" +
+          "font-size:11px;white-space:nowrap;pointer-events:none;font-family:var(--font-sans);";
+        el.textContent = label;
+        const overlay = new Overlay({
+          element: el,
+          positioning: "center-center" as any,
+          offset: [0, -12],
+          stopEvent: false,
+        });
+        overlay.setPosition(position);
+        map.addOverlay(overlay);
+        measureOverlaysRef.current.push(overlay);
+      });
+
+      map.addInteraction(draw);
+      drawInteractionRef.current = draw;
+      // 设置十字光标
+      map.getViewport().style.cursor = "crosshair";
+      return;
+    }
+
+    // ===== 坐标拾取: 鼠标悬停显示双坐标系, 点击复制到剪贴板 =====
+    if (tool === "pick-coordinate") {
+      // 创建或复用坐标拾取浮窗
+      let overlay = coordPickerOverlayRef.current;
+      if (!overlay) {
+        const el = document.createElement("div");
+        el.style.cssText =
+          "background:rgba(0,0,0,0.82);color:#fff;padding:5px 9px;border-radius:4px;" +
+          "font-size:11px;white-space:nowrap;pointer-events:none;font-family:var(--font-mono);line-height:1.5;";
+        el.innerHTML = '<div style="color:#71717A">移动鼠标查看坐标</div>';
+        overlay = new Overlay({
+          element: el,
+          positioning: "bottom-left" as any,
+          offset: [12, -12],
+          stopEvent: false,
+        });
+        map.addOverlay(overlay);
+        coordPickerOverlayRef.current = overlay;
+      }
+
+      // pointermove: 实时显示 WGS84 + GCJ02 双坐标系
+      const onPointerMove = (ev: any) => {
+        const coord3857 = ev.coordinate;
+        const gcj02 = toLonLat(coord3857);
+        const [wgsLng, wgsLat] = gcj02ToWgs84(gcj02[0], gcj02[1]);
+        const el = overlay!.getElement();
+        if (el) {
+          el.innerHTML =
+            `<div>WGS84&nbsp; ${wgsLng.toFixed(6)}, ${wgsLat.toFixed(6)}</div>` +
+            `<div>GCJ02&nbsp; ${gcj02[0].toFixed(6)}, ${gcj02[1].toFixed(6)}</div>`;
+        }
+        overlay!.setPosition(coord3857);
+      };
+      map.on("pointermove", onPointerMove);
+      coordPointerMoveHandlerRef.current = onPointerMove;
+
+      // singleclick: 复制 WGS84 坐标到剪贴板并 toast 提示
+      const onClick = (ev: any) => {
+        const gcj02 = toLonLat(ev.coordinate);
+        const [wgsLng, wgsLat] = gcj02ToWgs84(gcj02[0], gcj02[1]);
+        const text = `${wgsLng.toFixed(6)}, ${wgsLat.toFixed(6)}`;
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(text).then(
+            () => showToast(`坐标已复制：${text}`, "success"),
+            () => showToast(`坐标：${text}`)
+          );
+        } else {
+          showToast(`坐标：${text}`);
+        }
+      };
+      map.on("singleclick", onClick);
+      coordClickHandlerRef.current = onClick;
+
+      map.getViewport().style.cursor = "crosshair";
+      return;
+    }
+
+    // ===== 框选查询 / 多边形查询: 绘制几何, turf.booleanPointInPolygon 筛选命中要素 =====
+    if (tool === "query-rectangle" || tool === "query-polygon") {
+      const isRect = tool === "query-rectangle";
+      // 框选用 Circle + createBox 几何函数, 多边形用 Polygon
+      const draw = new Draw({
+        source: querySourceRef.current!,
+        type: isRect ? ("Circle" as any) : ("Polygon" as any),
+        geometryFunction: isRect ? createBox() : undefined,
+        style: new Style({
+          stroke: new Stroke({ color: "rgba(250,204,21,0.9)", width: 2, lineDash: [6, 4] }),
+          fill: new Fill({ color: "rgba(250,204,21,0.12)" }),
+          image: new CircleStyle({
+            radius: 4,
+            fill: new Fill({ color: "#facc15" }),
+            stroke: new Stroke({ color: "#ffffff", width: 2 }),
+          }),
+        }),
+      });
+
+      draw.on("drawend", (e) => {
+        const feature = e.feature;
+        const geom = feature.getGeometry();
+        if (!geom) return;
+
+        // 清除上一次查询几何, 保留当前绘制要素
+        querySourceRef.current?.clear();
+        querySourceRef.current?.addFeature(feature);
+
+        // 将绘制几何转为 GeoJSON (EPSG:4326) 供 turf 判断
+        const queryGeoJSON = new GeoJSON().writeFeatureObject(feature, {
+          featureProjection: "EPSG:3857",
+          dataProjection: "EPSG:4326",
+        });
+        const queryPolygon = queryGeoJSON.geometry;
+
+        // ===== 筛选充电站 (Point): turf.booleanPointInPolygon =====
+        const matchedStations: ChargingStation[] = [];
+        stationSourceRef.current?.getFeatures().forEach((f: any) => {
+          try {
+            const ptGeo = new GeoJSON().writeFeatureObject(f, {
+              featureProjection: "EPSG:3857",
+              dataProjection: "EPSG:4326",
+            });
+            if (turf.booleanPointInPolygon(ptGeo.geometry as any, queryPolygon as any)) {
+              const coords = (f.getGeometry() as Point).getCoordinates();
+              const lonLat = toLonLat(coords);
+              matchedStations.push({
+                id: f.get("id") ?? 0,
+                name: f.get("name") ?? "",
+                brand: f.get("brand") ?? "",
+                lng: lonLat[0],
+                lat: lonLat[1],
+                fastChargers: f.get("fast_chargers") ?? f.get("fastChargers") ?? 0,
+                slowChargers: f.get("slow_chargers") ?? f.get("slowChargers") ?? 0,
+                address: f.get("address") ?? "",
+                status: f.get("status") ?? "",
+                district: f.get("district") ?? "",
+                updateTime: f.get("update_time") ?? f.get("updateTime") ?? "",
+              } as ChargingStation);
+            }
+          } catch { /* 忽略单个要素的解析错误 */ }
+        });
+
+        // ===== 筛选小区 (Polygon): 用 turf.centroid 取中心点再做点判断 =====
+        const matchedCommunities: any[] = [];
+        communitySourceRef.current?.getFeatures().forEach((f: any) => {
+          try {
+            const featGeo = new GeoJSON().writeFeatureObject(f, {
+              featureProjection: "EPSG:3857",
+              dataProjection: "EPSG:4326",
+            });
+            const centroid = turf.centroid(featGeo as any);
+            if (turf.booleanPointInPolygon(centroid.geometry, queryPolygon as any)) {
+              const center3857 = fromLonLat(centroid.geometry.coordinates as [number, number]);
+              matchedCommunities.push({
+                id: f.get("id") ?? 0,
+                name: f.get("name") ?? "",
+                district: f.get("district") ?? "",
+                population: f.get("population_total") ?? f.get("population") ?? 0,
+                coverageRatio: f.get("coverage_ratio") ?? 0,
+                isBlindSpot: f.get("is_blind_spot") ?? false,
+                coveredBy: f.get("covered_by") ?? null,
+                _center: center3857,
+              });
+            }
+          } catch { /* 忽略单个要素的解析错误 */ }
+        });
+
+        setQueryResult({
+          stations: matchedStations,
+          communities: matchedCommunities,
+          geometry: queryPolygon,
+        });
+        // 默认切换到有命中结果的 Tab
+        setQueryResultTab(matchedStations.length > 0 ? "stations" : "communities");
+        showToast(
+          `查询完成：充电站 ${matchedStations.length} 个，社区 ${matchedCommunities.length} 个`,
+          "success"
+        );
+      });
+
+      map.addInteraction(draw);
+      drawInteractionRef.current = draw;
+      map.getViewport().style.cursor = "crosshair";
+      return;
+    }
+
+    // pan / null: 默认平移模式, 无特殊操作
+  }, [activeTool, mapReady, showToast]);
 
   // =========================================================================
   // 认证：会话恢复 / 登录 / 登出
@@ -1012,7 +1912,14 @@ export default function App() {
       .then(r => r.json())
       .then(json => {
         if (json.success) {
-          setFeedbackList(json.data.features.map((f: any) => f.properties));
+          const props = json.data.features.map((f: any) => f.properties);
+          setFeedbackList(props);
+          // 缓存反馈原始数据 (含坐标), 供热力图按类型/评分筛选 (阶段三 任务 3.3)
+          feedbackDataRef.current = json.data.features.map((f: any) => ({
+            ...f.properties,
+            lng: f.geometry.coordinates[0],
+            lat: f.geometry.coordinates[1],
+          }));
           if (feedbackSourceRef.current) {
             const features = readFeaturesFromWGS84(json.data);
             feedbackSourceRef.current.addFeatures(features);
@@ -1053,23 +1960,53 @@ export default function App() {
   // =========================================================================
   const runCoverageAnalysis = async () => {
     setCoverageLoading(true);
+    // 阶段三 任务 3.4.2: 启动进度条动画 (0-90 随机增长, 完成后跳到 100)
+    setCoverageProgress(0);
+    const progressTimer = window.setInterval(() => {
+      setCoverageProgress(prev => {
+        const inc = 5 + Math.floor(Math.random() * 11); // 5-15
+        return Math.min(90, prev + inc);
+      });
+    }, 200);
     try {
       const res = await fetch("/api/v1/analysis/coverage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chargeMode, radius: coverageRadius || undefined, district: coverageDistrict }),
+        body: JSON.stringify({ chargeMode, radius: coverageRadius || undefined, district: coverageDistrict, serviceAreaMode }),
       });
       const json = await res.json();
       if (json.success) {
         setCoverageSummary(json.data.summary);
         setCoverageResults(json.data.communityResults);
         setDistrictStats(json.data.districtStats);
+        // 阶段五 等时圈: 保存等时圈覆盖率信息 (用于在分析面板展示来源比例)
+        setIsochroneCoverage(json.data.isochroneCoverage || null);
+        // 阶段三 任务 3.3: 保存分级统计与充电站效率, 供右侧饼图/柱图渲染
+        setCoverageLevels(json.data.coverageLevels || []);
+        setStationEfficiency(json.data.stationEfficiency || []);
+        // 阶段三 任务 3.4.3: 缓存上次分析的社区总数, 供下次分析时的加载态文案使用
+        lastCommunityCountRef.current = (json.data.communityResults || []).length;
         // 保存盲区聚类候选点 + 摘要, 供选址面板联动
         const clusters: BlindSpotCluster[] = json.data.blindSpotClusters || [];
         setBlindSpotClusters(clusters);
         setLastCoverageSummary(json.data.summary);
         // 提取盲区几何 (WGS84 GeoJSON Polygon), 跨 Tab 保留供 evaluate-site 联动判断
         lastCoverageBlindSpotsRef.current = (json.data.blindSpots?.features || []).map((f: any) => f.geometry);
+
+        // 阶段四 任务 4.2.3: 压入历史记录, 最多保留 3 条 (超出则 shift 旧的)
+        const historyItem: CoverageHistoryItem = {
+          id: Date.now().toString(),
+          timestamp: Date.now(),
+          params: {
+            chargeMode,
+            radius: coverageRadius,
+            district: coverageDistrict,
+            serviceAreaMode,
+          },
+          summary: json.data.summary,
+        };
+        coverageHistoryRef.current = [...coverageHistoryRef.current, historyItem].slice(-3);
+        setCoverageHistory([...coverageHistoryRef.current]);
 
         // 渲染服务区
         if (serviceAreaSourceRef.current) {
@@ -1094,9 +2031,158 @@ export default function App() {
             clusterSourceRef.current!.addFeature(feat);
           });
         }
+        // 将 coverageRatio 和 level 写入 communitySource 中对应 Feature (阶段二 任务 2.2.2)
+        if (communitySourceRef.current) {
+          const commResults: any[] = json.data.communityResults || [];
+          commResults.forEach((comm: any) => {
+            // 按 id 匹配 communitySource 中的 Feature
+            const feat = communitySourceRef.current!.getFeatureById(comm.id);
+            if (feat) {
+              feat.set("coverageRatio", comm.coverageRatio);
+              feat.set("coverageLevel", comm.level);
+            }
+          });
+        }
+        // 渲染服务区重叠区 (阶段二 任务 2.3.2)
+        if (overlapSourceRef.current && json.data.overlapAreas) {
+          overlapSourceRef.current.clear();
+          const ovFeatures = readFeaturesFromWGS84(json.data.overlapAreas);
+          overlapSourceRef.current.addFeatures(ovFeatures);
+        }
       }
     } catch (e) { console.error(e); }
+    // 阶段三 任务 3.4.2: 分析完成, 进度跳到 100, 500ms 后清零并停止定时器
+    window.clearInterval(progressTimer);
+    setCoverageProgress(100);
+    window.setTimeout(() => setCoverageProgress(0), 500);
     setCoverageLoading(false);
+  };
+
+  // =========================================================================
+  // 阶段四 任务 4.3: CSV 导出 (前端纯生成, UTF-8 BOM, Excel 友好)
+  // =========================================================================
+  const exportCoverageCSV = () => {
+    if (!coverageResults.length) {
+      showToast("暂无分析结果可导出", "info");
+      return;
+    }
+    // 阶段五 等时圈: CSV 首行追加服务区模式信息便于追溯
+    const saModeLabel = serviceAreaMode === "buffer" ? "缓冲区" : serviceAreaMode === "isochrone" ? "等时圈" : "混合";
+    const header = ["社区名", "行政区", "人口", "覆盖率(%)", "分级", "覆盖充电站"];
+    const metaRow = [`# 服务区模式=${saModeLabel}`, `充电模式=${chargeMode === "fast" ? "快充" : "慢充"}`, `服务半径=${coverageRadius || (chargeMode === "fast" ? 800 : 400)}m`, `行政区=${coverageDistrict === "all" ? "全部" : coverageDistrict}`];
+    const rows = coverageResults.map(c => [
+      c.name,
+      c.district,
+      c.population,
+      c.coverageRatio,
+      // 优先用后端返回的 level, 兜底用 coverageRatio 推断
+      c.level ?? (c.coverageRatio >= 90 ? "优秀"
+        : c.coverageRatio >= 60 ? "良好"
+        : c.coverageRatio >= 30 ? "一般"
+        : c.coverageRatio >= 10 ? "较差"
+        : "极差"),
+      c.coveredBy || "无覆盖",
+    ]);
+    // 在表头前插入元信息行
+    const allRows = [metaRow, header, ...rows];
+    // CSV 转义: 含逗号/换行/引号的字段用双引号包裹, 内部双引号双写
+    const csv = "\uFEFF" + allRows
+      .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    // 阶段四 任务 4.3.3: 文件名 覆盖分析_YYYYMMDD_HHmm.csv
+    link.download = `覆盖分析_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast("CSV 已导出", "success");
+  };
+
+  // =========================================================================
+  // 阶段四 任务 4.4: 打印报告 (组装 HTML 到新窗口, 触发浏览器打印)
+  // =========================================================================
+  const printCoverageReport = () => {
+    if (!coverageSummary) {
+      showToast("暂无分析结果可打印", "info");
+      return;
+    }
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      showToast("弹窗被拦截, 请允许浏览器弹窗后重试", "info");
+      return;
+    }
+    // 参数显示
+    const modeText = chargeMode === "fast" ? "快充" : "慢充";
+    const radiusText = `${coverageRadius || (chargeMode === "fast" ? 800 : 400)}m`;
+    const districtText = coverageDistrict === "all" ? "全部行政区" : coverageDistrict;
+    // 阶段五 等时圈: 报告中标注服务区模式
+    const saModeText = serviceAreaMode === "buffer" ? "圆形缓冲区" : serviceAreaMode === "isochrone" ? "路网等时圈" : "混合 (等时圈优先, 缺失回退缓冲区)";
+    const isoCovText = isochroneCoverage ? `等时圈 ${isochroneCoverage.covered} 站 / 缓冲回退 ${isochroneCoverage.fallback} 站 (占比 ${isochroneCoverage.ratio}%)` : "";
+    // Top10 盲区社区 (按人口降序, 仅"极差"分级)
+    const top10Blind = coverageResults
+      .filter(c => (c.level ?? (c.coverageRatio < 10 ? "极差" : "")) === "极差")
+      .sort((a, b) => b.population - a.population)
+      .slice(0, 10);
+    // Top10 充电站效率 (按覆盖人口降序)
+    const top10Stations = stationEfficiency.slice(0, 10);
+    const html = `
+      <!DOCTYPE html><html><head><title>覆盖分析报告</title>
+      <style>
+        body { font-family: -apple-system, "Microsoft YaHei", sans-serif; padding: 40px; color: #333; }
+        h1 { font-size: 24px; border-bottom: 2px solid #00C896; padding-bottom: 8px; }
+        h2 { font-size: 16px; margin-top: 24px; color: #00C896; }
+        table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; font-size: 12px; }
+        th { background: #f5f5f5; }
+        .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }
+        .metric { border: 1px solid #ddd; padding: 12px; border-radius: 4px; }
+        .metric-label { font-size: 11px; color: #666; }
+        .metric-value { font-size: 20px; font-weight: bold; color: #00C896; }
+        .footer { margin-top: 32px; font-size: 10px; color: #999; text-align: center; }
+      </style></head><body>
+      <h1>覆盖分析报告</h1>
+      <p>生成时间：${new Date().toLocaleString("zh-CN")}</p>
+      <h2>分析参数</h2>
+      <table><tr><th>充电模式</th><th>服务半径</th><th>行政区</th><th>服务区模式</th></tr>
+      <tr><td>${modeText}</td><td>${radiusText}</td><td>${districtText}</td><td>${saModeText}${isoCovText ? `<br/><small style="color:#666;">${isoCovText}</small>` : ""}</td></tr></table>
+      <h2>核心指标</h2>
+      <div class="metrics">
+        <div class="metric"><div class="metric-label">覆盖率</div><div class="metric-value">${coverageSummary.coverageRate}%</div></div>
+        <div class="metric"><div class="metric-label">人口覆盖率</div><div class="metric-value">${coverageSummary.populationCoverageRate ?? 0}%</div></div>
+        <div class="metric"><div class="metric-label">盲区社区</div><div class="metric-value">${coverageSummary.blindSpotCommunities}</div></div>
+        <div class="metric"><div class="metric-label">盲区人口</div><div class="metric-value">${coverageSummary.blindSpotPopulation.toLocaleString()}</div></div>
+        <div class="metric"><div class="metric-label">充电站总数</div><div class="metric-value">${coverageSummary.totalStations}</div></div>
+        <div class="metric"><div class="metric-label">冗余度</div><div class="metric-value">${coverageSummary.redundancyScore ?? 0}</div></div>
+      </div>
+      <h2>覆盖率分级统计</h2>
+      <table><tr><th>分级</th><th>社区数</th><th>人口</th></tr>
+      ${coverageLevels.map(l => `<tr><td>${l.level}</td><td>${l.count}</td><td>${l.population.toLocaleString()}</td></tr>`).join("")}
+      </table>
+      <h2>Top 10 盲区社区</h2>
+      <table><tr><th>排名</th><th>社区名</th><th>行政区</th><th>人口</th><th>覆盖率</th></tr>
+      ${top10Blind.length > 0
+        ? top10Blind.map((c, i) => `<tr><td>${i + 1}</td><td>${c.name}</td><td>${c.district}</td><td>${c.population.toLocaleString()}</td><td>${c.coverageRatio}%</td></tr>`).join("")
+        : `<tr><td colspan="5" style="text-align:center;color:#999;">暂无盲区社区</td></tr>`}
+      </table>
+      <h2>Top 10 充电站效率</h2>
+      <table><tr><th>排名</th><th>充电站</th><th>品牌</th><th>覆盖社区</th><th>覆盖人口</th><th>平均覆盖率</th></tr>
+      ${top10Stations.length > 0
+        ? top10Stations.map((s, i) => `<tr><td>${i + 1}</td><td>${s.stationName}</td><td>${s.brand}</td><td>${s.coveredCommunities}</td><td>${s.coveredPopulation.toLocaleString()}</td><td>${s.avgCoverageRatio}%</td></tr>`).join("")
+        : `<tr><td colspan="6" style="text-align:center;color:#999;">暂无充电站效率数据</td></tr>`}
+      </table>
+      <div class="footer">GeoPlan 充电覆盖分析平台 · 自动生成</div>
+      </body></html>
+    `;
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.focus();
+    // 延迟 500ms 等待样式渲染后触发打印
+    setTimeout(() => printWindow.print(), 500);
+    showToast("打印报告已生成", "success");
   };
 
   // =========================================================================
@@ -1203,13 +2289,154 @@ export default function App() {
       body: JSON.stringify({
         name, lng: virtualStation.lng, lat: virtualStation.lat,
         radius: siteRadius, brand: siteBrand, metrics: siteMetrics,
+        // 阶段二 任务 2.3.4: 携带 ROI 数据 (基于默认参数估算)
+        roi: {
+          fastChargers: 4,
+          slowChargers: 4,
+          coveredPopulation: siteMetrics.covered_population,
+        },
       }),
     });
     const json = await res.json();
     if (json.success) {
       setSchemes([...schemes, json.data]);
       setSchemeName("");
+      showToast("方案已保存", "success");
     }
+  };
+
+  // =========================================================================
+  // 阶段二 任务 2.1: 负荷热力图 - 调用后端接口获取数据并渲染 HeatmapLayer
+  // =========================================================================
+  useEffect(() => {
+    if (!showHeatmap) {
+      // 关闭: 隐藏图层
+      heatmapLayerRef.current?.setVisible(false);
+      return;
+    }
+    // 开启: 调用接口获取数据
+    fetch("/api/v1/analysis/heatmap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ district: "all" }),
+    })
+      .then(r => r.json())
+      .then(json => {
+        if (json.success && heatmapSourceRef.current) {
+          const stations = json.data.stations || [];
+          setHeatmapData(stations);
+          // 缓存负荷数据, 供弹窗显示
+          stationLoadCacheRef.current = new Map(
+            stations.map((s: any) => [s.id, { load: s.load, level: s.level }])
+          );
+          // 清空并填充热力图 source
+          heatmapSourceRef.current.clear();
+          stations.forEach((st: any) => {
+            // 后端坐标为 WGS84, 转换为 GCJ02 后投影到底图
+            const [gcjLng, gcjLat] = wgs84ToGcj02(st.lng, st.lat);
+            const feat = new Feature({
+              geometry: new Point(fromLonLat([gcjLng, gcjLat])),
+              load: st.load,
+              level: st.level,
+              stationId: st.id,
+            });
+            heatmapSourceRef.current!.addFeature(feat);
+          });
+          heatmapLayerRef.current?.setVisible(true);
+        }
+      })
+      .catch(e => console.error("热力图加载失败:", e));
+  }, [showHeatmap]);
+
+  // =========================================================================
+  // 阶段三 任务 3.3: 公众反馈热力图 - 按类型/评分筛选渲染
+  // =========================================================================
+  useEffect(() => {
+    const layer = feedbackHeatmapLayerRef.current;
+    const source = feedbackHeatmapSourceRef.current;
+    if (!layer || !source) return;
+
+    if (!showFeedbackHeatmap) {
+      layer.setVisible(false);
+      return;
+    }
+
+    // 从缓存的反馈数据中按筛选条件渲染
+    const all = feedbackDataRef.current || [];
+    const filtered = all.filter(f => {
+      // 类型筛选
+      if (feedbackHeatmapType !== "all" && f.type !== feedbackHeatmapType) return false;
+      // 评分筛选 (仅评价类型有 rating, 0 = 不限)
+      if (feedbackHeatmapRating > 0) {
+        if (f.type !== "evaluation") return false;
+        if (Number(f.rating || 0) < feedbackHeatmapRating) return false;
+      }
+      return true;
+    });
+
+    source.clear();
+    filtered.forEach(f => {
+      // 后端坐标为 WGS84, 转换为 GCJ02 后投影到底图
+      const [gcjLng, gcjLat] = wgs84ToGcj02(Number(f.lng), Number(f.lat));
+      const feat = new Feature({
+        geometry: new Point(fromLonLat([gcjLng, gcjLat])),
+        type: f.type,
+        rating: f.rating,
+        description: f.description,
+      });
+      source.addFeature(feat);
+    });
+    layer.setVisible(true);
+  }, [showFeedbackHeatmap, feedbackHeatmapType, feedbackHeatmapRating]);
+
+  // =========================================================================
+  // 阶段二 任务 2.3.2: ROI 估算按钮 - 打开弹窗 (携带当前选址参数)
+  // =========================================================================
+  const runRoiEstimate = () => {
+    if (!siteMetrics) {
+      showToast("请先放置虚拟站点进行选址评估", "info");
+      return;
+    }
+    setRoiInitParams({
+      fastChargers: 4,
+      slowChargers: 4,
+      coveredPopulation: siteMetrics.covered_population || 0,
+    });
+    setRoiDialogOpen(true);
+  };
+
+  // =========================================================================
+  // 阶段二 任务 2.2.2: 深度对比 - 打开对比弹窗 (需选中 2 个方案)
+  // =========================================================================
+  const runCompareSchemes = () => {
+    if (compareSchemes.length !== 2) {
+      showToast("请选择 2 个方案进行深度对比", "info");
+      return;
+    }
+    setCompareDialogOpen(true);
+  };
+
+  // =========================================================================
+  // 阶段二 任务 2.4.2: 竞争态势分析按钮
+  // =========================================================================
+  const runCompetitionAnalysis = () => {
+    setCompetitionDialogOpen(true);
+  };
+
+  // =========================================================================
+  // 阶段二 任务 2.5.2: 缺口预测按钮
+  // =========================================================================
+  const runGapPrediction = () => {
+    setGapDialogOpen(true);
+  };
+
+  // =========================================================================
+  // 阶段二 任务 2.4.3: 在空白市场选址 (跳转选址 Tab + 放置虚拟站点)
+  // =========================================================================
+  const placeAtBlankMarket = (lng: number, lat: number) => {
+    setActiveTab("site");
+    setTimeout(() => placeVirtualStation(lng, lat), 100);
+    showToast("已跳转选址决策, 已在该空白市场放置虚拟站点", "success");
   };
 
   // =========================================================================
@@ -1532,22 +2759,100 @@ export default function App() {
   // ECharts: 覆盖分析看板
   // =========================================================================
   useEffect(() => {
-    if (!coverageChartRef.current || districtStats.length === 0) return;
-    const chart = echarts.init(coverageChartRef.current);
+    if (!coverageChartRef.current || districtStats.length === 0 || rightPanelTab !== "charts") return;
+    const container = coverageChartRef.current;
+    const chart = echarts.init(container);
     chart.setOption({
       backgroundColor: "transparent",
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-      legend: { data: ["已覆盖", "盲区"], textStyle: { color: "#6B7280" }, top: 0 },
-      grid: { left: "3%", right: "4%", bottom: "3%", containLabel: true },
-      xAxis: { type: "category", data: districtStats.map(d => d.district), axisLabel: { color: "#6B7280" } },
-      yAxis: { type: "value", axisLabel: { color: "#9CA3AF" }, splitLine: { lineStyle: { color: "#E5E7EB" } } },
+      legend: { data: ["已覆盖", "盲区"], textStyle: { color: "#6B7280", fontSize: 9 }, top: 0, itemWidth: 10, itemHeight: 8 },
+      grid: { left: "2%", right: "3%", bottom: "2%", top: 24, containLabel: true },
+      xAxis: { type: "category", data: districtStats.map(d => d.district), axisLabel: { color: "#6B7280", fontSize: 9, rotate: 25 } },
+      yAxis: { type: "value", axisLabel: { color: "#9CA3AF", fontSize: 9 }, splitLine: { lineStyle: { color: "#E5E7EB" } } },
       series: [
         { name: "已覆盖", type: "bar", stack: "total", data: districtStats.map(d => d.covered), itemStyle: { color: "#00C896" } },
         { name: "盲区", type: "bar", stack: "total", data: districtStats.map(d => d.blindSpot), itemStyle: { color: "#F56C6C" } },
       ],
     });
-    return () => chart.dispose();
-  }, [districtStats]);
+    // 确保 flex 布局计算完成后再 resize
+    const raf = requestAnimationFrame(() => chart.resize());
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(container);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); chart.dispose(); };
+  }, [districtStats, rightPanelTab]);
+
+  // 阶段三 任务 3.3.1: 覆盖率分级饼图 (5 级色阶, 显示各分级社区数占比)
+  useEffect(() => {
+    if (!coveragePieChartRef.current || coverageLevels.length === 0 || rightPanelTab !== "charts") return;
+    // 折叠时不渲染, 避免隐藏后尺寸为 0 导致 ECharts 报错
+    if (coveragePieCollapsed) return;
+    const container = coveragePieChartRef.current;
+    const chart = echarts.init(container);
+    // 分级色: 极差红 / 较差橙 / 一般黄 / 良好浅绿 / 优秀深绿
+    const levelColorMap: Record<string, string> = {
+      "极差": "#EF4444",
+      "较差": "#F59E0B",
+      "一般": "#FACC15",
+      "良好": "#84CC16",
+      "优秀": "#10B981",
+    };
+    chart.setOption({
+      backgroundColor: "transparent",
+      tooltip: { trigger: "item", formatter: "{b}: {c} 个社区 ({d}%)" },
+      legend: { bottom: 0, textStyle: { color: "#6B7280", fontSize: 9 }, itemWidth: 10, itemHeight: 8 },
+      series: [{
+        type: "pie",
+        radius: ["30%", "55%"],
+        center: ["50%", "40%"],
+        avoidLabelOverlap: true,
+        label: { show: true, formatter: "{b}\n{c}", fontSize: 9, color: "#6B7280" },
+        data: coverageLevels.map(l => ({
+          name: l.level,
+          value: l.count,
+          itemStyle: { color: levelColorMap[l.level] || "#9CA3AF" },
+        })),
+      }],
+    });
+    const raf = requestAnimationFrame(() => chart.resize());
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(container);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); chart.dispose(); };
+  }, [coverageLevels, coveragePieCollapsed, rightPanelTab]);
+
+  // 阶段三 任务 3.3.2: 充电站效率 Top10 横向柱图 (按覆盖人口排序)
+  useEffect(() => {
+    if (!stationEffChartRef.current || stationEfficiency.length === 0 || rightPanelTab !== "charts") return;
+    // 折叠时不渲染
+    if (stationEffCollapsed) return;
+    const container = stationEffChartRef.current;
+    const chart = echarts.init(container);
+    const top10 = stationEfficiency.slice(0, 10);
+    chart.setOption({
+      backgroundColor: "transparent",
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+      grid: { left: "2%", right: "8%", bottom: "2%", top: 8, containLabel: true },
+      xAxis: { type: "value", axisLabel: { color: "#9CA3AF", fontSize: 9 }, splitLine: { lineStyle: { color: "#E5E7EB" } } },
+      yAxis: {
+        type: "category",
+        // 反转使 Top1 显示在最上方
+        data: top10.map(s => s.stationName).reverse(),
+        axisLabel: { color: "#6B7280", fontSize: 9 },
+        inverse: false,
+      },
+      series: [{
+        name: "覆盖人口",
+        type: "bar",
+        // 同步反转数据以匹配 yAxis 顺序
+        data: top10.map(s => s.coveredPopulation).reverse(),
+        itemStyle: { color: "#00C896" },
+        label: { show: true, position: "right", color: "#6B7280", fontSize: 9 },
+      }],
+    });
+    const raf = requestAnimationFrame(() => chart.resize());
+    const ro = new ResizeObserver(() => chart.resize());
+    ro.observe(container);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); chart.dispose(); };
+  }, [stationEfficiency, stationEffCollapsed, rightPanelTab]);
 
   // ECharts: 选址评估实时指标
   useEffect(() => {
@@ -1643,6 +2948,51 @@ export default function App() {
       .catch(() => setAdminSchemes([]));
   }, [authToken]);
 
+  // 阶段五 等时圈: 拉取预计算进度 + 触发预计算 + 轮询
+  const fetchIsochroneProgress = useCallback(() => {
+    if (!authToken) return;
+    authFetch("/api/v1/admin/isochrone-progress")
+      .then(r => r.json())
+      .then(j => { if (j.success) setIsochroneProgress(j.data); })
+      .catch(() => {});
+  }, [authToken]);
+
+  const triggerIsochronePrecompute = useCallback(async (force: boolean = false) => {
+    if (!authToken) return;
+    try {
+      const r = await authFetch("/api/v1/admin/precompute-isochrones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force }),
+      });
+      const j = await r.json();
+      if (j.success) {
+        showToastCtx?.(j.message || `已触发 ${force ? "全量" : "增量"}预计算`, "success");
+        setIsochronePolling(true);
+      } else {
+        showToastCtx?.(j.message || "触发失败", "warning");
+      }
+    } catch (e: any) {
+      showToastCtx?.("触发失败: " + e.message, "error");
+    }
+  }, [authToken, showToastCtx]);
+
+  // 轮询进度: 进入 admin/isochrone Tab 或已有任务在跑时, 每 3 秒拉一次
+  useEffect(() => {
+    if (activeTab !== "admin" || adminTab !== "isochrone") return;
+    fetchIsochroneProgress();
+    const shouldPoll = isochronePolling || isochroneProgress?.running;
+    if (!shouldPoll) return;
+    const timer = window.setInterval(() => {
+      fetchIsochroneProgress();
+      // 任务完成后停止轮询
+      if (isochroneProgress && !isochroneProgress.running) {
+        setIsochronePolling(false);
+      }
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [activeTab, adminTab, isochronePolling, isochroneProgress?.running, fetchIsochroneProgress]);
+
   useEffect(() => {
     if (activeTab === "admin" && authToken) {
       loadAdminData();
@@ -1650,11 +3000,11 @@ export default function App() {
   }, [activeTab, authToken, loadAdminData]);
 
   // =========================================================================
-  // 渲染
+  // 阶段四 任务 4.1: 全局快捷键系统
+  // 1/2/3/4 切换 Tab, M/A/C/Q/G/P 触发工具, Ctrl+K 命令面板, Esc 关闭, Ctrl+/ 帮助
   // =========================================================================
+  // 所有子系统定义 (提前声明, 供快捷键 useEffect 使用)
   const tabIcons: Record<string, any> = { Map: MapIcon, Radar, Target, MessageSquare, Bot, Settings };
-
-  // 所有子系统定义
   const allTabs = [
     { id: "map" as const, label: "地图查询", icon: MapIcon },
     { id: "coverage" as const, label: "覆盖分析", icon: Radar },
@@ -1664,97 +3014,317 @@ export default function App() {
   // 根据角色过滤可见 Tab
   const visibleTabs = allTabs.filter(t => allowedTabs.includes(t.id));
 
+  useEffect(() => {
+    if (!currentUser) return;
+    const handler = (e: KeyboardEvent) => {
+      // 输入框/文本域聚焦时不响应快捷键
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        // 仅响应 Esc 和 Ctrl 组合键
+        if (e.key !== "Escape" && !e.ctrlKey && !e.metaKey) return;
+      }
+
+      // Ctrl+K / Cmd+K: 命令面板
+      if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setCommandPaletteOpen(prev => !prev);
+        return;
+      }
+      // Ctrl+/ 或 Ctrl+?: 快捷键帮助
+      if ((e.ctrlKey || e.metaKey) && (e.key === "/" || e.key === "?")) {
+        e.preventDefault();
+        setShortcutsHelpOpen(prev => !prev);
+        return;
+      }
+      // Esc: 关闭所有弹窗
+      if (e.key === "Escape") {
+        setCommandPaletteOpen(false);
+        setShortcutsHelpOpen(false);
+        // 同时关闭其他弹窗 (ROI/对比/竞争/缺口/打印)
+        setRoiDialogOpen(false);
+        setCompetitionDialogOpen(false);
+        setGapDialogOpen(false);
+        setCompareDialogOpen(false);
+        setPrintDialogOpen(false);
+        return;
+      }
+
+      // 以下快捷键在弹窗打开时不响应
+      if (commandPaletteOpen || shortcutsHelpOpen || roiDialogOpen || competitionDialogOpen || gapDialogOpen || compareDialogOpen || printDialogOpen) return;
+
+      // 1/2/3/4 切换 Tab (检查角色权限)
+      if (e.key === "1" || e.key === "2" || e.key === "3" || e.key === "4") {
+        const tabMap: Record<string, SubsystemTab> = { "1": "map", "2": "coverage", "3": "site", "4": "admin" };
+        const target = tabMap[e.key];
+        if (target && allowedTabs.includes(target)) {
+          e.preventDefault();
+          setActiveTab(target);
+          showToastCtx(`已切换到 ${allTabs.find(t => t.id === target)?.label}`, "info");
+        }
+        return;
+      }
+
+      // 地图工具快捷键 (仅地图 Tab 下生效)
+      if (activeTab !== "map") return;
+
+      const key = e.key.toLowerCase();
+      const toolMap: Record<string, MapTool> = {
+        m: "measure-distance",
+        a: "measure-area",
+        c: "pick-coordinate",
+        q: "query-rectangle",
+        g: "query-polygon",
+      };
+      if (toolMap[key]) {
+        e.preventDefault();
+        handleToolChange(toolMap[key]);
+        showToastCtx(`已激活: ${({ m: "测距", a: "测面", c: "坐标拾取", q: "框选查询", g: "多边形查询" } as any)[key]}`, "info");
+        return;
+      }
+      // P: 打印
+      if (key === "p") {
+        e.preventDefault();
+        setPrintDialogOpen(true);
+        return;
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [currentUser, activeTab, allowedTabs, commandPaletteOpen, shortcutsHelpOpen, roiDialogOpen, competitionDialogOpen, gapDialogOpen, compareDialogOpen, printDialogOpen, handleToolChange, showToastCtx, allTabs]);
+
+  // 社区详情弹窗: 计算距离社区最近的充电站 Top5 (阶段二 任务 2.5.3)
+  const nearbyStations = useMemo(() => {
+    if (!communityDetail) return [];
+    // 从 communitySource 取社区 feature 质心
+    const commFeat = communitySourceRef.current?.getFeatureById(communityDetail.id);
+    if (!commFeat) return [];
+    const geom = commFeat.getGeometry();
+    if (!geom || !geom.getExtent) return [];
+    const ext = geom.getExtent();
+    const center3857: [number, number] = [(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2];
+    const centerLonLat = toLonLat(center3857);
+    const from = turf.point(centerLonLat);
+    // 遍历所有充电站, 计算距离
+    const stations = stationSourceRef.current?.getFeatures() || [];
+    const ranked = stations.map((f: any) => {
+      const g = f.getGeometry();
+      if (!g) return null;
+      const coord = toLonLat(g.getCoordinates());
+      const to = turf.point(coord);
+      const dist = turf.distance(from, to, { units: "kilometers" });
+      return {
+        name: f.get("name") || "未知站点",
+        brand: f.get("brand") || "其他品牌",
+        fastChargers: f.get("fastChargers") || 0,
+        slowChargers: f.get("slowChargers") || 0,
+        distance: dist,
+      };
+    }).filter(Boolean) as { name: string; brand: string; fastChargers: number; slowChargers: number; distance: number }[];
+    ranked.sort((a, b) => a.distance - b.distance);
+    return ranked.slice(0, 5);
+  }, [communityDetail]);
+
+  // 命令面板: 命令执行回调 (阶段四 任务 4.2)
+  const handleCommandExecute = useCallback((cmd: any) => {
+    switch (cmd.id) {
+      case "tab-map": setActiveTab("map"); break;
+      case "tab-coverage": if (allowedTabs.includes("coverage")) setActiveTab("coverage"); break;
+      case "tab-site": if (allowedTabs.includes("site")) setActiveTab("site"); break;
+      case "tab-admin": if (allowedTabs.includes("admin")) setActiveTab("admin"); break;
+      case "tool-measure-distance": handleToolChange("measure-distance"); break;
+      case "tool-measure-area": handleToolChange("measure-area"); break;
+      case "tool-pick-coordinate": handleToolChange("pick-coordinate"); break;
+      case "tool-query-rectangle": handleToolChange("query-rectangle"); break;
+      case "tool-query-polygon": handleToolChange("query-polygon"); break;
+      case "tool-print": setPrintDialogOpen(true); break;
+      case "clear-measurements": handleClearMeasurements(); break;
+      case "open-dashboard": setShowDashboard(true); break;
+      case "open-roi": if (siteMetrics) setRoiDialogOpen(true); else showToastCtx("请先放置虚拟站点", "warning"); break;
+      case "open-competition": setCompetitionDialogOpen(true); break;
+      case "open-gap": setGapDialogOpen(true); break;
+      case "toggle-theme": toggleTheme(); break;
+    }
+  }, [allowedTabs, handleToolChange, handleClearMeasurements, siteMetrics, toggleTheme, showToastCtx]);
+
+  // =========================================================================
+  // 渲染
+  // =========================================================================
+
   // -------------------------------------------------------------------------
   // 登录页面
   // -------------------------------------------------------------------------
   if (!currentUser) {
     return (
-      <div className="min-h-screen flex items-center justify-center font-sans p-4 relative overflow-hidden"
-        style={{ background: "linear-gradient(135deg, #0F172A 0%, #1E293B 50%, #134E4A 100%)" }}>
-        {/* 径向光晕装饰 */}
-        <div className="absolute inset-0 overflow-hidden pointer-events-none">
-          <div className="absolute top-1/4 left-1/4 w-96 h-96 rounded-full blur-3xl" style={{ background: "rgba(0,200,150,0.15)" }}></div>
-          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 rounded-full blur-3xl" style={{ background: "rgba(56,189,248,0.12)" }}></div>
-        </div>
+      <div
+        className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden no-select"
+        style={{ background: "#09090B", fontFamily: "var(--font-sans)" }}
+      >
+        {/* 极简网格背景 - 替代陈词滥调的径向光晕 */}
+        <div
+          className="absolute inset-0 opacity-[0.04] pointer-events-none"
+          style={{
+            backgroundImage:
+              "linear-gradient(rgba(255,255,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.5) 1px, transparent 1px)",
+            backgroundSize: "48px 48px",
+          }}
+        />
+        {/* 单一品牌色光斑 - 仅一处, 克制 */}
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[640px] h-[640px] rounded-full pointer-events-none"
+          style={{
+            background:
+              "radial-gradient(circle, rgba(0,200,150,0.08) 0%, transparent 60%)",
+          }}
+        />
 
-        <div className="relative w-full max-w-[420px]">
-          {/* Logo + 品牌名 */}
-          <div className="text-center mb-6">
-            <div className="inline-flex p-2.5 rounded-2xl shadow-lg mb-3"
-              style={{ background: "linear-gradient(135deg, #00C896 0%, #38BDF8 100%)" }}>
-              <Zap className="w-10 h-10 text-white" />
+        <div className="relative w-full max-w-[440px] animate-scale-in">
+          {/* Logo + 品牌标识 - 顶部对齐, 不居中 */}
+          <div className="mb-8 flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+              style={{
+                background: "#18181B",
+                border: "1px solid #27272A",
+              }}
+            >
+              <Zap className="w-5 h-5" style={{ color: "var(--color-brand)" }} />
             </div>
-            <h1 className="text-[28px] font-semibold bg-clip-text text-transparent"
-              style={{ backgroundImage: "linear-gradient(90deg, #00C896 0%, #38BDF8 100%)" }}>GeoPlan</h1>
-            <p className="text-[13px] text-slate-400 mt-1"></p>
+            <div className="flex-1">
+              <h1 className="text-[19px] font-semibold text-white tracking-tight leading-none">
+                GeoPlan
+              </h1>
+              <p className="text-[11px] text-zinc-500 mt-1">
+                新能源充电设施规划与决策支持平台
+              </p>
+            </div>
           </div>
 
-          {/* 登录卡片 */}
-          <div className="bg-white rounded-2xl p-8 shadow-2xl" style={{ boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
-            <h2 className="text-base font-semibold text-slate-800 mb-5 flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4" style={{ color: "#00C896" }} /> 用户登录
-            </h2>
+          {/* 登录卡片 - Linear 风: 极轻边框 + 极深阴影 */}
+          <div
+            className="bg-white rounded-xl p-7"
+            style={{
+              border: "1px solid #E4E4E7",
+              boxShadow:
+                "0 1px 2px rgba(0,0,0,0.04), 0 8px 32px -4px rgba(0,0,0,0.12), 0 16px 48px -8px rgba(0,0,0,0.08)",
+            }}
+          >
+            {/* 卡片标题 + 状态指示 */}
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h2 className="text-[17px] font-semibold text-zinc-900 tracking-tight">
+                  登录账户
+                </h2>
+                <p className="text-[12px] text-zinc-500 mt-0.5">
+                  徐州新能源充电设施规划平台
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-status-pulse" />
+                <span className="text-[10px] text-zinc-500">
+                  服务正常
+                </span>
+              </div>
+            </div>
 
             <div className="space-y-4">
               <div>
-                <label className="text-[13px] text-slate-600 font-medium block mb-1.5">用户名</label>
-                <input type="text" value={loginForm.username}
+                <label className="text-[11px] text-zinc-600 font-medium block mb-1.5">
+                  用户名
+                </label>
+                <input
+                  type="text"
+                  value={loginForm.username}
                   onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                  placeholder="请输入用户名"
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none transition-all"
-                  style={{ borderRadius: "4px" }}
-                  onFocus={(e) => { e.target.style.borderColor = "#00C896"; e.target.style.boxShadow = "0 0 0 2px rgba(0,200,150,0.2)"; }}
-                  onBlur={(e) => { e.target.style.borderColor = "#E5E7EB"; e.target.style.boxShadow = "none"; }}
+                  placeholder="输入用户名"
+                  className="input-sys w-full text-sm px-3 py-2.5 text-zinc-900"
                 />
               </div>
               <div>
-                <label className="text-[13px] text-slate-600 font-medium block mb-1.5">密码</label>
-                <input type="password" value={loginForm.password}
+                <label className="text-[11px] text-zinc-600 font-medium block mb-1.5">
+                  密码
+                </label>
+                <input
+                  type="password"
+                  value={loginForm.password}
                   onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
                   onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                  placeholder="请输入密码"
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-slate-800 placeholder-slate-400 focus:outline-none transition-all"
-                  style={{ borderRadius: "4px" }}
-                  onFocus={(e) => { e.target.style.borderColor = "#00C896"; e.target.style.boxShadow = "0 0 0 2px rgba(0,200,150,0.2)"; }}
-                  onBlur={(e) => { e.target.style.borderColor = "#E5E7EB"; e.target.style.boxShadow = "none"; }}
+                  placeholder="输入密码"
+                  className="input-sys w-full text-sm px-3 py-2.5 text-zinc-900"
                 />
               </div>
 
               {loginError && (
-                <div className="text-[12px] text-red-500 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-                  {loginError}
+                <div
+                  className="text-[12px] rounded-md px-3 py-2 flex items-start gap-2 animate-fade-in"
+                  style={{
+                    background: "#FEF2F2",
+                    border: "1px solid #FECACA",
+                    color: "#B91C1C",
+                  }}
+                >
+                  <span className="text-red-500 mt-0.5">⚠</span>
+                  <span className="flex-1">{loginError}</span>
                 </div>
               )}
 
-              <button onClick={handleLogin} disabled={loginLoading}
-                className="w-full py-2.5 rounded-lg text-sm font-semibold text-white transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                style={{ background: "linear-gradient(90deg, #00C896 0%, #4FD4B1 100%)", borderRadius: "4px" }}
-                onMouseEnter={(e) => { if (!loginLoading) e.currentTarget.style.background = "linear-gradient(90deg, #4FD4B1 0%, #00C896 100%)"; }}
-                onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.98)"; }}
-                onMouseUp={(e) => { e.currentTarget.style.transform = "scale(1)"; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = "linear-gradient(90deg, #00C896 0%, #4FD4B1 100%)"; e.currentTarget.style.transform = "scale(1)"; }}
+              <button
+                onClick={handleLogin}
+                disabled={loginLoading}
+                className="btn-brand w-full py-2.5 rounded-md text-[13px] font-semibold flex items-center justify-center gap-2"
+                style={{ borderRadius: "var(--radius-sm)" }}
               >
-                {loginLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4 rotate-180" />}
-                {loginLoading ? "登录中..." : "登录系统"}
+                {loginLoading ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>验证中...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogOut className="w-3.5 h-3.5 rotate-180" />
+                    <span>登录系统</span>
+                    <span className="text-[10px] opacity-60 ml-1 font-mono">↵</span>
+                  </>
+                )}
               </button>
             </div>
 
-            {/* 演示账号快捷登录 */}
-            <div className="mt-6 pt-5 border-t border-slate-100">
-              <p className="text-[12px] text-slate-500 font-medium mb-2.5">演示账号 (点击快速填充)</p>
-              <div className="space-y-2">
+            {/* 演示账号 */}
+            <div className="mt-6 pt-5 border-t border-zinc-100">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-[11px] text-zinc-500">
+                  演示账号
+                </p>
+                <span className="text-[10px] text-zinc-400">点击填充</span>
+              </div>
+              <div className="space-y-1.5">
                 {DEMO_ACCOUNTS.map(acc => {
                   const cfg = ROLE_CONFIG[acc.role];
                   return (
-                    <button key={acc.username} onClick={() => fillDemoAccount(acc.username, acc.password)}
-                      className="w-full flex items-center gap-2.5 p-2.5 bg-slate-50 border border-slate-200 rounded-lg hover:border-slate-300 text-left transition-all">
-                      <span className="w-2 h-2 rounded-full" style={{ background: cfg.color }}></span>
-                      <div className="flex-1">
-                        <p className="text-[13px] text-slate-700 font-semibold">{acc.username}</p>
-                        <p className="text-[11px] text-slate-400">{cfg.desc}</p>
+                    <button
+                      key={acc.username}
+                      onClick={() => fillDemoAccount(acc.username, acc.password)}
+                      className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-all hover:bg-zinc-50"
+                      style={{ border: "1px solid var(--color-muted)" }}
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ background: cfg.color }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[12px] text-zinc-800 font-medium truncate font-num">
+                          {acc.username}
+                        </p>
+                        <p className="text-[10px] text-zinc-500 truncate">{cfg.desc}</p>
                       </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded font-mono" style={{ background: cfg.color + "15", color: cfg.color }}>
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                        style={{
+                          background: cfg.color + "12",
+                          color: cfg.color,
+                          border: "1px solid " + cfg.color + "30",
+                        }}
+                      >
                         {cfg.label}
                       </span>
                     </button>
@@ -1763,155 +3333,230 @@ export default function App() {
               </div>
             </div>
           </div>
+
+          {/* 底部信息 */}
+          <div className="mt-6 flex items-center justify-between text-[10px] text-zinc-600">
+            <span>© 2026 GeoPlan · 徐州</span>
+            <div className="flex items-center gap-3">
+              <span className="flex items-center gap-1">
+                <ShieldCheck className="w-3 h-3" />
+                <span>安全连接</span>
+              </span>
+              <span>·</span>
+              <span>空间数据库</span>
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="h-screen flex font-sans overflow-hidden" style={{ background: "#F5F7FA" }}>
-      {/* 侧边栏收纳按钮呼吸动画 + AI高亮呼吸动画 */}
-      <style>{`
-        @keyframes sidebarPulse {
-          0%, 100% { box-shadow: 0 2px 8px rgba(0,0,0,0.3), 0 0 6px rgba(56,189,248,0.15); }
-          50% { box-shadow: 0 2px 12px rgba(0,0,0,0.4), 0 0 12px rgba(56,189,248,0.35); }
-        }
-        @keyframes aiHighlightPulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.6; transform: scale(1.3); }
-        }
-        .ai-station-overlay {
-          position: absolute !important;
-          background: transparent;
-          pointer-events: none;
-          z-index: 10;
-        }
-        .ai-station-overlay::after {
-          content: '';
-          position: absolute;
-          bottom: -8px;
-          left: 50%;
-          transform: translateX(-50%);
-          width: 0;
-          height: 0;
-          border-left: 6px solid transparent;
-          border-right: 6px solid transparent;
-          border-top: 6px solid white;
-          filter: drop-shadow(0 2px 2px rgba(0,0,0,0.1));
-        }
-      `}</style>
-      {/* ===== 侧边栏 (可折叠) ===== */}
-      <aside className={`${sidebarCollapsed ? "w-[64px]" : "w-[220px]"} shrink-0 flex flex-col text-slate-300 relative overflow-hidden`}
+    <div
+      className="h-screen flex overflow-hidden no-select"
+      style={{ background: "var(--color-canvas)", fontFamily: "var(--font-sans)" }}
+    >
+      {/* 阶段三 任务 3.4.2: 顶部固定进度条 (覆盖分析中显示, 0-100%) */}
+      {coverageProgress > 0 && (
+        <div
+          className="fixed top-0 left-0 right-0 h-1 z-50"
+          style={{ background: "transparent" }}
+        >
+          <div
+            className="h-full transition-all duration-200 ease-out"
+            style={{
+              width: `${coverageProgress}%`,
+              background: "var(--color-brand)",
+            }}
+          />
+        </div>
+      )}
+      {/* ===== 侧边栏 (GIS 指挥甲板: 3D 透视 + 沉浸式深色) ===== */}
+      <aside
+        className={`${sidebarCollapsed ? "w-[56px]" : "w-[220px]"} shrink-0 flex flex-col relative overflow-hidden sidebar-scroll sidebar-auto-collapse mobile-sidebar-drawer ${mobileSidebarOpen ? "mobile-open" : ""} animate-panel-enter`}
         style={{
-          background: "linear-gradient(180deg, #0F172A 0%, #1E293B 100%)",
-          transition: `width 0.45s cubic-bezier(0.34, 1.56, 0.64, 1)`,
-        }}>
-        {/* Logo 区 */}
-        <div className="flex items-center"
+          background: "linear-gradient(180deg, #09090B 0%, #0E0E11 100%)",
+          borderRight: "1px solid rgba(255,255,255,0.06)",
+          transition: "width var(--duration-slow) var(--ease-spring)",
+          perspective: "1200px",
+          transformStyle: "preserve-3d",
+        }}
+      >
+        {/* 顶部微光效果 */}
+        <div className="absolute top-0 left-0 right-0 h-px pointer-events-none"
+          style={{ background: "linear-gradient(90deg, transparent, rgba(0,200,150,0.3), transparent)" }}
+        />
+
+        {/* Logo 区 - 指挥甲板风格: 3D 徽章 + 光晕 */}
+        <div
+          className="flex items-center shrink-0 relative"
           style={{
-            height: sidebarCollapsed ? "auto" : "60px",
-            paddingTop: sidebarCollapsed ? "16px" : 0,
-            paddingBottom: sidebarCollapsed ? "4px" : 0,
-            paddingLeft: sidebarCollapsed ? "12px" : "20px",
-            paddingRight: sidebarCollapsed ? "12px" : "16px",
+            height: 60,
+            padding: sidebarCollapsed ? "0 8px" : "0 16px",
             justifyContent: sidebarCollapsed ? "center" : "flex-start",
-            borderBottom: sidebarCollapsed ? "none" : "1px solid rgba(255,255,255,0.05)",
-            transition: "padding 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), height 0.45s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            position: "relative",
-          }}>
-          {/* 图标 */}
-          <div onClick={sidebarCollapsed ? toggleSidebar : undefined}
-            onMouseEnter={() => { if (sidebarCollapsed) { const el = document.getElementById("sidebar-icon"); if (el) el.style.transform = "scale(1.1)"; } }}
-            onMouseLeave={() => { if (sidebarCollapsed) { const el = document.getElementById("sidebar-icon"); if (el) el.style.transform = "scale(1)"; } }}
-            className="p-1.5 rounded-lg shadow-lg cursor-pointer transition-transform duration-300 shrink-0"
-            id="sidebar-icon"
+            borderBottom: "1px solid rgba(255,255,255,0.06)",
+          }}
+        >
+          <div
+            onClick={sidebarCollapsed ? toggleSidebar : undefined}
+            className="w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer shrink-0 transition-all animate-glow-pulse"
             style={{
-              background: "linear-gradient(135deg, #00C896 0%, #38BDF8 100%)",
-              transition: sidebarCollapsed ? "transform 0.3s ease, box-shadow 0.3s ease" : "none",
-              boxShadow: sidebarCollapsed ? "0 4px 15px rgba(0,200,150,0.3)" : "0 4px 6px rgba(0,0,0,0.3)",
-              width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "linear-gradient(135deg, #18181B, #1F1F23)",
+              border: "1px solid rgba(0,200,150,0.25)",
+              boxShadow: "0 0 12px rgba(0,200,150,0.15), inset 0 1px 0 rgba(255,255,255,0.05)",
             }}
-            title={sidebarCollapsed ? "展开侧边栏" : "GeoPlan"}>
-            <Zap className="text-white" style={{ width: 20, height: 20 }} />
-          </div>
-          {/* GeoPlan 标题 */}
-          <div style={{
-            marginLeft: "12px",
-            flex: 1,
-            opacity: sidebarCollapsed ? 0 : 1,
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            transition: "opacity 0.35s ease, width 0.45s cubic-bezier(0.34, 1.56, 0.64, 1)",
-            width: sidebarCollapsed ? 0 : "auto",
-            pointerEvents: sidebarCollapsed ? "none" : "auto",
-          }}>
-            <span className="text-[18px] font-semibold bg-clip-text text-transparent whitespace-nowrap"
-              style={{ backgroundImage: "linear-gradient(90deg, #00C896 0%, #38BDF8 100%)" }}>GeoPlan</span>
-            <p className="text-[10px] text-slate-500 whitespace-nowrap">充电设施规划平台</p>
-          </div>
-          {/* 收纳按钮 - 在文字最右侧，吸入到图标中心 */}
-          <button onClick={toggleSidebar}
-            style={{
-              position: "absolute",
-              top: "50%",
-              left: sidebarCollapsed ? "50%" : "calc(100% - 26px)",
-              transform: `translate(-50%, -50%) scale(${sidebarCollapsed ? 0 : 1})`,
-              opacity: sidebarCollapsed ? 0 : 1,
-              pointerEvents: sidebarCollapsed ? "none" : "auto",
-              transition: "left 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease",
-              width: 20, height: 20,
-              borderRadius: "50%",
-              border: "1px solid rgba(71,85,105,0.8)",
-              background: "linear-gradient(135deg, #334155, #1E293B)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.3), 0 0 6px rgba(56,189,248,0.15)",
-              animation: sidebarCollapsed ? "none" : "sidebarPulse 2.5s ease-in-out infinite",
+            title={sidebarCollapsed ? "展开侧边栏" : "GeoPlan"}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.transform = "scale(1.08) rotateY(-5deg)";
+              e.currentTarget.style.borderColor = "var(--color-brand)";
             }}
-            title="收起侧边栏">
-            <ChevronLeft style={{ width: 12, height: 12, color: "white" }} />
-          </button>
+            onMouseLeave={(e) => {
+              e.currentTarget.style.transform = "scale(1) rotateY(0deg)";
+              e.currentTarget.style.borderColor = "rgba(0,200,150,0.25)";
+            }}
+          >
+            <Zap className="w-4 h-4" style={{ color: "var(--color-brand)" }} />
+          </div>
+          {!sidebarCollapsed && (
+            <div className="ml-3 flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="text-[15px] font-bold text-white tracking-tight" style={{ fontFamily: "var(--font-mono)" }}>GeoPlan</span>
+                <span className="text-[9px] px-1 py-0.5 rounded" style={{ background: "rgba(0,200,150,0.12)", color: "var(--color-brand)", border: "1px solid rgba(0,200,150,0.2)" }}>PRO</span>
+              </div>
+              <p className="text-[10px] text-zinc-600 truncate mt-0.5">
+                新能源充电设施规划平台
+              </p>
+            </div>
+          )}
+          {!sidebarCollapsed && (
+            <button
+              onClick={toggleSidebar}
+              className="w-6 h-6 rounded flex items-center justify-center transition-all hover:bg-zinc-800/80 text-zinc-600 hover:text-zinc-300"
+              title="收起侧边栏"
+              style={{ border: "1px solid transparent" }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.08)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+            >
+              <ChevronLeft className="w-3 h-3" />
+            </button>
+          )}
         </div>
 
-        {/* 导航菜单 */}
-        <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
+        {/* 导航菜单 - 指挥甲板: 3D hover + 磁吸效果 */}
+        <nav className="flex-1 py-4 px-2 space-y-1 overflow-y-auto sidebar-scroll">
           {!sidebarCollapsed && (
-            <p className="text-[10px] text-slate-500 font-bold uppercase px-2 mb-2 tracking-wider">功能菜单</p>
+            <p className="text-[9px] text-zinc-700 px-2 mb-2 uppercase tracking-[0.15em] font-mono">
+              功能导航
+            </p>
           )}
-          {visibleTabs.map(tab => {
+          {visibleTabs.map((tab, idx) => {
             const Icon = tab.icon;
             const active = activeTab === tab.id;
             return (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
                 title={sidebarCollapsed ? tab.label : undefined}
-                className={`w-full flex items-center ${sidebarCollapsed ? "justify-center px-0" : "gap-2.5 px-3"} py-2 rounded-lg text-[13px] font-medium transition-all ${
-                  active ? "text-white" : "text-slate-400 hover:text-slate-800 hover:bg-white/5"
+                className={`group w-full flex items-center ${
+                  sidebarCollapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+                } py-2 rounded-lg text-[12.5px] font-medium transition-all duration-200 ${
+                  active ? "text-white" : "text-zinc-500 hover:text-zinc-300"
                 }`}
-                style={active ? { background: "rgba(0,200,150,0.12)", color: "#4FD4B1" } : {}}
+                style={{
+                  background: active ? "linear-gradient(90deg, rgba(0,200,150,0.12), transparent)" : "transparent",
+                  borderLeft: active ? "2px solid var(--color-brand)" : "2px solid transparent",
+                  transform: active ? "translateX(2px)" : "translateX(0)",
+                  transition: "all var(--duration-normal) var(--ease-out)",
+                }}
+                onMouseEnter={(e) => {
+                  if (!active) {
+                    e.currentTarget.style.background = "rgba(255,255,255,0.03)";
+                    e.currentTarget.style.transform = "translateX(3px) scale(1.01)";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!active) {
+                    e.currentTarget.style.background = "transparent";
+                    e.currentTarget.style.transform = "translateX(0) scale(1)";
+                  }
+                }}
               >
-                <Icon className="w-4 h-4 shrink-0" />
+                <Icon className={`w-4 h-4 shrink-0 transition-all ${active ? "text-emerald-400" : "text-zinc-600 group-hover:text-zinc-400"}`}
+                  style={active ? { filter: "drop-shadow(0 0 4px rgba(0,200,150,0.4))" } : {}}
+                />
                 {!sidebarCollapsed && <span className="truncate">{tab.label}</span>}
               </button>
             );
           })}
+
+          {/* 决策大屏入口 - 独立分组, 强调入口 */}
+          {!sidebarCollapsed && (
+            <p className="text-[9px] text-zinc-700 px-2 mb-2 mt-4 uppercase tracking-[0.15em] font-mono">数据大屏</p>
+          )}
+          <button
+            onClick={() => setShowDashboard(true)}
+            title={sidebarCollapsed ? "决策大屏" : undefined}
+            className={`group w-full flex items-center ${
+              sidebarCollapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+            } py-2 rounded-lg text-[12.5px] font-medium text-zinc-500 hover:text-zinc-300 transition-all`}
+            style={{ marginTop: sidebarCollapsed ? 8 : 0 }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(0,200,150,0.06)";
+              e.currentTarget.style.transform = "translateX(3px) scale(1.01)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.transform = "translateX(0) scale(1)";
+            }}
+          >
+            <LayoutDashboard className="w-4 h-4 shrink-0 text-emerald-500/70 group-hover:text-emerald-400 transition-colors" />
+            {!sidebarCollapsed && <span className="truncate">决策大屏</span>}
+          </button>
         </nav>
 
-        {/* 底部: 数据库状态 + 用户信息 */}
-        <div className="p-3 border-t border-white/5 space-y-2">
-          <div className={`flex items-center ${sidebarCollapsed ? "justify-center" : "gap-1.5"} text-[11px] text-slate-500 ${sidebarCollapsed ? "px-0" : "px-2"}`}>
-            <Database className="w-3.5 h-3.5 shrink-0" style={{ color: "#00C896" }} />
-            {!sidebarCollapsed && <span>MySQL · 在线</span>}
+        {/* 底部: 数据库状态 + 用户信息 - 指挥甲板风格 */}
+        <div className="shrink-0 p-2.5 border-t border-white/5 space-y-2">
+          <div
+            className={`flex items-center ${
+              sidebarCollapsed ? "justify-center" : "gap-2 px-2"
+            } text-[10px] text-zinc-600 py-1`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-status-pulse shrink-0" style={{ boxShadow: "0 0 6px rgba(16,185,129,0.5)" }} />
+            {!sidebarCollapsed && (
+              <span className="font-mono">数据库已连接</span>
+            )}
           </div>
-          <div className={`flex items-center ${sidebarCollapsed ? "justify-center px-1" : "gap-2 px-2"} py-2 rounded-lg bg-white/5`}>
-            <UserIcon className="w-4 h-4 shrink-0" style={{ color: ROLE_CONFIG[currentUser.role].color }} />
+          <div
+            className={`flex items-center ${
+              sidebarCollapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+            } py-2 rounded-lg hover:bg-white/[0.03] transition-all`}
+            style={{ border: "1px solid transparent" }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.06)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+          >
+            <div
+              className="w-7 h-7 rounded-lg shrink-0 flex items-center justify-center text-[10px] font-bold text-white"
+              style={{ background: "linear-gradient(135deg, " + ROLE_CONFIG[currentUser.role].color + "40, " + ROLE_CONFIG[currentUser.role].color + "20)", border: "1px solid " + ROLE_CONFIG[currentUser.role].color + "30" }}
+            >
+              {currentUser.username.charAt(0)}
+            </div>
             {!sidebarCollapsed && (
               <>
                 <div className="flex-1 leading-tight min-w-0">
-                  <p className="text-[12px] text-white font-semibold truncate">{currentUser.username}</p>
-                  <p className="text-[10px] truncate" style={{ color: ROLE_CONFIG[currentUser.role].color }}>{ROLE_CONFIG[currentUser.role].label}</p>
+                  <p className="text-[12px] text-zinc-200 font-semibold truncate">{currentUser.username}</p>
+                  <p
+                    className="text-[10px] truncate font-mono"
+                    style={{ color: ROLE_CONFIG[currentUser.role].color }}
+                  >
+                    {ROLE_CONFIG[currentUser.role].label}
+                  </p>
                 </div>
-                <button onClick={handleLogout} title="退出登录"
-                  className="text-slate-500 hover:text-red-400 transition-colors shrink-0">
-                  <LogOut className="w-3.5 h-3.5" />
+                <button
+                  onClick={handleLogout}
+                  title="退出登录"
+                  className="w-6 h-6 rounded flex items-center justify-center text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-all shrink-0"
+                >
+                  <LogOut className="w-3 h-3" />
                 </button>
               </>
             )}
@@ -1921,56 +3566,146 @@ export default function App() {
 
       {/* ===== 右侧主区域 ===== */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* 头部 (60px, 白色) */}
-        <header className="h-[60px] shrink-0 bg-white border-b border-slate-200 flex items-center justify-between px-5 z-30"
-          style={{ boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+        {/* 头部 - GIS 指挥甲板: 玻璃拟态 + 精致信息架构 */}
+        <header
+          className="h-[52px] shrink-0 flex items-center justify-between px-4 z-30"
+          style={{
+            borderBottom: "1px solid rgba(255,255,255,0.12)",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(250,250,250,0.82) 100%)",
+            backdropFilter: "blur(20px) saturate(1.4)",
+            WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+          }}
+        >
           <div className="flex items-center gap-3">
-            <h2 className="text-[20px] font-semibold text-slate-800">
-              {visibleTabs.find(t => t.id === activeTab)?.label || "GeoPlan"}
-            </h2>
-            <span className="text-[11px] px-2 py-0.5 rounded font-mono"
-              style={{ background: "rgba(0,200,150,0.1)", color: "#00A078", border: "1px solid rgba(0,200,150,0.25)" }}>
-              徐州·v1.0
+            <button
+              onClick={() => {
+                toggleSidebar();
+                setMobileSidebarOpen(prev => !prev);
+              }}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100/80 transition-all"
+              title="切换侧边栏"
+              style={{ border: "1px solid transparent" }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-muted)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+            >
+              <Menu className="w-3.5 h-3.5" />
+            </button>
+            {/* 面包屑 - 等宽标签风格 */}
+            <div className="flex items-center gap-2 text-[12px]">
+              <span className="text-zinc-400 font-mono text-[11px]">GEO</span>
+              <ChevronRight className="w-3 h-3 text-zinc-300" />
+              <span className="text-zinc-900 font-semibold">
+                {visibleTabs.find(t => t.id === activeTab)?.label || "GeoPlan"}
+              </span>
+            </div>
+            {/* 子系统状态标签 - 发光效果 */}
+            <span
+              className="text-[10px] px-2 py-0.5 rounded-md ml-1 font-mono"
+              style={{
+                background: "linear-gradient(135deg, rgba(0,200,150,0.1), rgba(0,200,150,0.04))",
+                color: "var(--color-brand-text)",
+                border: "1px solid rgba(0,200,150,0.2)",
+                boxShadow: "0 0 8px rgba(0,200,150,0.08)",
+              }}
+            >
+              {activeTab === "map" && "BROWSE"}
+              {activeTab === "coverage" && "ANALYZE"}
+              {activeTab === "site" && "DECIDE"}
+              {activeTab === "admin" && "ADMIN"}
             </span>
           </div>
-          <p className="text-[12px] text-slate-400 hidden md:block"></p>
+
+          {/* 右侧: 区域信息 + 时间 + 主题切换 + 快捷键帮助 */}
+          <div className="flex items-center gap-3 text-[10px] text-zinc-500">
+            <span className="flex items-center gap-1.5 px-2 py-1 rounded-md" style={{ background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.04)" }}>
+              <MapPin className="w-3 h-3 text-zinc-400" />
+              <span className="font-mono">34.26°N 117.18°E</span>
+            </span>
+            <span className="text-zinc-300">·</span>
+            <span className="font-mono">{new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" })}</span>
+            <span className="text-zinc-300">·</span>
+            {/* 主题切换按钮 */}
+            <button
+              onClick={toggleTheme}
+              title={darkTheme ? "切换到亮色主题" : "切换到暗色主题"}
+              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-zinc-100/80 text-zinc-500 hover:text-zinc-900 transition-all"
+              style={{ border: "1px solid transparent" }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-muted)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+            >
+              {darkTheme ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+            </button>
+            {/* 快捷键帮助按钮 */}
+            <button
+              onClick={() => setShortcutsHelpOpen(true)}
+              title="快捷键帮助 (Ctrl+/)"
+              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-zinc-100/80 text-zinc-500 hover:text-zinc-900 transition-all"
+              style={{ border: "1px solid transparent" }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-muted)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+            >
+              <Keyboard className="w-3.5 h-3.5" />
+            </button>
+            {/* 命令面板按钮 */}
+            <button
+              onClick={() => setCommandPaletteOpen(true)}
+              title="命令面板 (Ctrl+K)"
+              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-zinc-100/80 text-zinc-500 hover:text-zinc-900 transition-all"
+              style={{ border: "1px solid transparent" }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--color-muted)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+            >
+              <Search className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </header>
 
-        {/* 内容区域 (垂直功能栏 + 水平分析栏 + 地图) */}
-        <div className="flex-1 flex min-w-0 overflow-hidden" style={{ background: "#F5F7FA" }}>
-          {/* ===== 垂直功能栏: 地图展示与查询 (仅地图 Tab, 紧邻左侧 Tab 侧边栏, 可收起) ===== */}
+        {/* 内容区域 (垂直功能栏 + 水平分析栏 + 地图) - 主背景改 Zinc-50 */}
+        <div className="flex-1 flex min-w-0 overflow-hidden" style={{ background: "var(--color-canvas)" }}>
+          {/* ===== 垂直功能栏: 地图展示与查询 (仅地图 Tab, Linear 风紧凑面板) - 阶段四 任务 4.4: 响应式自适应 ===== */}
           {activeTab === "map" && (
             <aside
-              className="shrink-0 bg-white border-r border-slate-200 overflow-y-auto transition-all duration-300 flex flex-col"
-              style={{ width: mapPanelCollapsed ? 14 : 280 }}
+              className="shrink-0 bg-white overflow-y-auto transition-all flex flex-col map-panel-auto-narrow mobile-map-panel-bottom-sheet"
+              style={{
+                width: mapPanelCollapsed ? 14 : 256,
+                borderRight: "1px solid var(--color-muted)",
+                transitionDuration: "var(--duration-normal)",
+                transitionTimingFunction: "var(--ease-out)",
+              }}
             >
               {mapPanelCollapsed ? (
                 <button
                   onClick={() => setMapPanelCollapsed(false)}
-                  className="w-full h-10 flex items-center justify-center hover:bg-slate-50"
+                  className="w-full h-10 flex items-center justify-center hover:bg-zinc-50 text-zinc-500 hover:text-zinc-900 transition-colors"
                   title="展开功能栏"
                 >
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                  <ChevronRight className="w-3.5 h-3.5" />
                 </button>
               ) : (
                 <>
-                  <div className="h-10 shrink-0 px-3 flex items-center justify-between border-b border-slate-200 sticky top-0 bg-white z-10">
-                    <h3 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                      <MapIcon className="w-4 h-4 text-blue-500" /> 图层控制与查询
-                    </h3>
+                  <div
+                    className="h-9 shrink-0 px-3 flex items-center justify-between sticky top-0 bg-white z-10"
+                    style={{ borderBottom: "1px solid var(--color-muted)" }}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <MapIcon className="w-3 h-3 text-zinc-500" />
+                      <h3 className="text-[11px] font-semibold text-zinc-800">
+                        图层与搜索
+                      </h3>
+                    </div>
                     <button
                       onClick={() => setMapPanelCollapsed(true)}
-                      className="w-5 h-5 rounded-full bg-slate-100 hover:bg-slate-200 border border-slate-300 flex items-center justify-center shrink-0 transition-colors"
+                      className="w-5 h-5 rounded flex items-center justify-center hover:bg-zinc-100 text-zinc-500 hover:text-zinc-900 transition-colors shrink-0"
                       title="收起功能栏"
                     >
-                      <ChevronLeft className="w-3 h-3 text-slate-500" />
+                      <ChevronLeft className="w-3 h-3" />
                     </button>
                   </div>
-                  <div className="p-3 space-y-3">
-                    {/* 地点搜索 */}
+                  <div className="p-3 space-y-3.5">
+                    {/* 地点搜索 - Linear 风: 简洁边框 + 等宽提示 */}
                     <div className="relative">
-                      <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 focus-within:border-[#A855F7] focus-within:ring-1 focus-within:ring-purple-200 transition-all">
-                        <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                      <div className="flex items-center gap-1.5 input-sys px-2 py-1.5">
+                        <Search className="w-3 h-3 text-zinc-400 shrink-0" />
                         <input type="text" value={searchQuery}
                           onChange={(e) => {
                             setSearchQuery(e.target.value);
@@ -1993,72 +3728,243 @@ export default function App() {
                             }
                           }}
                           onFocus={() => searchResults.length > 0 && setShowSearchDropdown(true)}
-                          placeholder="搜索地名、地址、POI..."
-                          className="flex-1 text-xs bg-transparent border-none outline-none text-slate-700 placeholder:text-slate-400 py-0.5" />
-                        {searching && <Loader2 className="w-3 h-3 text-purple-400 animate-spin shrink-0" />}
+                          placeholder="地名 / 地址 / POI"
+                          className="flex-1 text-[12px] bg-transparent border-none outline-none text-zinc-900 placeholder:text-zinc-400 py-0.5" />
+                        {searching && <Loader2 className="w-3 h-3 text-zinc-400 animate-spin shrink-0" />}
                         {searchQuery && !searching && (
                           <button onClick={() => { setSearchQuery(""); setSearchResults([]); setShowSearchDropdown(false); setSearchResult(null); if (searchSourceRef.current) searchSourceRef.current.clear(); }}
-                            className="text-slate-300 hover:text-slate-500 shrink-0">
+                            className="text-zinc-300 hover:text-zinc-600 shrink-0 transition-colors">
                             <X className="w-3 h-3" />
                           </button>
                         )}
                       </div>
-                      {/* 搜索结果下拉 */}
+                      {/* 搜索结果下拉 - Linear 风: 极轻阴影 */}
                       {showSearchDropdown && searchResults.length > 0 && (
-                        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-50 max-h-60 overflow-y-auto">
+                        <div
+                          className="absolute top-full left-0 right-0 mt-1 bg-white rounded-md z-50 max-h-60 overflow-y-auto animate-fade-in"
+                          style={{
+                            border: "1px solid var(--color-muted)",
+                            boxShadow: "var(--shadow-lg)",
+                          }}
+                        >
                           {searchResults.map((r, i) => (
                             <button key={i} onClick={() => selectSearchResult(r)}
-                              className="w-full text-left px-3 py-2 hover:bg-purple-50 border-b border-slate-100 last:border-b-0 transition-colors">
-                              <p className="text-xs font-medium text-slate-700">{r.name}</p>
-                              <p className="text-[11px] text-slate-400 truncate">{r.address || r.district}</p>
+                              className="w-full text-left px-2.5 py-1.5 hover:bg-zinc-50 border-b border-zinc-100 last:border-b-0 transition-colors">
+                              <p className="text-[12px] font-medium text-zinc-800">{r.name}</p>
+                              <p className="text-[10px] text-zinc-500 truncate font-mono">{r.address || r.district}</p>
                             </button>
                           ))}
                         </div>
                       )}
                       {showSearchDropdown && !searching && searchResults.length === 0 && searchQuery.trim().length >= 2 && (
-                        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl z-50 p-3 text-center text-xs text-slate-400">
+                        <div
+                          className="absolute top-full left-0 right-0 mt-1 bg-white rounded-md z-50 p-3 text-center text-[11px] text-zinc-500"
+                          style={{ border: "1px solid var(--color-muted)" }}
+                        >
                           未找到匹配地点
                         </div>
                       )}
                     </div>
-                    {/* 品牌图层 */}
-                    <div className="space-y-1.5">
-                      <p className="text-xs text-slate-500 font-bold uppercase">充电站品牌图层</p>
+
+                    {/* 图层管理 - 透明度滑块 + 拖拽排序 */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-[10px] text-zinc-500">图层管理</p>
+                        <span className="text-[9px] text-zinc-400">拖拽排序 · 滑块调透明度</span>
+                      </div>
+                      {layerOrder.map((id) => {
+                        // 图层配置: 显示名 / 主色 / 图标 / 可见性 state+setter
+                        const configMap: Record<string, { name: string; color: string; IconComp: any; visible: boolean; setVisible: (v: boolean) => void }> = {
+                          stations: { name: "充电站", color: "#00C896", IconComp: Zap, visible: showStations, setVisible: (v: boolean) => setShowStations(v) },
+                          communities: { name: "住宅小区", color: "#38BDF8", IconComp: Building2, visible: showCommunities, setVisible: (v: boolean) => setShowCommunities(v) },
+                          feedback: { name: "公众反馈", color: "#F59E0B", IconComp: MessageSquare, visible: showFeedback, setVisible: (v: boolean) => setShowFeedback(v) },
+                          measure: { name: "测量图层", color: "#00C896", IconComp: Square, visible: showMeasure, setVisible: (v: boolean) => setShowMeasure(v) },
+                        };
+                        const cfg = configMap[id];
+                        if (!cfg) return null;
+                        const LayerIcon = cfg.IconComp;
+                        return (
+                          <div
+                            key={id}
+                            draggable
+                            onDragStart={() => { dragLayerIdRef.current = id; }}
+                            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }}
+                            onDrop={() => {
+                              const dragId = dragLayerIdRef.current;
+                              dragLayerIdRef.current = null;
+                              if (!dragId || dragId === id) return;
+                              // 重排 layerOrder: 将拖拽项移动到目标项之前
+                              const newOrder = [...layerOrder];
+                              const dragIdx = newOrder.indexOf(dragId);
+                              const dropIdx = newOrder.indexOf(id);
+                              newOrder.splice(dragIdx, 1);
+                              newOrder.splice(dropIdx, 0, dragId);
+                              setLayerOrder(newOrder);
+                            }}
+                            className="group flex items-center gap-1.5 px-1.5 py-1.5 rounded transition-colors hover:bg-zinc-50"
+                            style={{ border: "1px solid var(--color-muted)", cursor: "grab", background: "var(--color-surface)" }}
+                          >
+                            {/* 拖拽手柄 */}
+                            <GripVertical className="w-3 h-3 text-zinc-300 group-hover:text-zinc-500 shrink-0" />
+                            {/* 可见性勾选框 */}
+                            <input
+                              type="checkbox"
+                              checked={cfg.visible}
+                              onChange={(e) => cfg.setVisible(e.target.checked)}
+                              className="accent-emerald-500 w-3 h-3 shrink-0"
+                            />
+                            {/* 图层图标 */}
+                            <LayerIcon className="w-3 h-3 shrink-0" style={{ color: cfg.color }} />
+                            {/* 图层名 */}
+                            <span className="text-[11px] text-zinc-700 flex-1 truncate">{cfg.name}</span>
+                            {/* 透明度滑块 */}
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              value={layerOpacity[id] ?? 100}
+                              onChange={(e) => {
+                                const v = parseInt(e.target.value, 10);
+                                setLayerOpacity(prev => ({ ...prev, [id]: v }));
+                              }}
+                              className="w-12 h-1 accent-emerald-500 shrink-0"
+                              title={`透明度 ${layerOpacity[id] ?? 100}%`}
+                            />
+                            <span className="text-[9px] text-zinc-400 font-mono w-7 text-right shrink-0">
+                              {layerOpacity[id] ?? 100}%
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* 阶段五 等时圈: 服务区图层开关 (仅覆盖分析有结果时显示) */}
+                    {isochroneCoverage && isochroneCoverage.covered > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[10px] text-zinc-500 mb-1.5">服务区图层</p>
+                        <label
+                          className="group flex items-center gap-2 px-1.5 py-1.5 rounded transition-colors hover:bg-zinc-50 cursor-pointer"
+                          style={{ border: "1px solid var(--color-muted)", background: "var(--color-surface)" }}
+                          title="勾选显示路网等时圈多边形 (紫色虚线), 取消勾选仅显示缓冲区, 便于对比"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={showIsochroneLayer}
+                            onChange={(e) => setShowIsochroneLayer(e.target.checked)}
+                            className="accent-violet-500 w-3 h-3 shrink-0"
+                          />
+                          <Activity className="w-3 h-3 shrink-0" style={{ color: "#7c3aed" }} />
+                          <span className="text-[11px] text-zinc-700 flex-1">等时圈服务区</span>
+                          <span className="text-[9px] text-zinc-400 font-mono shrink-0">
+                            {isochroneCoverage.covered}/{isochroneCoverage.total}
+                          </span>
+                        </label>
+                      </div>
+                    )}
+
+                    {/* 品牌图层 - Linear 风: 紧凑列表 */}
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] text-zinc-500 mb-1.5">品牌图层</p>
                       {availableBrands.map(brand => (
-                        <label key={brand} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-slate-100 p-1 rounded">
+                        <label key={brand} className="flex items-center gap-2 text-[12px] cursor-pointer hover:bg-zinc-50 px-1.5 py-1 rounded transition-colors">
                           <input type="checkbox" checked={visibleBrands.has(brand)}
                             onChange={(e) => {
                               const next = new Set(visibleBrands);
                               e.target.checked ? next.add(brand) : next.delete(brand);
                               setVisibleBrands(next);
                             }}
-                            className="accent-blue-500" />
-                          <span className="w-3 h-3 rounded-full" style={{ background: BRAND_CONFIG[brand].color }}></span>
-                          <span className="text-slate-700">{BRAND_CONFIG[brand].label}</span>
+                            className="accent-emerald-500 w-3 h-3" />
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: BRAND_CONFIG[brand].color }}></span>
+                          <span className="text-zinc-700 flex-1 truncate">{BRAND_CONFIG[brand].label}</span>
                         </label>
                       ))}
                     </div>
+
                     {/* 小区 / 反馈图层 */}
-                    <div className="space-y-1">
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-slate-100 p-1 rounded">
-                        <input type="checkbox" checked={showCommunities} onChange={(e) => setShowCommunities(e.target.checked)} className="accent-blue-500" />
-                        <Building2 className="w-3.5 h-3.5 text-blue-400" />
-                        <span className="text-slate-700">住宅小区面图层</span>
+                    <div className="space-y-0.5">
+                      <p className="text-[10px] text-zinc-500 mb-1.5">叠加图层</p>
+                      <label className="flex items-center gap-2 text-[12px] cursor-pointer hover:bg-zinc-50 px-1.5 py-1 rounded transition-colors">
+                        <input type="checkbox" checked={showCommunities} onChange={(e) => setShowCommunities(e.target.checked)} className="accent-sky-500 w-3 h-3" />
+                        <Building2 className="w-3 h-3 text-sky-500" />
+                        <span className="text-zinc-700">住宅小区面</span>
                       </label>
-                      <label className="flex items-center gap-2 text-xs cursor-pointer hover:bg-slate-100 p-1 rounded">
-                        <input type="checkbox" checked={showFeedback} onChange={(e) => setShowFeedback(e.target.checked)} className="accent-blue-500" />
-                        <MessageSquare className="w-3.5 h-3.5 text-orange-400" />
-                        <span className="text-slate-700">公众反馈点</span>
+                      <label className="flex items-center gap-2 text-[12px] cursor-pointer hover:bg-zinc-50 px-1.5 py-1 rounded transition-colors">
+                        <input type="checkbox" checked={showFeedback} onChange={(e) => setShowFeedback(e.target.checked)} className="accent-amber-500 w-3 h-3" />
+                        <MessageSquare className="w-3 h-3 text-amber-500" />
+                        <span className="text-zinc-700">公众反馈点</span>
                       </label>
+                      {/* 阶段二 任务 2.1.2: 负荷热力图开关 */}
+                      <label className="flex items-center gap-2 text-[12px] cursor-pointer hover:bg-zinc-50 px-1.5 py-1 rounded transition-colors">
+                        <input type="checkbox" checked={showHeatmap} onChange={(e) => setShowHeatmap(e.target.checked)} className="accent-rose-500 w-3 h-3" />
+                        <Flame className="w-3 h-3 text-rose-500" />
+                        <span className="text-zinc-700">负荷热力图</span>
+                        {showHeatmap && (
+                          <span className="text-[9px] text-zinc-400 ml-auto">{heatmapData.length} 站</span>
+                        )}
+                      </label>
+                      {/* 阶段三 任务 3.3.1: 公众反馈热力图开关 + 类型/评分筛选 */}
+                      <label className="flex items-center gap-2 text-[12px] cursor-pointer hover:bg-zinc-50 px-1.5 py-1 rounded transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={showFeedbackHeatmap}
+                          onChange={(e) => setShowFeedbackHeatmap(e.target.checked)}
+                          className="accent-purple-500 w-3 h-3"
+                        />
+                        <Flame className="w-3 h-3 text-purple-500" />
+                        <span className="text-zinc-700">反馈热力图</span>
+                      </label>
+                      {/* 反馈热力图筛选面板 (阶段三 任务 3.3.3) */}
+                      {showFeedbackHeatmap && (
+                        <div
+                          className="ml-5 mr-1 mt-0.5 p-2 rounded space-y-1.5 animate-fade-in"
+                          style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                        >
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-zinc-500 w-8">类型</span>
+                            <select
+                              value={feedbackHeatmapType}
+                              onChange={(e) => setFeedbackHeatmapType(e.target.value as any)}
+                              className="flex-1 text-[10px] px-1 py-0.5 rounded input-sys"
+                              style={{ background: "var(--color-surface)", color: "var(--color-ink-2)" }}
+                            >
+                              <option value="all">全部</option>
+                              <option value="demand">需求</option>
+                              <option value="evaluation">评价</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-zinc-500 w-8">评分</span>
+                            <select
+                              value={feedbackHeatmapRating}
+                              onChange={(e) => setFeedbackHeatmapRating(parseInt(e.target.value))}
+                              className="flex-1 text-[10px] px-1 py-0.5 rounded input-sys"
+                              style={{ background: "var(--color-surface)", color: "var(--color-ink-2)" }}
+                            >
+                              <option value={0}>不限</option>
+                              <option value={3}>≥ 3 星</option>
+                              <option value={4}>≥ 4 星</option>
+                              <option value={5}>5 星</option>
+                            </select>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    {/* 区域统计 */}
-                    <div className="pt-2 border-t border-slate-200">
-                      <p className="text-xs text-slate-500 font-bold uppercase mb-1.5">区域统计</p>
-                      <div className="grid grid-cols-2 gap-1.5">
+
+                    {/* 区域统计 - Linear 风: 等宽数字 + 紧凑网格 */}
+                    <div className="pt-2.5" style={{ borderTop: "1px solid var(--color-muted)" }}>
+                      <p className="text-[10px] text-zinc-500 mb-1.5">区域统计</p>
+                      <div className="grid grid-cols-2 gap-1">
                         {regionStats.map(r => (
-                          <div key={r.district} className="bg-slate-50 border border-slate-200 rounded p-1.5">
-                            <p className="text-[11px] text-slate-500">{r.district}</p>
-                            <p className="text-base font-bold text-blue-400">{r.stations || 0} <span className="text-[11px] text-slate-500">站</span></p>
+                          <div
+                            key={r.district}
+                            className="bg-zinc-50 rounded px-1.5 py-1"
+                            style={{ border: "1px solid var(--color-muted)" }}
+                          >
+                            <p className="text-[10px] text-zinc-500 truncate">{r.district}</p>
+                            <p className="text-[13px] font-bold text-zinc-900 font-num">
+                              {r.stations || 0}
+                              <span className="text-[9px] text-zinc-500 ml-0.5">站</span>
+                            </p>
                           </div>
                         ))}
                       </div>
@@ -2071,23 +3977,49 @@ export default function App() {
 
           {/* ===== 主列: 水平分析栏 + 地图 ===== */}
           <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            {/* ===== 水平分析栏 (选址决策 / 覆盖分析, 按当前 Tab 单独显示) ===== */}
+            {/* ===== 水平分析栏 (Bento 指挥甲板: 玻璃拟态 + 动态高度) ===== */}
             {(activeTab === "site" || activeTab === "coverage") && (
-              <div className="shrink-0 h-40 bg-white border-b border-slate-200 flex gap-0 overflow-x-auto">
+              <div
+                className="shrink-0 flex gap-0 overflow-x-auto animate-panel-enter transition-all"
+                style={{
+                  // 覆盖分析：窄条（44px 参数 + 84px 指标卡 + 可选历史对比），避免占据地图空间
+                  height: activeTab === "site"
+                    ? (siteMetrics ? (schemes.length > 0 ? 270 : 200) : 80)
+                    : (coverageSummary ? 198 : (coverageLoading ? 80 : 140)),
+                  borderBottom: "1px solid rgba(255,255,255,0.08)",
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)",
+                  backdropFilter: "blur(16px) saturate(1.2)",
+                  WebkitBackdropFilter: "blur(16px) saturate(1.2)",
+                  boxShadow: "0 4px 24px -4px rgba(0,0,0,0.06)",
+                  zIndex: 10,
+                }}
+              >
                 {/* 选址决策 (仅选址 Tab) */}
                 {activeTab === "site" && (
-                <div className="flex-1 min-w-[420px] p-2 overflow-y-auto">
-                  {/* 标题栏 */}
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Target className="w-4 h-4 text-amber-500" />
-                    <span className="text-sm font-bold text-slate-800">选址决策</span>
-                    <span className="text-[11px] text-slate-400">点击地图放置虚拟站点, 拖拽调整位置</span>
+                <div className="flex-1 min-w-[420px] px-3 py-2.5 overflow-y-auto">
+                  {/* 标题栏 - Linear 风: 紧凑 + 等宽标签 */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <Target className="w-3 h-3 text-amber-500" />
+                    <span className="text-[13px] font-semibold text-zinc-900">选址决策</span>
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded"
+                      style={{
+                        background: "rgba(245,158,11,0.08)",
+                        color: "#D97706",
+                        border: "1px solid rgba(245,158,11,0.2)",
+                      }}
+                    >
+                      决策沙盘
+                    </span>
+                    <span className="text-[10px] text-zinc-500 ml-auto">
+                      点击地图放置 · 拖拽调整
+                    </span>
                   </div>
-                  {/* 参数控件区 */}
-                  <div className="flex flex-wrap items-center gap-2 text-[13px]">
-                    {/* 服务半径 */}
-                    <div className="flex items-center gap-1.5 min-w-[170px]">
-                      <span className="text-slate-500">服务半径</span>
+                  {/* 参数控件区 - Linear 风: 分段控件 */}
+                  <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                    {/* 服务半径 - 紧凑滑块 */}
+                    <div className="flex items-center gap-1.5 min-w-[180px]">
+                      <span className="text-[10px] text-zinc-500">服务半径</span>
                       <input type="range" min="300" max="1500" step="50" value={siteRadius}
                         onChange={(e) => {
                           const v = parseInt(e.target.value);
@@ -2095,97 +4027,182 @@ export default function App() {
                           siteRadiusRef.current = v;
                           if (virtualStation) evaluateSite(virtualStation.lng, virtualStation.lat);
                         }}
-                        className="flex-1 accent-amber-500" />
-                      <span className="font-mono text-blue-500 text-xs">{siteRadius}m</span>
+                        className="flex-1 accent-amber-500 h-1" />
+                      <span className="font-num text-amber-600 text-[11px] font-semibold w-12 text-right">{siteRadius}米</span>
                     </div>
-                    {/* 充电模式 (琥珀色分段控件) */}
+                    {/* 充电模式 - Linear 风分段控件 */}
                     <div className="flex items-center gap-1">
-                      <span className="text-slate-500">充电模式</span>
-                      <div className="flex gap-1">
+                      <span className="text-[10px] text-zinc-500">充电模式</span>
+                      <div
+                        className="flex rounded p-0.5"
+                        style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                      >
                         <button onClick={() => setSiteChargeMode("fast")}
-                          className={`h-8 px-3 rounded-md text-xs ${siteChargeMode === "fast" ? "bg-amber-500 text-white" : "bg-slate-100 text-slate-600"}`}>快充</button>
+                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
+                            siteChargeMode === "fast"
+                              ? "bg-white text-amber-600 shadow-sm"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}>快充</button>
                         <button onClick={() => setSiteChargeMode("slow")}
-                          className={`h-8 px-3 rounded-md text-xs ${siteChargeMode === "slow" ? "bg-amber-500 text-white" : "bg-slate-100 text-slate-600"}`}>慢充</button>
+                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
+                            siteChargeMode === "slow"
+                              ? "bg-white text-amber-600 shadow-sm"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}>慢充</button>
                       </div>
                     </div>
                     {/* 拟建品牌 */}
                     <div className="flex items-center gap-1">
-                      <span className="text-slate-500">拟建品牌</span>
+                      <span className="text-[10px] text-zinc-500">品牌</span>
                       <select value={siteBrand} onChange={(e) => setSiteBrand(e.target.value)}
-                        className="h-8 text-xs bg-slate-50 border border-slate-200 rounded-md px-2 text-slate-700 outline-none">
+                        className="input-sys h-6 text-[11px] px-2 text-zinc-700">
                         {(availableBrands.length ? availableBrands : BRANDS).map(b => (
                           <option key={b} value={b}>{BRAND_CONFIG[b]?.label || b}</option>
                         ))}
                       </select>
                     </div>
-                    {/* 保存方案 (仅虚拟站点存在时显示) */}
+                    {/* 保存方案 - Linear 风紧凑按钮 */}
                     {virtualStation && (
                       <div className="flex items-center gap-1">
                         <input type="text" value={schemeName} onChange={(e) => setSchemeName(e.target.value)}
-                          placeholder="方案名称" className="h-8 w-28 text-xs bg-slate-50 border border-slate-200 rounded-md px-2 text-slate-700" />
-                        <button onClick={saveScheme} className="h-8 bg-emerald-500 hover:bg-emerald-600 text-white text-xs px-3 rounded-md flex items-center gap-1">
-                          <Save className="w-3 h-3" /> 保存方案
+                          placeholder="方案名" className="input-sys h-6 w-24 text-[11px] px-2 text-zinc-700" />
+                        <button onClick={saveScheme}
+                          className="h-6 bg-zinc-900 hover:bg-zinc-800 text-white text-[11px] px-2.5 rounded flex items-center gap-1 transition-colors">
+                          <Save className="w-3 h-3" /> 保存
                         </button>
                       </div>
                     )}
+                    {/* 阶段二 任务 2.3.2: ROI 估算按钮 */}
+                    {virtualStation && siteMetrics && (
+                      <button onClick={runRoiEstimate}
+                        className="h-6 px-2.5 rounded text-[11px] font-medium flex items-center gap-1 transition-colors"
+                        style={{
+                          background: "rgba(0,200,150,0.08)",
+                          color: "var(--color-brand-text)",
+                          border: "1px solid var(--color-brand-border)",
+                        }}>
+                        <Calculator className="w-3 h-3" /> ROI 估算
+                      </button>
+                    )}
+                    {/* 阶段二 任务 2.2.2: 深度对比按钮 (需选中 2 个方案) */}
+                    <button
+                      onClick={runCompareSchemes}
+                      disabled={compareSchemes.length !== 2}
+                      className={`h-6 px-2.5 rounded text-[11px] font-medium flex items-center gap-1 transition-colors ${
+                        compareSchemes.length === 2
+                          ? "bg-amber-500 hover:bg-amber-600 text-white"
+                          : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                      }`}>
+                      <GitCompare className="w-3 h-3" /> 深度对比 ({compareSchemes.length}/2)
+                    </button>
                   </div>
-                  {/* 指标卡 4 格 + 盲区联动 */}
+                  {/* 指标卡 4 格 - Bento 指挥甲板: 3D 磁贴 + 高光边缘 */}
                   {siteMetrics && (
                     <>
                       <div className="grid grid-cols-4 gap-2 mt-2">
-                        <div className="relative bg-gradient-to-br from-emerald-50 to-emerald-100/50 border border-emerald-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-emerald-500" />
-                          <p className="text-[11px] text-emerald-700">覆盖人口</p>
-                          <p className="text-lg font-bold text-emerald-600">{siteMetrics.covered_population.toLocaleString()}</p>
+                        <div className="metric-card rounded-lg px-3 py-2 animate-count-up" style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.06), rgba(16,185,129,0.02))", border: "1px solid rgba(16,185,129,0.15)", borderTop: "2px solid #10B981", animationDelay: "0ms" }}>
+                          <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider">覆盖人口</p>
+                          <p className="text-[18px] font-bold text-zinc-900 font-num mt-0.5">{siteMetrics.covered_population.toLocaleString()}</p>
                         </div>
-                        <div className="relative bg-gradient-to-br from-blue-50 to-blue-100/50 border border-blue-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500" />
-                          <p className="text-[11px] text-blue-700">覆盖社区</p>
-                          <p className="text-lg font-bold text-blue-600">{siteMetrics.covered_communities}</p>
+                        <div className="metric-card rounded-lg px-3 py-2 animate-count-up" style={{ background: "linear-gradient(135deg, rgba(56,189,248,0.06), rgba(56,189,248,0.02))", border: "1px solid rgba(56,189,248,0.15)", borderTop: "2px solid #38BDF8", animationDelay: "50ms" }}>
+                          <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider">覆盖社区</p>
+                          <p className="text-[18px] font-bold text-zinc-900 font-num mt-0.5">{siteMetrics.covered_communities}</p>
                         </div>
-                        <div className="relative bg-gradient-to-br from-amber-50 to-amber-100/50 border border-amber-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-500" />
-                          <p className="text-[11px] text-amber-700">避让度</p>
-                          <p className="text-lg font-bold text-amber-600">{siteMetrics.competition_score}</p>
+                        <div className="metric-card rounded-lg px-3 py-2 animate-count-up" style={{ background: "linear-gradient(135deg, rgba(245,158,11,0.06), rgba(245,158,11,0.02))", border: "1px solid rgba(245,158,11,0.15)", borderTop: "2px solid #F59E0B", animationDelay: "100ms" }}>
+                          <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider">竞争避让</p>
+                          <p className="text-[18px] font-bold text-zinc-900 font-num mt-0.5">{siteMetrics.competition_score}</p>
                         </div>
-                        <div className="relative bg-gradient-to-br from-purple-50 to-purple-100/50 border border-purple-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                          <div className="absolute left-0 top-0 bottom-0 w-1 bg-purple-500" />
-                          <p className="text-[11px] text-purple-700">效益</p>
-                          <p className="text-lg font-bold text-purple-600">{siteMetrics.social_benefit}</p>
+                        <div className="metric-card rounded-lg px-3 py-2 animate-count-up" style={{ background: "linear-gradient(135deg, rgba(168,85,247,0.06), rgba(168,85,247,0.02))", border: "1px solid rgba(168,85,247,0.15)", borderTop: "2px solid #A855F7", animationDelay: "150ms" }}>
+                          <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider">社会效益</p>
+                          <p className="text-[18px] font-bold text-zinc-900 font-num mt-0.5">{siteMetrics.social_benefit}</p>
                         </div>
                       </div>
-                      {/* 盲区联动: 选址落在盲区时高亮提示 */}
+                      {/* 盲区联动提示 - Linear 风: 极简 */}
                       {siteInBlindSpot && (
-                        <div className="mt-2 bg-amber-50 border border-amber-300 text-amber-700 rounded-md px-3 py-1 text-xs flex items-center gap-1">
-                          <Target className="w-3.5 h-3.5" /> 该选址将消除盲区
+                        <div
+                          className="mt-1.5 rounded px-2 py-1 text-[11px] flex items-center gap-1.5 animate-fade-in"
+                          style={{
+                            background: "rgba(245,158,11,0.06)",
+                            border: "1px solid rgba(245,158,11,0.25)",
+                            color: "#92400E",
+                          }}
+                        >
+                          <Target className="w-3 h-3" />
+                          <span>该选址将消除盲区</span>
+                          <span className="ml-auto text-[10px]">命中盲区</span>
                         </div>
                       )}
-                      {/* 当前区域盲区概况 (来自覆盖分析) */}
+                      {/* 当前区域盲区概况 - Linear 风 */}
                       {lastCoverageSummary && (
-                        <div className="mt-2 bg-slate-50 border border-slate-200 rounded-md p-2">
-                          <p className="text-[11px] text-slate-500 font-bold flex items-center gap-1">
-                            <Radar className="w-3 h-3 text-blue-500" /> 当前区域盲区概况
-                            <span className="ml-1 text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded">来自覆盖分析</span>
-                          </p>
-                          <div className="grid grid-cols-3 gap-2 mt-1 text-center">
-                            <div><p className="text-[10px] text-slate-500">覆盖率</p><p className="text-sm font-bold text-green-500">{lastCoverageSummary.coverageRate}%</p></div>
-                            <div><p className="text-[10px] text-slate-500">盲区社区</p><p className="text-sm font-bold text-red-400">{lastCoverageSummary.blindSpotCommunities}</p></div>
-                            <div><p className="text-[10px] text-slate-500">盲区人口</p><p className="text-sm font-bold text-orange-400">{lastCoverageSummary.blindSpotPopulation.toLocaleString()}</p></div>
+                        <div
+                          className="mt-1.5 rounded px-2 py-1.5"
+                          style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                        >
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <Radar className="w-3 h-3 text-sky-500" />
+                            <p className="text-[10px] text-zinc-600">盲区概况</p>
+                            <span
+                              className="text-[9px] px-1 py-0 rounded ml-auto"
+                              style={{ background: "var(--color-accent-subtle)", color: "#0284C7", border: "1px solid var(--color-accent-border)" }}
+                            >
+                              来自覆盖分析
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-center">
+                            <div>
+                              <p className="text-[9px] text-zinc-500">覆盖率</p>
+                              <p className="text-[13px] font-bold text-emerald-600 font-num">{lastCoverageSummary.coverageRate}%</p>
+                            </div>
+                            <div>
+                              <p className="text-[9px] text-zinc-500">盲区社区</p>
+                              <p className="text-[13px] font-bold text-red-500 font-num">{lastCoverageSummary.blindSpotCommunities}</p>
+                            </div>
+                            <div>
+                              <p className="text-[9px] text-zinc-500">盲区人口</p>
+                              <p className="text-[13px] font-bold text-orange-500 font-num">{lastCoverageSummary.blindSpotPopulation.toLocaleString()}</p>
+                            </div>
                           </div>
                         </div>
                       )}
                     </>
                   )}
-                  {/* 已保存方案 (紧凑列表, 点击切换对比) */}
+                  {/* 已保存方案 - Linear 风: 标签按钮 */}
                   {schemes.length > 0 && (
                     <div className="mt-2">
-                      <p className="text-[11px] text-slate-500 font-bold">已保存方案 ({schemes.length}) · 点击对比</p>
-                      <div className="flex flex-wrap gap-1.5 mt-1">
+                      <p className="text-[10px] text-zinc-500 mb-1">
+                        已保存方案（{schemes.length}）· 勾选 2 个方案进行深度对比
+                      </p>
+                      <div className="space-y-1">
                         {schemes.map(s => (
-                          <button key={s.id} onClick={() => setCompareSchemes(prev => prev.includes(s.id) ? prev.filter(id => id !== s.id) : prev.length < 2 ? [...prev, s.id] : [prev[1], s.id])}
-                            className={`text-xs px-2 py-1 rounded-md border ${compareSchemes.includes(s.id) ? "bg-amber-50 border-amber-400 text-amber-600" : "bg-slate-50 border-slate-200 text-slate-600"}`}>
-                            {s.name}
-                          </button>
+                          <div key={s.id}
+                            className={`flex items-center gap-2 px-2 py-1 rounded-md transition-all ${
+                              compareSchemes.includes(s.id)
+                                ? "bg-amber-50"
+                                : "bg-zinc-50 hover:bg-zinc-100"
+                            }`}
+                            style={{ border: `1px solid ${compareSchemes.includes(s.id) ? "rgba(245,158,11,0.3)" : "var(--color-muted)"}` }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={compareSchemes.includes(s.id)}
+                              onChange={(e) => setCompareSchemes(prev => {
+                                if (e.target.checked) {
+                                  return prev.length < 2 ? [...prev, s.id] : [prev[1], s.id];
+                                } else {
+                                  return prev.filter(id => id !== s.id);
+                                }
+                              })}
+                              className="accent-amber-500 w-3 h-3 shrink-0"
+                            />
+                            <span className="text-[11px] text-zinc-700 font-medium flex-1 truncate">{s.name}</span>
+                            <span className="text-[9px] text-zinc-400">{s.brand}</span>
+                            {/* 阶段二 任务 2.6.2: 导出报告按钮 */}
+                            <SchemeReportButton
+                              schemeId={s.id}
+                              schemeName={s.name}
+                              onNotify={showToast}
+                            />
+                          </div>
                         ))}
                       </div>
                     </div>
@@ -2195,96 +4212,288 @@ export default function App() {
 
                 {/* 覆盖分析 (仅覆盖分析 Tab) */}
                 {activeTab === "coverage" && (
-                <div className="flex-1 min-w-[420px] p-2 overflow-y-auto">
+                <div className="flex-1 min-w-[420px] px-2.5 py-2">
                   {/* 标题栏 */}
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Radar className="w-4 h-4 text-blue-500" />
-                    <span className="text-sm font-bold text-slate-800">覆盖分析</span>
-                    <span className="text-[11px] text-slate-400">分析充电服务覆盖范围与盲区分布</span>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Radar className="w-3 h-3 text-sky-500" />
+                    <span className="text-[13px] font-semibold text-zinc-900">覆盖分析</span>
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded"
+                      style={{
+                        background: "var(--color-accent-subtle)",
+                        color: "#0284C7",
+                        border: "1px solid var(--color-accent-border)",
+                      }}
+                    >
+                      空间分析
+                    </span>
+                    <span className="text-[10px] text-zinc-500 ml-auto">
+                      服务范围 · 盲区识别
+                    </span>
                   </div>
                   {/* 参数控件区 */}
-                  <div className="flex flex-wrap items-center gap-2 text-[13px]">
-                    {/* 充电模式 (蓝色分段控件) */}
+                  <div className="flex flex-wrap items-center gap-2 text-[12px]">
+                    {/* 充电模式 - Linear 风分段控件 */}
                     <div className="flex items-center gap-1">
-                      <span className="text-slate-500">充电模式</span>
-                      <div className="flex gap-1">
+                      <span className="text-[10px] text-zinc-500">充电模式</span>
+                      <div
+                        className="flex rounded p-0.5"
+                        style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                      >
                         <button onClick={() => setChargeMode("fast")}
-                          className={`h-8 px-3 rounded-md text-xs ${chargeMode === "fast" ? "bg-blue-500 text-white" : "bg-slate-100 text-slate-600"}`}>快充</button>
+                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
+                            chargeMode === "fast"
+                              ? "bg-white text-sky-600 shadow-sm"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}>快充</button>
                         <button onClick={() => setChargeMode("slow")}
-                          className={`h-8 px-3 rounded-md text-xs ${chargeMode === "slow" ? "bg-blue-500 text-white" : "bg-slate-100 text-slate-600"}`}>慢充</button>
+                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
+                            chargeMode === "slow"
+                              ? "bg-white text-sky-600 shadow-sm"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}>慢充</button>
                       </div>
                     </div>
-                    {/* 自定义半径 */}
+                    {/* 自定义半径 - Linear 风 */}
                     <div className="flex items-center gap-1">
-                      <span className="text-slate-500">自定义半径</span>
+                      <span className="text-[10px] text-zinc-500">服务半径</span>
                       <input type="number" min={300} max={2000} step={50} value={coverageRadius || ""}
                         onChange={(e) => setCoverageRadius(Math.max(0, Math.min(2000, parseInt(e.target.value) || 0)))}
                         placeholder="预设"
-                        className="h-8 w-20 text-xs bg-slate-50 border border-slate-200 rounded-md px-2 text-slate-700" />
+                        className="input-sys h-6 w-16 text-[11px] px-2 text-zinc-700 font-num" />
                       <button onClick={() => setCoverageRadius(0)}
-                        className="text-[11px] text-slate-400 hover:text-slate-600 underline">预设</button>
+                        className="text-[10px] text-zinc-400 hover:text-zinc-700 underline">重置</button>
                     </div>
                     {/* 行政区筛选 */}
                     <div className="flex items-center gap-1">
-                      <span className="text-slate-500">行政区</span>
-                      <select value={coverageDistrict} onChange={(e) => setCoverageDistrict(e.target.value)}
-                        className="h-8 text-xs bg-slate-50 border border-slate-200 rounded-md px-2 text-slate-700 outline-none">
+                      <span className="text-[10px] text-zinc-500">行政区</span>
+                      <select value={coverageDistrict} onChange={(e) => {
+                        const val = e.target.value;
+                        setCoverageDistrict(val);
+                        // 阶段三 任务 3.1.2: 切换行政区后飞行至该区中心
+                        // DISTRICT_CENTERS 为 WGS84 经纬度, 需转 GCJ02 后投影到底图坐标系
+                        const wgsCenter = DISTRICT_CENTERS[val] || [117.2846, 34.262];
+                        const [gcjLng, gcjLat] = wgs84ToGcj02(wgsCenter[0], wgsCenter[1]);
+                        mapRef.current?.getView().animate({
+                          center: fromLonLat([gcjLng, gcjLat]),
+                          zoom: val === "all" ? 11 : 12,
+                          duration: 800,
+                        });
+                      }}
+                        className="input-sys h-6 text-[11px] px-2 text-zinc-700">
                         <option value="all">全部行政区</option>
                         {[...new Set(regionStats.map(r => r.district))].map(d => (
                           <option key={d} value={d}>{d}</option>
                         ))}
                       </select>
                     </div>
-                    {/* 开始分析 */}
+                    {/* 阶段五 等时圈: 服务区模式分段控件 (缓冲区 / 等时圈 / 混合) */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-[10px] text-zinc-500" title="服务区建模方式: 圆形缓冲区为传统估算, 路网等时圈基于真实道路可达性">服务区模式</span>
+                      <div
+                        className="flex rounded p-0.5"
+                        style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                      >
+                        {([
+                          { key: "buffer", label: "缓冲区" },
+                          { key: "isochrone", label: "等时圈" },
+                          { key: "hybrid", label: "混合" },
+                        ] as const).map(m => (
+                          <button key={m.key} onClick={() => setServiceAreaMode(m.key)}
+                            className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
+                              serviceAreaMode === m.key
+                                ? "bg-white text-violet-600 shadow-sm"
+                                : "text-zinc-500 hover:text-zinc-700"
+                            }`}
+                            title={m.key === "buffer" ? "圆形缓冲区 (传统估算, 快充 800m / 慢充 400m)" : m.key === "isochrone" ? "路网等时圈 (驾车 10 分钟 / 步行 15 分钟真实可达范围, 缺失站点不计入)" : "混合模式 (优先等时圈, 缺失回退缓冲区, 推荐)"}
+                          >
+                            {m.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {/* 开始分析 - Linear 风: 黑底白字主按钮 */}
                     <button onClick={runCoverageAnalysis} disabled={coverageLoading}
-                      className={`h-8 px-4 rounded-md text-xs font-bold flex items-center gap-1 ${coverageLoading ? "bg-slate-300 text-slate-500" : "bg-emerald-500 hover:bg-emerald-600 text-white"}`}>
+                      className={`h-7 px-3 rounded text-[11px] font-semibold flex items-center gap-1.5 transition-all ${
+                        coverageLoading
+                          ? "bg-zinc-200 text-zinc-400 cursor-not-allowed"
+                          : "bg-zinc-900 hover:bg-zinc-800 text-white"
+                      }`}>
                       {coverageLoading ? <><RefreshCw className="w-3 h-3 animate-spin" /> 分析中</> : <><Radar className="w-3 h-3" /> 开始分析</>}
                     </button>
+                    {/* 阶段四 任务 4.3.1: 导出 CSV 按钮 (灰色变体) */}
+                    <button onClick={exportCoverageCSV} disabled={!coverageResults.length}
+                      className={`h-7 px-2.5 rounded text-[11px] font-medium flex items-center gap-1 transition-all ${
+                        !coverageResults.length
+                          ? "bg-zinc-100 text-zinc-300 cursor-not-allowed"
+                          : "bg-zinc-100 hover:bg-zinc-200 text-zinc-700"
+                      }`}
+                      title="导出当前分析结果为 CSV 文件">
+                      <Download className="w-3 h-3" /> 导出 CSV
+                    </button>
+                    {/* 阶段四 任务 4.4.1: 打印报告按钮 (灰色变体) */}
+                    <button onClick={printCoverageReport} disabled={!coverageSummary}
+                      className={`h-7 px-2.5 rounded text-[11px] font-medium flex items-center gap-1 transition-all ${
+                        !coverageSummary
+                          ? "bg-zinc-100 text-zinc-300 cursor-not-allowed"
+                          : "bg-zinc-100 hover:bg-zinc-200 text-zinc-700"
+                      }`}
+                      title="生成打印报告 (新窗口)">
+                      <Printer className="w-3 h-3" /> 打印报告
+                    </button>
                   </div>
-                  {/* 分析摘要 4 格渐变指标卡 */}
+
+                  {/* 阶段四 任务 4.1.1: 渲染模式切换 radio 控件 (分级着色 / 热力图) */}
                   {coverageSummary && (
-                    <div className="grid grid-cols-4 gap-2 mt-2">
-                      <div className="relative bg-gradient-to-br from-green-50 to-green-100/50 border border-green-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-green-500" />
-                        <p className="text-[11px] text-green-700">覆盖率</p>
-                        <p className="text-lg font-bold text-green-600">{coverageSummary.coverageRate}%</p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[10px] text-zinc-500 flex items-center gap-1">
+                        <Layers className="w-3 h-3" />
+                        渲染模式
+                      </span>
+                      <div
+                        className="flex rounded p-0.5"
+                        style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                      >
+                        <button
+                          onClick={() => setCoverageViewMode("graded")}
+                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
+                            coverageViewMode === "graded"
+                              ? "bg-white text-emerald-600 shadow-sm"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}
+                        >
+                          分级着色
+                        </button>
+                        <button
+                          onClick={() => setCoverageViewMode("heatmap")}
+                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
+                            coverageViewMode === "heatmap"
+                              ? "bg-white text-rose-600 shadow-sm"
+                              : "text-zinc-500 hover:text-zinc-700"
+                          }`}
+                        >
+                          热力图
+                        </button>
                       </div>
-                      <div className="relative bg-gradient-to-br from-red-50 to-red-100/50 border border-red-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-red-500" />
-                        <p className="text-[11px] text-red-700">盲区社区</p>
-                        <p className="text-lg font-bold text-red-600">{coverageSummary.blindSpotCommunities}</p>
+                      {coverageViewMode === "heatmap" && (
+                        <span className="text-[9px] text-zinc-400">
+                          覆盖率越低权重越高 (突出盲区)
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {/* 分析摘要 6 格指标卡 - 紧凑单行排列，保证一屏可见 */}
+                  {coverageSummary && (
+                    <div className="flex items-stretch gap-1.5 mt-1.5">
+                      <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.08), rgba(16,185,129,0.02))", border: "1px solid rgba(16,185,129,0.15)", borderTop: "2px solid #10B981", animationDelay: "0ms" }}>
+                        <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate">覆盖率</p>
+                        <p className="text-[14px] font-bold text-emerald-600 font-num mt-0.5">{coverageSummary.coverageRate}%</p>
                       </div>
-                      <div className="relative bg-gradient-to-br from-orange-50 to-orange-100/50 border border-orange-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-orange-500" />
-                        <p className="text-[11px] text-orange-700">盲区人口</p>
-                        <p className="text-lg font-bold text-orange-600">{coverageSummary.blindSpotPopulation.toLocaleString()}</p>
+                      <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.08), rgba(20,184,166,0.02))", border: "1px solid rgba(20,184,166,0.15)", borderTop: "2px solid #14B8A6", animationDelay: "40ms" }}>
+                        <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate">人口覆盖</p>
+                        <p className="text-[14px] font-bold text-teal-600 font-num mt-0.5">{(coverageSummary.populationCoverageRate ?? 0)}%</p>
                       </div>
-                      <div className="relative bg-gradient-to-br from-blue-50 to-blue-100/50 border border-blue-200 rounded-md pl-3 pr-2 py-1.5 overflow-hidden">
-                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-blue-500" />
-                        <p className="text-[11px] text-blue-700">充电站</p>
-                        <p className="text-lg font-bold text-blue-600">{coverageSummary.totalStations}</p>
+                      <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(239,68,68,0.08), rgba(239,68,68,0.02))", border: "1px solid rgba(239,68,68,0.15)", borderTop: "2px solid #EF4444", animationDelay: "80ms" }}>
+                        <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate">盲区社区</p>
+                        <p className="text-[14px] font-bold text-red-500 font-num mt-0.5">{coverageSummary.blindSpotCommunities}</p>
+                      </div>
+                      <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.02))", border: "1px solid rgba(245,158,11,0.15)", borderTop: "2px solid #F59E0B", animationDelay: "120ms" }}>
+                        <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate">盲区人口</p>
+                        <p className="text-[14px] font-bold text-orange-500 font-num mt-0.5">{(coverageSummary.blindSpotPopulation >= 10000) ? (coverageSummary.blindSpotPopulation / 10000).toFixed(1) + "万" : coverageSummary.blindSpotPopulation.toLocaleString()}</p>
+                      </div>
+                      <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(56,189,248,0.08), rgba(56,189,248,0.02))", border: "1px solid rgba(56,189,248,0.15)", borderTop: "2px solid #38BDF8", animationDelay: "160ms" }}>
+                        <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate">充电站</p>
+                        <p className="text-[14px] font-bold text-sky-500 font-num mt-0.5">{coverageSummary.totalStations}</p>
+                      </div>
+                      <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(168,85,247,0.08), rgba(168,85,247,0.02))", border: "1px solid rgba(168,85,247,0.15)", borderTop: "2px solid #A855F7", animationDelay: "200ms" }}>
+                        <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate">冗余度</p>
+                        <p className={`text-[14px] font-bold font-num mt-0.5 ${
+                          (coverageSummary.redundancyScore ?? 0) >= 30
+                            ? "text-red-500"
+                            : (coverageSummary.redundancyScore ?? 0) >= 10
+                              ? "text-orange-500"
+                              : "text-emerald-500"
+                        }`}>{(coverageSummary.redundancyScore ?? 0)}</p>
                       </div>
                     </div>
                   )}
-                  {/* 推荐选址候选点列表 (Top 5) */}
+                  {/* 阶段五 等时圈: 服务区模式来源统计条 (仅在 isochrone / hybrid 模式且具备数据时显示) */}
+                  {isochroneCoverage && (serviceAreaMode === "isochrone" || serviceAreaMode === "hybrid") && (
+                    <div
+                      className="mt-1 rounded px-2 py-1 flex items-center gap-2 text-[10px]"
+                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)" }}
+                    >
+                      <Activity className="w-3 h-3 shrink-0" style={{ color: "#7c3aed" }} />
+                      <span className="text-zinc-500">服务区来源</span>
+                      <span className="px-1.5 py-0 rounded font-medium font-mono" style={{ background: "rgba(124,58,237,0.1)", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.3)" }}>
+                        等时圈 {isochroneCoverage.covered} 站
+                      </span>
+                      {isochroneCoverage.fallback > 0 && (
+                        <span className="px-1.5 py-0 rounded font-medium font-mono" style={{ background: "rgba(245,158,11,0.1)", color: "#d97706", border: "1px solid rgba(245,158,11,0.3)" }}>
+                          缓冲回退 {isochroneCoverage.fallback} 站
+                        </span>
+                      )}
+                      <span className="ml-auto text-zinc-400 font-mono">
+                        等时圈占比 {isochroneCoverage.ratio}%
+                      </span>
+                    </div>
+                  )}
+                  {/* 横向图例条 — 嵌入上方功能区, 不占地图空间 */}
+                  {coverageSummary && (
+                    <div className="flex items-center gap-3 mt-1 px-1 py-0.5 rounded text-[10px]" style={{ background: "var(--color-subtle)" }}>
+                      <span className="text-zinc-500 font-semibold">图例</span>
+                      <span className="flex items-center gap-1">
+                        <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "rgba(6,182,212,0.25)", border: "1px solid rgba(0,0,0,0.06)" }} />
+                        服务区
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#F59E0B", border: "1px solid rgba(0,0,0,0.06)" }} />
+                        重叠区
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <MapPin className="w-2.5 h-2.5 text-amber-500 shrink-0" />
+                        盲区候选点
+                      </span>
+                      <span className="text-zinc-300">|</span>
+                      <span className="text-zinc-500 font-semibold">分级</span>
+                      <span className="flex items-center gap-1">
+                        <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#EF4444" }} />
+                        极差
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#F59E0B" }} />
+                        较差
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#FACC15" }} />
+                        一般
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#84CC16" }} />
+                        良好
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <span className="shrink-0 rounded" style={{ width: 10, height: 10, background: "#10B981" }} />
+                        优秀
+                      </span>
+                    </div>
+                  )}
+                  {/* 阶段三 任务 3.4.1: 无分析结果时显示小提示（不再占用大卡片） */}
+                  {!coverageSummary && !coverageLoading && (
+                    <div className="mt-1 flex items-center gap-1 text-[10px] text-zinc-500 animate-fade-in">
+                      <Info className="w-3 h-3 text-zinc-400" />
+                      <span>配置参数后点击「开始分析」</span>
+                      <span className="px-1 rounded" style={{ background: "var(--color-accent-subtle)", color: "#0284C7" }}>快充 800m</span>
+                      <span className="px-1 rounded" style={{ background: "var(--color-accent-subtle)", color: "#0284C7" }}>全部行政区</span>
+                    </div>
+                  )}
+                  {/* 候选点摘要 - 紧凑单行 */}
                   {blindSpotClusters.length > 0 && (
-                    <div className="mt-2">
-                      <p className="text-[11px] text-slate-500 font-bold flex items-center gap-1">
-                        <MapPin className="w-3 h-3 text-amber-500" /> 推荐选址候选点 (Top 5) · 点击"在此选址"跳转
+                    <div className="mt-1">
+                      <p className="text-[10px] text-zinc-500 flex items-center gap-1">
+                        <MapPin className="w-3 h-3 text-amber-500" />
+                        共 {blindSpotClusters.length} 个候选点 · 详见右侧「候选点」Tab
                       </p>
-                      <div className="flex flex-wrap gap-1.5 mt-1">
-                        {blindSpotClusters.slice(0, 5).map(c => (
-                          <div key={c.clusterId} className="bg-amber-50 border border-amber-200 rounded-md px-2 py-1 flex items-center gap-2">
-                            <div className="text-xs">
-                              <span className="font-bold text-amber-700">#{c.clusterId}</span>
-                              <span className="text-slate-500 ml-1">{c.communityCount}社区</span>
-                              <span className="text-orange-500 ml-1 font-bold">{c.population.toLocaleString()}人</span>
-                            </div>
-                            <button onClick={() => { setActiveTab("site"); placeVirtualStation(c.center[0], c.center[1]); }}
-                              className="bg-amber-500 hover:bg-amber-600 text-white text-[11px] px-2 py-0.5 rounded">在此选址</button>
-                          </div>
-                        ))}
-                      </div>
                     </div>
                   )}
                 </div>
@@ -2292,103 +4501,449 @@ export default function App() {
               </div>
             )}
 
-            {/* ===== 地图容器 (OpenLayers 挂载点, 保持 absolute inset-0) ===== */}
-            <div className="flex-1 relative overflow-hidden">
-              {/* 地图 */}
-              <div ref={mapContainerRef} className="absolute inset-0 w-full h-full"
-                style={{ zIndex: 0, display: activeTab === "admin" ? "none" : "block" }} />
 
-              {/* 候选点选中弹窗 (地图右上角, 点击候选点时显示) */}
-              {selectedCluster && (
-                <div className="absolute top-3 right-3 z-[5] bg-white rounded-lg shadow-xl border border-amber-200 w-[220px] overflow-hidden pointer-events-auto"
-                  onClick={e => e.stopPropagation()}>
-                  <div className="px-3 py-2" style={{ background: "linear-gradient(135deg, #f59e0b 0%, #fbbf24 100%)" }}>
-                    <div className="flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-white" />
-                      <span className="text-xs font-bold text-white">候选点 #{selectedCluster.clusterId}</span>
-                      <button onClick={() => setSelectedCluster(null)}
-                        className="ml-auto w-4 h-4 rounded-full bg-white/25 hover:bg-white/45 flex items-center justify-center text-white text-[10px]">✕</button>
-                    </div>
+
+            {/* ===== 地图容器 (OpenLayers 挂载点) ===== */}
+            <div className="flex-1 relative overflow-hidden">
+              {/* 地图背景纹理 — subtle 点阵网格, 增强空间感 */}
+              <div
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  zIndex: 0,
+                  backgroundImage: "radial-gradient(circle, rgba(0,0,0,0.04) 1px, transparent 1px)",
+                  backgroundSize: "24px 24px",
+                  display: activeTab === "admin" ? "none" : "block",
+                }}
+              />
+              {/* 地图 - 阶段四 任务 4.4.2: 移动端全屏 */}
+              <div ref={mapContainerRef} className="map-print-container absolute inset-0 w-full h-full mobile-map-fullscreen"
+                style={{ zIndex: 1, display: activeTab === "admin" ? "none" : "block" }} />
+
+              {/* 阶段三 任务 3.4.2: 覆盖分析中显示地图半透明遮罩 + 中央文案 */}
+              {activeTab === "coverage" && coverageLoading && (
+                <div
+                  className="absolute inset-0 z-5 flex items-center justify-center animate-fade-in"
+                  style={{ background: "rgba(255,255,255,0.6)" }}
+                >
+                  <div
+                    className="rounded-lg px-4 py-3 flex items-center gap-2"
+                    style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-md)" }}
+                  >
+                    <RefreshCw className="w-4 h-4 animate-spin" style={{ color: "var(--color-brand)" }} />
+                    <span className="text-[12px] font-medium" style={{ color: "var(--color-ink-2)" }}>
+                      {/* 阶段三 任务 3.4.3: N 取自上次分析的社区总数, 首次为空时只显示"正在分析..." */}
+                      {lastCommunityCountRef.current > 0
+                        ? `正在分析 ${lastCommunityCountRef.current} 个社区...`
+                        : "正在分析..."}
+                    </span>
                   </div>
-                  <div className="px-3 py-2 space-y-1 text-[11px] text-slate-700">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">覆盖社区</span>
-                      <span className="font-bold text-blue-500">{selectedCluster.communityCount} 个</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">盲区人口</span>
-                      <span className="font-bold text-orange-500">{selectedCluster.population.toLocaleString()} 人</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">坐标 (WGS84)</span>
-                      <span className="font-mono text-slate-600">{selectedCluster.center[0].toFixed(4)}, {selectedCluster.center[1].toFixed(4)}</span>
+                </div>
+              )}
+
+              {/* 地图工具栏 (左上角, 垂直布局, 仅非管理页显示) */}
+              {activeTab !== "admin" && (
+                <MapToolbar
+                  map={mapRef.current}
+                  activeTool={activeTool}
+                  onToolChange={handleToolChange}
+                  onClearMeasurements={handleClearMeasurements}
+                />
+              )}
+
+              {/* 空间查询结果浮窗 (右下角, Bento 3D 玻璃) */}
+              {queryResult && (queryResult.stations.length > 0 || queryResult.communities.length > 0) && (
+                <div
+                  className="absolute right-3 bottom-3 z-40 w-[340px] max-h-[320px] flex flex-col overflow-hidden animate-panel-enter bento-tile"
+                  style={{
+                    background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
+                    backdropFilter: "blur(20px) saturate(1.4)",
+                    WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+                    border: "1px solid rgba(255,255,255,0.4)",
+                    boxShadow: "var(--shadow-elevated)",
+                    borderRadius: 16,
+                  }}
+                >
+                  {/* 标题栏 */}
+                  <div className="px-3.5 py-2.5 flex items-center justify-between shrink-0" style={{ borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-md flex items-center justify-center shrink-0" style={{ background: "rgba(0,200,150,0.08)" }}>
+                        <Layers className="w-3.5 h-3.5" style={{ color: "var(--color-brand-text)" }} />
+                      </div>
+                      <span className="text-[12px] font-semibold" style={{ color: "var(--color-ink-1)" }}>查询结果</span>
                     </div>
                     <button
                       onClick={() => {
-                        // 跳转选址 Tab 并在该候选点放置虚拟站点
+                        setQueryResult(null);
+                        querySourceRef.current?.clear();
+                      }}
+                      className="w-6 h-6 rounded-md flex items-center justify-center transition-all"
+                      style={{ color: "var(--color-ink-4)" }}
+                      onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                      title="关闭"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {/* Tab 切换 */}
+                  <div className="flex shrink-0" style={{ borderBottom: "1px solid var(--color-muted)" }}>
+                    <button
+                      onClick={() => setQueryResultTab("stations")}
+                      className="flex-1 px-3 py-1.5 text-[11px] font-medium transition-colors"
+                      style={{
+                        color: queryResultTab === "stations" ? "var(--color-brand-text)" : "var(--color-ink-4)",
+                        borderBottom: queryResultTab === "stations" ? "2px solid var(--color-brand)" : "2px solid transparent",
+                        background: queryResultTab === "stations" ? "rgba(0,200,150,0.06)" : "transparent",
+                      }}
+                    >
+                      充电站 ({queryResult.stations.length})
+                    </button>
+                    <button
+                      onClick={() => setQueryResultTab("communities")}
+                      className="flex-1 px-3 py-1.5 text-[11px] font-medium transition-colors"
+                      style={{
+                        color: queryResultTab === "communities" ? "var(--color-brand-text)" : "var(--color-ink-4)",
+                        borderBottom: queryResultTab === "communities" ? "2px solid var(--color-brand)" : "2px solid transparent",
+                        background: queryResultTab === "communities" ? "rgba(0,200,150,0.06)" : "transparent",
+                      }}
+                    >
+                      社区 ({queryResult.communities.length})
+                    </button>
+                  </div>
+                  {/* 列表内容 */}
+                  <div className="flex-1 overflow-y-auto">
+                    {queryResultTab === "stations" ? (
+                      queryResult.stations.length === 0 ? (
+                        <div className="p-4 text-center text-[11px] text-zinc-400">该范围内无充电站</div>
+                      ) : (
+                        queryResult.stations.map((s, i) => (
+                          <button
+                            key={`st-${s.id ?? i}`}
+                            onClick={() => {
+                              const map = mapRef.current;
+                              if (map) map.getView().animate({ center: fromLonLat([s.lng, s.lat]), zoom: 15 });
+                            }}
+                            className="w-full text-left px-3 py-2 hover:bg-zinc-50 border-b border-zinc-100 last:border-b-0 transition-colors"
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: BRAND_CONFIG[s.brand]?.color || "#3b82f6" }} />
+                              <span className="text-[12px] font-medium text-zinc-800 truncate flex-1">{s.name}</span>
+                              <span className="text-[10px] text-zinc-500 shrink-0">{s.brand}</span>
+                            </div>
+                            <p className="text-[10px] text-zinc-500 truncate mt-0.5">{s.address || s.district}</p>
+                          </button>
+                        ))
+                      )
+                    ) : (
+                      queryResult.communities.length === 0 ? (
+                        <div className="p-4 text-center text-[11px] text-zinc-400">该范围内无社区</div>
+                      ) : (
+                        queryResult.communities.map((c: any, i) => (
+                          <button
+                            key={`cm-${c.id ?? i}`}
+                            onClick={() => {
+                              const map = mapRef.current;
+                              if (map && c._center) map.getView().animate({ center: c._center, zoom: 15 });
+                            }}
+                            className="w-full text-left px-3 py-2 hover:bg-zinc-50 border-b border-zinc-100 last:border-b-0 transition-colors"
+                          >
+                            <div className="flex items-center gap-1.5">
+                              <Building2 className="w-3 h-3 text-sky-500 shrink-0" />
+                              <span className="text-[12px] font-medium text-zinc-800 truncate flex-1">{c.name}</span>
+                              <span className="text-[10px] text-zinc-500 shrink-0">{c.district}</span>
+                            </div>
+                            <p className="text-[10px] text-zinc-500 mt-0.5">
+                              人口 {(c.population ?? 0).toLocaleString()}
+                              {c.isBlindSpot && <span className="ml-2 text-red-500">盲区</span>}
+                            </p>
+                          </button>
+                        ))
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* 候选点选中弹窗 (地图右上角, Bento 玻璃拟态) */}
+              {selectedCluster && (
+                <div
+                  className="absolute top-16 right-3 z-40 w-[240px] overflow-hidden pointer-events-auto animate-panel-enter bento-tile"
+                  style={{
+                    background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
+                    backdropFilter: "blur(20px) saturate(1.4)",
+                    WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+                    border: "1px solid rgba(255,255,255,0.4)",
+                    boxShadow: "var(--shadow-elevated)",
+                    borderRadius: 14,
+                  }}
+                  onClick={e => e.stopPropagation()}
+                >
+                  {/* 标题栏 — 品牌色 subtle 背景, 无渐变 */}
+                  <div className="px-3.5 py-2.5 flex items-center gap-2" style={{ background: "rgba(0,200,150,0.08)", borderBottom: "1px solid rgba(0,200,150,0.12)" }}>
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: "rgba(0,200,150,0.12)" }}>
+                      <MapPin className="w-3.5 h-3.5" style={{ color: "var(--color-brand-text)" }} />
+                    </div>
+                    <span className="text-[12px] font-bold" style={{ color: "var(--color-brand-text)" }}>候选点 #{selectedCluster.clusterId}</span>
+                    <button onClick={() => setSelectedCluster(null)}
+                      className="ml-auto w-5 h-5 rounded-md flex items-center justify-center transition-colors"
+                      style={{ color: "var(--color-ink-4)" }}
+                      onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {/* 内容区 */}
+                  <div className="px-3.5 py-3 space-y-2 text-[11px]" style={{ color: "var(--color-ink-2)" }}>
+                    <div className="flex justify-between items-center">
+                      <span style={{ color: "var(--color-ink-4)" }}>覆盖社区</span>
+                      <span className="font-semibold font-num" style={{ color: "var(--color-brand-text)" }}>{selectedCluster.communityCount} 个</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span style={{ color: "var(--color-ink-4)" }}>盲区人口</span>
+                      <span className="font-semibold font-num" style={{ color: "var(--color-warning)" }}>{selectedCluster.population.toLocaleString()} 人</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span style={{ color: "var(--color-ink-4)" }}>坐标 (WGS84)</span>
+                      <span className="font-mono text-[10px]" style={{ color: "var(--color-ink-3)" }}>{selectedCluster.center[0].toFixed(4)}, {selectedCluster.center[1].toFixed(4)}</span>
+                    </div>
+                    <button
+                      onClick={() => {
                         setActiveTab("site");
                         placeVirtualStation(selectedCluster.center[0], selectedCluster.center[1]);
                         setSelectedCluster(null);
                       }}
-                      className="w-full mt-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold py-1.5 rounded-md flex items-center justify-center gap-1">
-                      <Target className="w-3 h-3" /> 在此选址
+                      className="w-full mt-2 text-white text-[11px] font-semibold py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all btn-brand"
+                      style={{ borderRadius: 10 }}
+                    >
+                      <Target className="w-3.5 h-3.5" /> 在此选址
                     </button>
                   </div>
                 </div>
               )}
 
-          {/* AI 站点详情 Overlay（由 OpenLayers Overlay 控制定位，在站点上方显示） */}
-          <div id="ai-station-overlay" className="ai-station-overlay">
-            {aiStationDetail && (
-              <div className="bg-white rounded-xl shadow-2xl w-[260px] overflow-hidden pointer-events-auto"
-                onClick={e => e.stopPropagation()}>
-                <div className="relative px-3 py-2.5" style={{ background: `linear-gradient(135deg, ${BRAND_CONFIG[aiStationDetail.brand]?.color || "#00C896"} 0%, #38BDF8 100%)` }}>
-                  <button onClick={closeAiStationDetail} className="absolute top-1.5 right-1.5 w-5 h-5 rounded-full bg-white/20 hover:bg-white/40 flex items-center justify-center text-white text-[10px]">✕</button>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-lg">{BRAND_CONFIG[aiStationDetail.brand]?.icon || "⚡"}</span>
-                    <div className="flex-1 min-w-0">
-                      <h3 className="text-xs font-semibold text-white truncate">{aiStationDetail.name}</h3>
-                      <p className="text-[10px] text-white/75">{aiStationDetail.brand} · {aiStationDetail.district}</p>
+          {/* 社区详情弹窗 (屏幕中央模态, Bento 玻璃拟态) */}
+          {communityDetailOpen && communityDetail && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+              style={{ background: "rgba(9,9,11,0.45)", backdropFilter: "blur(6px)" }}
+              onClick={() => { setCommunityDetailOpen(false); setCommunityDetail(null); }}
+            >
+              <div
+                className="w-[380px] overflow-hidden animate-scale-in bento-tile"
+                style={{
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(250,250,250,0.92) 100%)",
+                  backdropFilter: "blur(24px) saturate(1.4)",
+                  WebkitBackdropFilter: "blur(24px) saturate(1.4)",
+                  border: "1px solid rgba(255,255,255,0.4)",
+                  boxShadow: "var(--shadow-elevated)",
+                  borderRadius: 16,
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* 标题栏 */}
+                <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid var(--color-muted)" }}>
+                  <h3 className="text-[14px] font-semibold" style={{ color: "var(--color-ink-1)" }}>
+                    {communityDetail.name}
+                  </h3>
+                  <button
+                    onClick={() => { setCommunityDetailOpen(false); setCommunityDetail(null); }}
+                    className="w-7 h-7 rounded-lg flex items-center justify-center transition-all"
+                    style={{ color: "var(--color-ink-4)" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                {/* 内容区 */}
+                <div className="px-4 py-3 space-y-2.5 text-[12px]">
+                  {/* 行政区 / 人口 */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span style={{ color: "var(--color-ink-5)" }}>行政区</span>
+                      <span className="px-1.5 py-0.5 rounded text-[11px]" style={{ background: "var(--color-subtle)", color: "var(--color-ink-3)" }}>
+                        {communityDetail.district}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span style={{ color: "var(--color-ink-5)" }}>人口</span>
+                      <span className="font-num font-medium" style={{ color: "var(--color-ink-2)" }}>
+                        {communityDetail.population.toLocaleString()}
+                      </span>
                     </div>
                   </div>
+                  {/* 覆盖率 + 分级色块 */}
+                  <div className="flex items-center justify-between py-1.5 px-2 rounded" style={{ background: "var(--color-subtle)" }}>
+                    <span style={{ color: "var(--color-ink-5)" }}>覆盖率</span>
+                    <div className="flex items-center gap-1.5">
+                      {(() => {
+                        const ratio = communityDetail.coverageRatio;
+                        let level = "极差";
+                        if (ratio >= 90) level = "优秀";
+                        else if (ratio >= 60) level = "良好";
+                        else if (ratio >= 30) level = "一般";
+                        else if (ratio >= 10) level = "较差";
+                        const color = COVERAGE_LEVEL_COLORS[level];
+                        return (
+                          <>
+                            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
+                            <span className="text-[11px]" style={{ color }}>{level}</span>
+                            <span className="font-num font-bold text-[13px]" style={{ color }}>
+                              {ratio.toFixed(1)}%
+                            </span>
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                  {/* 覆盖充电站列表 (按距离升序, Top5) */}
+                  <div>
+                    <p className="text-[11px] mb-1.5" style={{ color: "var(--color-ink-5)" }}>附近充电站 (按距离排序)</p>
+                    {nearbyStations.length === 0 ? (
+                      <p className="text-[11px] py-2 text-center" style={{ color: "var(--color-ink-5)" }}>暂无充电站数据</p>
+                    ) : (
+                      <div className="space-y-1">
+                        {nearbyStations.map((s, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center justify-between py-1 px-2 rounded"
+                            style={{ background: "var(--color-subtle)" }}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <span
+                                className="w-1.5 h-1.5 rounded-full shrink-0"
+                                style={{ background: BRAND_CONFIG[s.brand]?.color || "#3b82f6" }}
+                              />
+                              <span className="text-[11px] truncate" style={{ color: "var(--color-ink-2)" }}>
+                                {s.name}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>
+                                {s.brand}
+                              </span>
+                              <span className="text-[10px] font-num" style={{ color: "var(--color-ink-4)" }}>
+                                快{s.fastChargers}/慢{s.slowChargers}
+                              </span>
+                              <span className="text-[10px] font-num font-medium" style={{ color: "var(--color-brand-text)" }}>
+                                {s.distance.toFixed(2)}km
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {/* 盲区: 显示"在此选址"按钮 */}
+                  {communityDetail.isBlindSpot && (
+                    <button
+                      onClick={() => {
+                        // 从 communitySource 取质心作为选址坐标
+                        const feat = communitySourceRef.current?.getFeatureById(communityDetail.id);
+                        if (feat) {
+                          const g = feat.getGeometry();
+                          if (g && g.getExtent) {
+                            const ext = g.getExtent();
+                            const center3857: [number, number] = [(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2];
+                            const centerLonLat = toLonLat(center3857);
+                            // 3857 坐标系下底图为 GCJ02, 转回 WGS84 传给 placeVirtualStation
+                            const [wgsLng, wgsLat] = gcj02ToWgs84(centerLonLat[0], centerLonLat[1]);
+                            setActiveTab("site");
+                            placeVirtualStation(wgsLng, wgsLat);
+                            setCommunityDetailOpen(false);
+                            setCommunityDetail(null);
+                          }
+                        }
+                      }}
+                      className="w-full mt-2 text-white text-[12px] font-semibold py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all btn-brand"
+                      style={{ borderRadius: 12 }}
+                    >
+                      <Target className="w-3.5 h-3.5" /> 在此选址
+                    </button>
+                  )}
                 </div>
-                <div className="px-3 py-2 space-y-1.5 text-[11px] text-slate-700">
-                  <div className="flex items-start gap-1.5">
-                    <MapPin className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />
+              </div>
+            </div>
+          )}
+
+          {/* AI 站点详情模态框 (Bento 玻璃拟态) */}
+          {aiStationDetail && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+              style={{ background: "rgba(9,9,11,0.45)", backdropFilter: "blur(6px)" }}
+              onClick={closeAiStationDetail}>
+              <div className="w-[340px] overflow-hidden animate-scale-in bento-tile"
+                style={{
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(250,250,250,0.92) 100%)",
+                  backdropFilter: "blur(24px) saturate(1.4)",
+                  WebkitBackdropFilter: "blur(24px) saturate(1.4)",
+                  border: "1px solid rgba(255,255,255,0.4)",
+                  boxShadow: "var(--shadow-elevated)",
+                  borderRadius: 16,
+                }}
+                onClick={e => e.stopPropagation()}>
+                {/* 标题栏 — 品牌色 subtle 背景, 无渐变 */}
+                <div className="relative px-4 py-3 flex items-center gap-2" style={{ background: "rgba(0,200,150,0.06)", borderBottom: "1px solid rgba(0,200,150,0.1)" }}>
+                  <button onClick={closeAiStationDetail}
+                    className="absolute top-2.5 right-2.5 w-6 h-6 rounded-md flex items-center justify-center transition-all"
+                    style={{ color: "var(--color-ink-4)" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: "rgba(0,200,150,0.1)" }}>
+                    <span className="text-lg">{BRAND_CONFIG[aiStationDetail.brand]?.icon || "⚡"}</span>
+                  </div>
+                  <div className="flex-1 min-w-0 pr-6">
+                    <h3 className="text-sm font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{aiStationDetail.name}</h3>
+                    <p className="text-[11px]" style={{ color: "var(--color-ink-4)" }}>{aiStationDetail.brand} · {aiStationDetail.district}</p>
+                  </div>
+                </div>
+                <div className="px-4 py-3 space-y-2.5 text-[12px]" style={{ color: "var(--color-ink-2)" }}>
+                  <div className="flex items-start gap-2">
+                    <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
                     <span className="line-clamp-2">{aiStationDetail.address || "暂无地址"}</span>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <Zap className="w-3 h-3 text-amber-500 shrink-0" />
-                    <span>快充{aiStationDetail.fastChargers || 0}</span>
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                    <span>快充 {aiStationDetail.fastChargers || 0}</span>
                     <span className="text-slate-300">|</span>
-                    <span>慢充{aiStationDetail.slowChargers || 0}</span>
+                    <span>慢充 {aiStationDetail.slowChargers || 0}</span>
                   </div>
                   {aiStationDetail.distanceKm != null && (
-                    <div className="flex items-center gap-1.5">
-                      <Navigation className="w-3 h-3 text-[#00C896] shrink-0" />
-                      <span className="text-[#00C896] font-medium">距您 {aiStationDetail.distanceKm} km</span>
+                    <div className="flex items-center gap-2">
+                      <Navigation className="w-3.5 h-3.5 text-[#00C896] shrink-0" />
+                      <span className="text-[#00C896] font-medium">距您 {aiStationDetail.distanceKm} 公里</span>
                     </div>
                   )}
                 </div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
-          {/* 充电站详情模态框 (屏幕中央大框, 集成属性展示 + 全面反馈子系统) */}
+          {/* 充电站详情模态框 (屏幕中央大框, Bento 玻璃拟态) */}
           {selectedStation && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-              style={{ background: "rgba(15,23,42,0.5)", backdropFilter: "blur(2px)" }}
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+              style={{ background: "rgba(9,9,11,0.45)", backdropFilter: "blur(6px)" }}
               onClick={() => setSelectedStation(null)}>
-              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden"
-                style={{ boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}
+              <div className="w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-scale-in bento-tile"
+                style={{
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.96) 0%, rgba(250,250,250,0.92) 100%)",
+                  backdropFilter: "blur(24px) saturate(1.4)",
+                  WebkitBackdropFilter: "blur(24px) saturate(1.4)",
+                  border: "1px solid rgba(255,255,255,0.4)",
+                  boxShadow: "var(--shadow-elevated)",
+                  borderRadius: 20,
+                }}
                 onClick={(e) => e.stopPropagation()}>
 
-                {/* 模态框标题栏 */}
-                <div className="flex justify-between items-center px-6 py-4 border-b border-slate-200"
-                  style={{ background: "linear-gradient(90deg, rgba(0,200,150,0.05) 0%, rgba(56,189,248,0.05) 100%)" }}>
+                {/* 模态框标题栏 — 无渐变, subtle 品牌背景 */}
+                <div className="flex justify-between items-center px-6 py-4"
+                  style={{ background: "rgba(0,200,150,0.04)", borderBottom: "1px solid rgba(0,200,150,0.08)" }}>
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-lg font-bold shrink-0"
-                      style={{ background: `linear-gradient(135deg, ${BRAND_CONFIG[selectedStation.brand]?.color || "#00C896"} 0%, #38BDF8 100%)` }}>
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg font-bold shrink-0"
+                      style={{ background: "rgba(0,200,150,0.1)", color: "var(--color-brand-text)" }}>
                       {BRAND_CONFIG[selectedStation.brand]?.icon || "⚡"}
                     </div>
                     <div className="min-w-0">
@@ -2402,7 +4957,11 @@ export default function App() {
                     </div>
                   </div>
                   <button onClick={() => setSelectedStation(null)}
-                    className="text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg p-1.5 transition-colors shrink-0">
+                    className="w-8 h-8 rounded-lg flex items-center justify-center transition-all shrink-0"
+                    style={{ color: "var(--color-ink-4)" }}
+                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                  >
                     <X className="w-5 h-5" />
                   </button>
                 </div>
@@ -2458,6 +5017,60 @@ export default function App() {
                           <p className="text-slate-700">{selectedStation.address}</p>
                         </div>
                       )}
+                      {/* 阶段五 等时圈: 服务区计算状态徽章 */}
+                      <div className="bg-white rounded-lg p-3 border border-slate-200 text-xs">
+                        <p className="text-slate-500 mb-1.5 flex items-center gap-1.5">
+                          <Activity className="w-3.5 h-3.5 text-violet-500" /> 路网等时圈状态
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {(() => {
+                            const status = selectedStation.isochroneStatus || "pending";
+                            if (status === "ok") {
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
+                                  style={{ background: "rgba(16,185,129,0.1)", color: "#059669", border: "1px solid rgba(16,185,129,0.3)" }}>
+                                  <CheckCircle2 className="w-3 h-3" /> 已计算
+                                </span>
+                              );
+                            }
+                            if (status === "partial") {
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
+                                  style={{ background: "rgba(245,158,11,0.1)", color: "#d97706", border: "1px solid rgba(245,158,11,0.3)" }}>
+                                  <Clock className="w-3 h-3" /> 部分计算
+                                </span>
+                              );
+                            }
+                            if (status === "failed") {
+                              return (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
+                                  style={{ background: "rgba(239,68,68,0.1)", color: "#dc2626", border: "1px solid rgba(239,68,68,0.3)" }}>
+                                  <AlertCircle className="w-3 h-3" /> 计算失败
+                                </span>
+                              );
+                            }
+                            return (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium"
+                                style={{ background: "rgba(245,158,11,0.1)", color: "#d97706", border: "1px solid rgba(245,158,11,0.3)" }}>
+                                <Clock className="w-3 h-3" /> 待计算
+                              </span>
+                            );
+                          })()}
+                          {selectedStation.isochroneFastUpdated && (
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              快充 {new Date(selectedStation.isochroneFastUpdated).toLocaleDateString("zh-CN")}
+                            </span>
+                          )}
+                          {selectedStation.isochroneSlowUpdated && (
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              慢充 {new Date(selectedStation.isochroneSlowUpdated).toLocaleDateString("zh-CN")}
+                            </span>
+                          )}
+                          {!selectedStation.isochroneFastUpdated && !selectedStation.isochroneSlowUpdated && (
+                            <span className="text-[10px] text-slate-400">尚未生成等时圈多边形</span>
+                          )}
+                        </div>
+                      </div>
 
                       {/* 导航按钮 */}
                       <div className="bg-white rounded-lg p-3 border border-slate-200">
@@ -2490,7 +5103,7 @@ export default function App() {
                                 <div className="flex items-center justify-between text-xs">
                                   <div className="flex items-center gap-1 text-[#00C896]">
                                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
-                                    <span className="font-bold">{routeInfo.distance >= 1000 ? `${(routeInfo.distance / 1000).toFixed(1)}km` : `${routeInfo.distance}m`}</span>
+                                    <span className="font-bold">{routeInfo.distance >= 1000 ? `${(routeInfo.distance / 1000).toFixed(1)}公里` : `${routeInfo.distance}米`}</span>
                                   </div>
                                   <div className="flex items-center gap-1 text-blue-500">
                                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -2670,85 +5283,140 @@ export default function App() {
             </div>
           )}
 
-          {/* 鼠标坐标 */}
+          {/* 鼠标坐标 - Linear 风: 单色边框, 无毛玻璃, 等宽字体 */}
           {mousePosition && (
-            <div className="absolute bottom-3 right-3 bg-white/95 backdrop-blur border border-slate-200 text-slate-600 px-2.5 py-1 rounded text-[10px] font-mono z-10 shadow-sm">
-              经: {mousePosition[0]}, 纬: {mousePosition[1]}
+            <div
+              className="absolute bottom-1 left-1/2 -translate-x-1/2 z-10 px-2.5 py-1 rounded-md font-num text-[10px] no-select"
+              style={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-muted)",
+                boxShadow: "var(--shadow-xs)",
+                color: "var(--color-ink-3)",
+              }}
+            >
+              <span style={{ color: "var(--color-ink-5)" }}>经度</span>{" "}
+              {mousePosition[0].toFixed(6)}
+              <span className="mx-1.5" style={{ color: "var(--color-line)" }}>·</span>
+              <span style={{ color: "var(--color-ink-5)" }}>纬度</span>{" "}
+              {mousePosition[1].toFixed(6)}
             </div>
           )}
 
-          {/* 用户定位与导航浮窗 (右上角, 除管理页外所有页面显示) */}
+          {/* 用户定位与导航浮窗 - Linear 风: 单色边框, 无毛玻璃 (右上角, 除管理页外) */}
           {activeTab !== "admin" && (
-          <div className="absolute top-3 right-3 z-20 flex flex-col gap-1.5 items-end">
+          <div className="absolute top-3 right-3 z-30 flex flex-col gap-1.5 items-end">
             <button
               onClick={locateUser}
               disabled={locating}
               title="定位我的位置"
-              className="w-9 h-9 flex items-center justify-center bg-white/95 backdrop-blur border border-slate-200 rounded-lg shadow-lg hover:border-[#00C896] hover:text-[#00C896] transition-all disabled:opacity-60"
+              className="w-9 h-9 flex items-center justify-center rounded-md transition-all disabled:opacity-50"
+              style={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-muted)",
+                boxShadow: "var(--shadow-sm)",
+                color: "var(--color-ink-4)",
+              }}
+              onMouseEnter={(e) => { if (!locating) { e.currentTarget.style.borderColor = "var(--color-brand)"; e.currentTarget.style.color = "var(--color-brand)"; } }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--color-muted)"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
             >
-              <LocateFixed className={`w-4.5 h-4.5 ${locating ? "text-[#00C896] animate-spin" : "text-slate-500"}`} />
+              <LocateFixed className={`w-4 h-4 ${locating ? "animate-spin" : ""}`} style={{ color: locating ? "var(--color-brand)" : undefined }} />
             </button>
             {userLocation && (
-              <div className="bg-white/95 backdrop-blur border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-lg text-[10px] w-auto text-center">
-                <p className="text-slate-400 whitespace-nowrap">{userLocation.lng.toFixed(5)}, {userLocation.lat.toFixed(5)}</p>
+              <div
+                className="rounded-md px-2.5 py-1.5 text-[10px] w-auto text-center font-num no-select"
+                style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+              >
+                <p className="whitespace-nowrap" style={{ color: "var(--color-ink-2)" }}>
+                  {userLocation.lng.toFixed(5)}, {userLocation.lat.toFixed(5)}
+                </p>
                 {userLocation.accuracy && (
-                  <p className="text-[8px] text-green-500">±{Math.round(userLocation.accuracy)}m</p>
+                  <p className="text-[9px]" style={{ color: "var(--color-brand-text)" }}>±{Math.round(userLocation.accuracy)}m</p>
                 )}
               </div>
             )}
             {locateError && (
-              <div className="bg-red-50 border border-red-200 rounded-lg px-2.5 py-1.5 shadow-lg text-[9px] w-44 text-center">
-                <p className="text-red-600">{locateError}</p>
+              <div
+                className="rounded-md px-2.5 py-1.5 text-[9px] w-44 text-center"
+                style={{ background: "var(--color-surface)", border: "1px solid var(--color-danger)", boxShadow: "var(--shadow-xs)" }}
+              >
+                <p style={{ color: "var(--color-danger)" }}>{locateError}</p>
               </div>
             )}
             {routeInfo && (
-              <div className="bg-white/95 backdrop-blur border border-[#00C896]/30 rounded-lg shadow-lg text-[11px] overflow-hidden w-72 max-h-[70vh] flex flex-col">
-                {/* 导航头部 */}
-                <div className="px-3 py-2 flex items-center justify-between border-b border-slate-100">
+              <div
+                className="rounded-lg text-[11px] overflow-hidden w-72 max-h-[70vh] flex flex-col animate-scale-in"
+                style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-lg)" }}
+              >
+                {/* 导航头部 - Linear 风: 紧凑, 无渐变 */}
+                <div
+                  className="px-3 py-2 flex items-center justify-between"
+                  style={{ borderBottom: "1px solid var(--color-muted)", background: "var(--color-surface)" }}
+                >
                   <div className="min-w-0 flex-1">
-                    <p className="text-slate-500 text-[10px] flex items-center gap-1">
-                      <RouteIcon className="w-3 h-3 text-[#00C896]" /> 导航至
+                    <p className="text-[10px] flex items-center gap-1" style={{ color: "var(--color-ink-5)" }}>
+                      <RouteIcon className="w-3 h-3" style={{ color: "var(--color-brand)" }} /> 导航至
                     </p>
-                    <p className="text-sm font-bold text-slate-800 truncate">{routeInfo.targetName}</p>
+                    <p className="text-[13px] font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{routeInfo.targetName}</p>
                   </div>
-                  <button onClick={clearRoute} className="ml-2 shrink-0 w-6 h-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-red-500">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12"/></svg>
+                  <button
+                    onClick={clearRoute}
+                    className="ml-2 shrink-0 w-6 h-6 flex items-center justify-center rounded transition-colors"
+                    style={{ color: "var(--color-ink-5)" }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-danger)"; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-5)"; }}
+                  >
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                {/* 总览信息 */}
-                <div className="flex items-center gap-3 px-3 py-2 border-b border-slate-100 bg-slate-50/50">
-                  <div className="flex items-center gap-1 text-[#00C896]">
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
-                    <span className="font-bold text-xs">{routeInfo.distance >= 1000 ? `${(routeInfo.distance / 1000).toFixed(1)}km` : `${routeInfo.distance}m`}</span>
+                {/* 总览信息 - Linear 风: 等宽数字, 单色 */}
+                <div
+                  className="flex items-center gap-3 px-3 py-2"
+                  style={{ borderBottom: "1px solid var(--color-muted)", background: "var(--color-subtle)" }}
+                >
+                  <div className="flex items-center gap-1.5" style={{ color: "var(--color-brand-text)" }}>
+                    <RouteIcon className="w-3.5 h-3.5" />
+                    <span className="font-num font-semibold text-xs">{routeInfo.distance >= 1000 ? `${(routeInfo.distance / 1000).toFixed(1)}公里` : `${routeInfo.distance}米`}</span>
                   </div>
-                  <div className="flex items-center gap-1 text-blue-500">
+                  <div className="flex items-center gap-1.5" style={{ color: "var(--color-ink-3)" }}>
                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                    <span className="font-bold text-xs">{routeInfo.duration >= 60 ? `${Math.floor(routeInfo.duration / 60)}时${routeInfo.duration % 60}分` : `${routeInfo.duration}分钟`}</span>
+                    <span className="font-num font-semibold text-xs">{routeInfo.duration >= 60 ? `${Math.floor(routeInfo.duration / 60)}时${routeInfo.duration % 60}分` : `${routeInfo.duration}分钟`}</span>
                   </div>
                   {routeInfo.steps && routeInfo.steps.length > 0 && (
-                    <span className="text-slate-400 text-[10px] ml-auto">{routeInfo.steps.length}个路段</span>
+                    <span className="text-[10px] ml-auto" style={{ color: "var(--color-ink-5)" }}>共 {routeInfo.steps.length} 个路段</span>
                   )}
                 </div>
-                {/* 步骤列表 */}
+                {/* 步骤列表 - Linear 风: 竖向连接线, 单色 */}
                 {routeInfo.steps && routeInfo.steps.length > 0 && (
                   <div className="overflow-y-auto flex-1 max-h-[50vh]">
                     {routeInfo.steps.map((step, idx) => (
-                      <div key={idx} className={`flex gap-2.5 px-3 py-2 border-b border-slate-50 last:border-b-0 ${idx === 0 ? 'bg-blue-50/50' : ''}`}>
+                      <div
+                        key={idx}
+                        className="flex gap-2.5 px-3 py-2 last:border-b-0"
+                        style={{ borderBottom: "1px solid var(--color-subtle)", background: idx === 0 ? "var(--color-brand-subtle)" : "transparent" }}
+                      >
                         {/* 方向图标 */}
                         <div className="shrink-0 w-5 pt-0.5 flex flex-col items-center">
-                          <div className={`w-5 h-5 rounded-full flex items-center justify-center ${idx === 0 ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                          <div
+                            className="w-5 h-5 rounded-full flex items-center justify-center"
+                            style={{
+                              background: idx === 0 ? "var(--color-brand)" : "var(--color-subtle)",
+                              color: idx === 0 ? "#fff" : "var(--color-ink-4)",
+                              border: "1px solid " + (idx === 0 ? "var(--color-brand)" : "var(--color-muted)"),
+                            }}
+                          >
                             <DirectionIcon action={step.action} />
                           </div>
-                          {idx < routeInfo.steps.length - 1 && <div className="w-px flex-1 bg-slate-200 mt-0.5" />}
+                          {idx < routeInfo.steps.length - 1 && <div className="w-px flex-1 mt-0.5" style={{ background: "var(--color-muted)" }} />}
                         </div>
                         {/* 步骤内容 */}
                         <div className="min-w-0 flex-1 pb-1">
-                          <p className={`text-[11px] font-medium ${idx === 0 ? 'text-blue-700' : 'text-slate-700'}`}>
+                          <p className={`text-[11px] font-medium ${idx === 0 ? "" : ""}`} style={{ color: idx === 0 ? "var(--color-brand-text)" : "var(--color-ink-2)" }}>
                             {step.instruction || step.action || `路段 ${idx + 1}`}
                           </p>
-                          {step.road && <p className="text-[10px] text-slate-400 mt-0.5">经 {step.road}</p>}
-                          <p className="text-[10px] text-slate-400 mt-0.5 flex gap-2">
-                            <span>{(step.distance || 0) >= 1000 ? `${(step.distance / 1000).toFixed(1)}km` : `${step.distance || 0}m`}</span>
+                          {step.road && <p className="text-[10px] mt-0.5" style={{ color: "var(--color-ink-5)" }}>途经 {step.road}</p>}
+                          <p className="text-[10px] mt-0.5 flex gap-2 font-num" style={{ color: "var(--color-ink-5)" }}>
+                            <span>{(step.distance || 0) >= 1000 ? `${(step.distance / 1000).toFixed(1)}公里` : `${step.distance || 0}米`}</span>
+                            <span>·</span>
                             <span>{Math.round((step.duration || 0) / 60) || '<1'}分钟</span>
                           </p>
                         </div>
@@ -2761,464 +5429,967 @@ export default function App() {
           </div>
             )}
 
-          {/* 图例 */}
-          <div className="absolute bottom-3 left-3 bg-white/95 backdrop-blur border border-slate-200 rounded-lg p-2.5 shadow-lg z-10 w-48">
-            <h5 className="text-[10px] font-bold text-slate-700 mb-1.5 uppercase tracking-wider flex items-center gap-1">
-              <Layers className="w-3 h-3 text-blue-500" /> 图例
+          {/* 图例 - Linear 风: 单色边框, 无毛玻璃, 紧凑 (覆盖分析 Tab 使用专属 MapLegend, 此处仅其他 Tab 显示) */}
+          {activeTab !== "coverage" && (
+          <div
+            className="absolute bottom-3 left-3 rounded-lg p-2.5 z-10 w-48"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-sm)" }}
+          >
+            <h5
+              className="text-[10px] font-semibold mb-1.5 flex items-center gap-1"
+              style={{ color: "var(--color-ink-3)" }}
+            >
+              <Layers className="w-3 h-3" style={{ color: "var(--color-ink-4)" }} /> 图例
             </h5>
-            <ul className="space-y-1 text-[9px] text-slate-400">
+            <ul className="space-y-1 text-[10px]" style={{ color: "var(--color-ink-3)" }}>
               {availableBrands.map(b => (
                 <li key={b} className="flex items-center gap-2">
-                  <span className="w-3 h-3 rounded-full inline-block" style={{ background: BRAND_CONFIG[b].color }}></span>
+                  <span className="w-2.5 h-2.5 rounded-full inline-block shrink-0" style={{ background: BRAND_CONFIG[b].color, border: "1px solid rgba(255,255,255,0.4)" }}></span>
                   <span>{BRAND_CONFIG[b].label}</span>
                 </li>
               ))}
-              <li className="flex items-center gap-2 pt-1 border-t border-slate-200">
-                <span className="w-3 h-3 rounded bg-green-500/10 border border-green-500/50 inline-block"></span>
+              <li className="flex items-center gap-2 pt-1.5 mt-1" style={{ borderTop: "1px solid var(--color-subtle)" }}>
+                <span className="w-2.5 h-2.5 rounded inline-block shrink-0" style={{ background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.5)" }}></span>
                 <span>住宅小区</span>
               </li>
               <li className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded bg-red-500/30 border border-red-500 inline-block"></span>
+                <span className="w-2.5 h-2.5 rounded inline-block shrink-0" style={{ background: "rgba(239,68,68,0.3)", border: "1px solid var(--color-danger)" }}></span>
                 <span>充电盲区</span>
               </li>
               <li className="flex items-center gap-2">
-                <span className="w-3 h-3 rounded bg-green-500/30 border border-green-500 inline-block"></span>
+                <span className="w-2.5 h-2.5 rounded inline-block shrink-0" style={{ background: "rgba(16,185,129,0.3)", border: "1px solid var(--color-success)" }}></span>
                 <span>已覆盖区域</span>
               </li>
             </ul>
           </div>
+          )}
 
-          {/* --- 系统管理子系统 (全屏多分类管理界面, 独立渲染) --- */}
+          {/* --- 系统管理子系统 - Linear 风: 卡片网格优先, 紧凑严谨 --- */}
           {activeTab === "admin" && (
-              <div className="absolute inset-0 z-30 bg-[#F5F7FA] flex flex-col overflow-hidden">
-                {/* 管理界面标题栏 */}
-                <div className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Settings className="w-5 h-5 text-[#00C896]" />
-                    <h3 className="text-base font-semibold text-slate-800">系统管理控制台</h3>
-                    <span className="text-[11px] px-2 py-0.5 rounded font-mono"
-                      style={{ background: "rgba(168,85,247,0.1)", color: "#A855F7", border: "1px solid rgba(168,85,247,0.25)" }}>
-                      管理员模式
-                    </span>
+              <div
+                className="absolute inset-0 z-30 flex flex-col overflow-hidden"
+                style={{ background: "var(--color-canvas)" }}
+              >
+                {/* 管理界面标题栏 - Linear 风: 紧凑, 单色边框 */}
+                <div
+                  className="px-5 py-3 flex items-center justify-between shrink-0"
+                  style={{ background: "var(--color-surface)", borderBottom: "1px solid var(--color-muted)" }}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className="w-7 h-7 rounded-md flex items-center justify-center"
+                      style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                    >
+                      <Settings className="w-4 h-4" style={{ color: "var(--color-ink-2)" }} />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-[15px] font-semibold" style={{ color: "var(--color-ink-1)" }}>系统管理控制台</h3>
+                      <span
+                        className="text-[10px] px-1.5 py-0 rounded"
+                        style={{
+                          background: "var(--color-grape-subtle)",
+                          color: "var(--color-grape)",
+                          border: "1px solid var(--color-grape-border)",
+                        }}
+                      >
+                        管理员
+                      </span>
+                    </div>
                   </div>
-                  <button onClick={loadAdminData}
-                    className="text-xs px-3 py-1.5 rounded-lg bg-[#00C896] hover:bg-[#00A078] text-white flex items-center gap-1.5">
-                    <RefreshCw className="w-3.5 h-3.5" /> 刷新数据
+                  <button
+                    onClick={loadAdminData}
+                    className="btn-brand text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 font-medium"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> 刷新
                   </button>
                 </div>
 
-                {/* 分类 Tab 栏 */}
-                <div className="bg-white border-b border-slate-200 px-6 flex gap-1">
+                {/* 分类 Tab 栏 - Linear 风: 下划线指示器, 等宽标签 */}
+                <div
+                  className="px-5 flex gap-0 shrink-0"
+                  style={{ background: "var(--color-surface)", borderBottom: "1px solid var(--color-muted)" }}
+                >
                   {([
-                    { key: "overview", label: "数据概览", icon: BarChart3 },
-                    { key: "stations", label: "充电站管理", icon: Zap },
-                    { key: "users", label: "用户管理", icon: UserIcon },
-                    { key: "feedback", label: "反馈管理", icon: MessageSquare },
-                    { key: "schemes", label: "方案管理", icon: Target },
-                    { key: "logs", label: "系统日志", icon: Database },
+                    { key: "overview", label: "概览", icon: BarChart3 },
+                    { key: "stations", label: "充电站", icon: Zap },
+                    { key: "users", label: "用户", icon: UserIcon },
+                    { key: "feedback", label: "反馈", icon: MessageSquare },
+                    { key: "schemes", label: "方案", icon: Target },
+                    { key: "logs", label: "日志", icon: Database },
+                    { key: "report", label: "统计报表", icon: FileText },
+                    { key: "isochrone", label: "等时圈", icon: Activity },
                   ] as const).map(t => {
                     const Icon = t.icon;
+                    const isActive = adminTab === t.key;
                     return (
-                      <button key={t.key} onClick={() => setAdminTab(t.key)}
-                        className={`flex items-center gap-1.5 px-4 py-2.5 text-[13px] font-medium border-b-2 transition-all ${
-                          adminTab === t.key
-                            ? "border-[#00C896] text-[#00C896]"
-                            : "border-transparent text-slate-500 hover:text-slate-700"
-                        }`}>
-                        <Icon className="w-4 h-4" /> {t.label}
+                      <button
+                        key={t.key}
+                        onClick={() => setAdminTab(t.key)}
+                        className="flex items-center gap-1.5 px-3 py-2.5 text-[13px] font-medium transition-colors relative"
+                        style={{
+                          color: isActive ? "var(--color-ink-1)" : "var(--color-ink-4)",
+                        }}
+                      >
+                        <Icon className="w-3.5 h-3.5" style={{ color: isActive ? "var(--color-brand)" : "var(--color-ink-5)" }} />
+                        {t.label}
+                        {isActive && (
+                          <span
+                            className="absolute left-0 right-0 -bottom-px"
+                            style={{ height: 2, background: "var(--color-brand)" }}
+                          />
+                        )}
                       </button>
                     );
                   })}
                 </div>
 
-                {/* 管理内容区 */}
-                <div className="flex-1 overflow-auto p-6">
+                {/* 管理内容区 - Linear 风: 紧凑 padding */}
+                <div className="flex-1 overflow-auto p-5">
 
-                  {/* ===== 数据概览 ===== */}
+                  {/* ===== 数据概览 - 卡片网格优先 ===== */}
                   {adminTab === "overview" && (
-                    <div className="space-y-4">
-                      {/* 统计卡片 */}
-                      <div className="grid grid-cols-5 gap-4">
+                    <div className="space-y-4 animate-fade-in">
+                      {/* 统计卡片 - 大数字 + 图标芯片 + 趋势色 */}
+                      <div className="grid grid-cols-5 gap-3">
                         {[
-                          { label: "充电站总数", value: adminStations.length, color: "#00C896", icon: Zap },
-                          { label: "注册用户", value: users.length, color: "#38BDF8", icon: UserIcon },
-                          { label: "反馈数据", value: adminFeedback.length, color: "#E6A23C", icon: MessageSquare },
-                          { label: "选址方案", value: adminSchemes.length, color: "#A855F7", icon: Target },
-                          { label: "系统日志", value: logs.length, color: "#F56C6C", icon: Database },
+                          { label: "充电站总数", value: adminStations.length, color: "var(--color-brand)", icon: Zap, sub: "活跃站点" },
+                          { label: "注册用户", value: users.length, color: "var(--color-accent)", icon: UserIcon, sub: "全角色" },
+                          { label: "反馈数据", value: adminFeedback.length, color: "var(--color-warning)", icon: MessageSquare, sub: "评价+需求" },
+                          { label: "选址方案", value: adminSchemes.length, color: "var(--color-grape)", icon: Target, sub: "已保存" },
+                          { label: "系统日志", value: logs.length, color: "var(--color-danger)", icon: Database, sub: "操作记录" },
                         ].map(s => {
                           const Icon = s.icon;
                           return (
-                            <div key={s.label} className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="text-xs text-slate-500">{s.label}</span>
-                                <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: s.color + "15" }}>
-                                  <Icon className="w-4 h-4" style={{ color: s.color }} />
+                            <div
+                              key={s.label}
+                              className="rounded-lg p-3.5 transition-shadow hover:shadow-md"
+                              style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                            >
+                              <div className="flex items-center justify-between mb-3">
+                                <span className="text-[11px] font-medium" style={{ color: "var(--color-ink-4)" }}>{s.label}</span>
+                                <div
+                                  className="w-7 h-7 rounded-md flex items-center justify-center"
+                                  style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                                >
+                                  <Icon className="w-3.5 h-3.5" style={{ color: s.color }} />
                                 </div>
                               </div>
-                              <p className="text-2xl font-bold" style={{ color: s.color }}>{s.value}</p>
+                              <p className="text-[28px] font-bold font-num leading-none" style={{ color: "var(--color-ink-1)" }}>{s.value}</p>
+                              <p className="text-[10px] mt-1.5 font-mono" style={{ color: "var(--color-ink-5)" }}>{s.sub}</p>
                             </div>
                           );
                         })}
                       </div>
 
-                      {/* 充电站品牌分布 + 行政区分布 */}
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
-                          <h4 className="text-sm font-semibold text-slate-700 mb-3">充电站品牌分布</h4>
+                      {/* 充电站品牌分布 + 行政区分布 - 卡片网格 */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="rounded-lg p-4" style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}>
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>充电站品牌分布</h4>
+                            <span className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>{adminStations.length} 总数</span>
+                          </div>
                           <div className="space-y-2">
                             {Object.entries(
                               adminStations.reduce((acc: any, s: any) => {
                                 acc[s.brand] = (acc[s.brand] || 0) + 1;
                                 return acc;
                               }, {})
-                            ).map(([brand, count]: any) => (
-                              <div key={brand} className="flex items-center gap-2">
-                                <span className="text-xs text-slate-600 w-20">{brand}</span>
-                                <div className="flex-1 h-4 bg-slate-100 rounded-full overflow-hidden">
-                                  <div className="h-full rounded-full flex items-center justify-end px-1.5"
-                                    style={{ width: `${adminStations.length ? (count / adminStations.length) * 100 : 0}%`, background: BRAND_CONFIG[brand]?.color || "#909399" }}>
-                                    <span className="text-[10px] text-white font-bold">{count}</span>
+                            ).sort((a: any, b: any) => b[1] - a[1]).map(([brand, count]: any) => {
+                              const pct = adminStations.length ? (count / adminStations.length) * 100 : 0;
+                              return (
+                                <div key={brand} className="flex items-center gap-2.5">
+                                  <span className="text-[11px] w-20 truncate" style={{ color: "var(--color-ink-3)" }}>{brand}</span>
+                                  <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--color-subtle)" }}>
+                                    <div className="h-full rounded-full transition-all"
+                                      style={{ width: `${pct}%`, background: BRAND_CONFIG[brand]?.color || "var(--color-ink-5)" }} />
                                   </div>
+                                  <span className="text-[11px] font-num font-semibold w-6 text-right" style={{ color: "var(--color-ink-2)" }}>{count}</span>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
-                        <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
-                          <h4 className="text-sm font-semibold text-slate-700 mb-3">行政区充电站分布</h4>
+                        <div className="rounded-lg p-4" style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}>
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>行政区充电站分布</h4>
+                            <span className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>按数量排序</span>
+                          </div>
                           <div className="space-y-2">
                             {Object.entries(
                               adminStations.reduce((acc: any, s: any) => {
                                 acc[s.district] = (acc[s.district] || 0) + 1;
                                 return acc;
                               }, {})
-                            ).sort((a: any, b: any) => b[1] - a[1]).map(([district, count]: any) => (
-                              <div key={district} className="flex items-center gap-2">
-                                <span className="text-xs text-slate-600 w-16">{district}</span>
-                                <div className="flex-1 h-4 bg-slate-100 rounded-full overflow-hidden">
-                                  <div className="h-full bg-[#38BDF8] rounded-full flex items-center justify-end px-1.5"
-                                    style={{ width: `${adminStations.length ? (count / adminStations.length) * 100 : 0}%` }}>
-                                    <span className="text-[10px] text-white font-bold">{count}</span>
+                            ).sort((a: any, b: any) => b[1] - a[1]).map(([district, count]: any) => {
+                              const pct = adminStations.length ? (count / adminStations.length) * 100 : 0;
+                              return (
+                                <div key={district} className="flex items-center gap-2.5">
+                                  <span className="text-[11px] w-16 truncate" style={{ color: "var(--color-ink-3)" }}>{district}</span>
+                                  <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--color-subtle)" }}>
+                                    <div className="h-full rounded-full transition-all"
+                                      style={{ width: `${pct}%`, background: "var(--color-accent)" }} />
                                   </div>
+                                  <span className="text-[11px] font-num font-semibold w-6 text-right" style={{ color: "var(--color-ink-2)" }}>{count}</span>
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
 
-                      {/* 最近系统日志 */}
-                      <div className="bg-white rounded-xl p-4 border border-slate-200 shadow-sm">
-                        <h4 className="text-sm font-semibold text-slate-700 mb-3">最近系统操作</h4>
-                        <div className="space-y-1.5 max-h-48 overflow-y-auto">
-                          {logs.slice(0, 10).map(l => (
-                            <div key={l.id} className="flex items-center gap-3 text-xs py-1.5 border-b border-slate-100 last:border-0">
-                              <span className="text-slate-400 font-mono w-32">{l.create_time}</span>
-                              <span className="text-[#00C896] font-medium w-20">{l.action}</span>
-                              <span className="text-slate-600 flex-1">{l.detail}</span>
-                              <span className="text-slate-400">— {l.user}</span>
+                      {/* 最近系统日志 - 时间线卡片 */}
+                      <div className="rounded-lg p-4" style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}>
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>最近系统操作</h4>
+                          <button onClick={() => setAdminTab("logs")} className="text-[11px] font-medium hover:underline" style={{ color: "var(--color-brand-text)" }}>
+                            查看全部 →
+                          </button>
+                        </div>
+                        <div className="space-y-0 max-h-56 overflow-y-auto">
+                          {logs.slice(0, 8).map((l, idx) => (
+                            <div
+                              key={l.id}
+                              className="flex items-center gap-3 text-[11px] py-2"
+                              style={{ borderBottom: idx < Math.min(logs.length, 8) - 1 ? "1px solid var(--color-subtle)" : "none" }}
+                            >
+                              <span className="font-num w-32 shrink-0" style={{ color: "var(--color-ink-5)" }}>{l.create_time}</span>
+                              <span
+                                className="px-1.5 py-0 rounded font-medium w-16 text-center shrink-0 font-mono text-[10px]"
+                                style={{ background: "var(--color-brand-subtle)", color: "var(--color-brand-text)", border: "1px solid var(--color-brand-border)" }}
+                              >
+                                {l.action}
+                              </span>
+                              <span className="flex-1 truncate" style={{ color: "var(--color-ink-3)" }}>{l.detail}</span>
+                              <span className="shrink-0" style={{ color: "var(--color-ink-5)" }}>— {l.user}</span>
                             </div>
                           ))}
-                          {logs.length === 0 && <p className="text-center text-slate-400 py-4">暂无日志</p>}
+                          {logs.length === 0 && (
+                            <div className="py-8 text-center">
+                              <Database className="w-6 h-6 mx-auto mb-2" style={{ color: "var(--color-ink-6)" }} />
+                              <p className="text-[11px]" style={{ color: "var(--color-ink-5)" }}>暂无日志记录</p>
+                            </div>
+                          )}
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* ===== 充电站管理 ===== */}
+                  {/* ===== 充电站管理 - 卡片堆叠 ===== */}
                   {adminTab === "stations" && (
-                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-                        <h4 className="text-sm font-semibold text-slate-700">充电站列表 ({adminStations.length})</h4>
-                        <div className="flex items-center gap-2">
-                          <input type="text" placeholder="搜索名称/品牌/区域..." value={adminSearch}
-                            onChange={(e) => setAdminSearch(e.target.value)}
-                            className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 w-56 focus:border-[#00C896] focus:outline-none" />
-                          <button onClick={() => setAdminEditing({})}
-                            className="text-xs px-3 py-1.5 rounded-lg bg-[#00C896] hover:bg-[#00A078] text-white flex items-center gap-1">
-                            + 新增
-                          </button>
-                        </div>
-                      </div>
-                      <div className="overflow-x-auto max-h-[calc(100vh-220px)] overflow-y-auto">
-                        <table className="w-full text-xs">
-                          <thead className="bg-slate-50 sticky top-0">
-                            <tr className="text-slate-500">
-                              <th className="px-3 py-2 text-left">ID</th>
-                              <th className="px-3 py-2 text-left">名称</th>
-                              <th className="px-3 py-2 text-left">品牌</th>
-                              <th className="px-3 py-2 text-left">行政区</th>
-                              <th className="px-3 py-2 text-center">快充</th>
-                              <th className="px-3 py-2 text-center">慢充</th>
-                              <th className="px-3 py-2 text-left">状态</th>
-                              <th className="px-3 py-2 text-left">坐标</th>
-                              <th className="px-3 py-2 text-center">操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
+                    <div className="animate-fade-in">
+                      {/* 工具栏 */}
+                      <div
+                        className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>充电站</h4>
+                          <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>
                             {adminStations.filter((s: any) => {
                               if (!adminSearch) return true;
                               const q = adminSearch.toLowerCase();
                               return safeText(s.name).toLowerCase().includes(q) || safeText(s.brand).toLowerCase().includes(q) || safeText(s.district).includes(adminSearch);
-                            }).map((s: any) => (
-                              <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-400">{s.id}</td>
-                                <td className="px-3 py-2 text-slate-700 font-medium">{s.name}</td>
-                                <td className="px-3 py-2">
-                                  <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: (BRAND_CONFIG[s.brand]?.color || "#909399") + "15", color: BRAND_CONFIG[s.brand]?.color || "#909399" }}>
-                                    {s.brand}
+                            }).length} / {adminStations.length}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="relative">
+                            <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--color-ink-5)" }} />
+                            <input
+                              type="text"
+                              placeholder="搜索名称/品牌/区域..."
+                              value={adminSearch}
+                              onChange={(e) => setAdminSearch(e.target.value)}
+                              className="input-sys text-xs pl-8 pr-3 py-1.5 w-56"
+                            />
+                          </div>
+                          <button
+                            onClick={() => setAdminEditing({})}
+                            className="btn-brand text-xs px-3 py-1.5 rounded-md flex items-center gap-1 font-medium"
+                          >
+                            <span className="text-sm leading-none">+</span> 新增
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 卡片网格 */}
+                      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+                        {adminStations.filter((s: any) => {
+                          if (!adminSearch) return true;
+                          const q = adminSearch.toLowerCase();
+                          return safeText(s.name).toLowerCase().includes(q) || safeText(s.brand).toLowerCase().includes(q) || safeText(s.district).includes(adminSearch);
+                        }).map((s: any) => {
+                          const isActive = s.status === "运营中";
+                          return (
+                            <div
+                              key={s.id}
+                              className="rounded-lg p-3 transition-shadow hover:shadow-md group"
+                              style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                            >
+                              {/* 顶部: 名称 + 状态 */}
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5 mb-0.5">
+                                    <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--color-ink-5)" }}>#{s.id}</span>
+                                    {isActive && <span className="w-1.5 h-1.5 rounded-full animate-status-pulse" style={{ background: "var(--color-success)" }} />}
+                                  </div>
+                                  <h5 className="text-[13px] font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{s.name}</h5>
+                                </div>
+                                <span
+                                  className="text-[10px] px-1.5 py-0 rounded font-medium shrink-0 font-mono"
+                                  style={{
+                                    background: isActive ? "var(--color-brand-subtle)" : "rgba(245,158,11,0.08)",
+                                    color: isActive ? "var(--color-brand-text)" : "var(--color-warning)",
+                                    border: "1px solid " + (isActive ? "var(--color-brand-border)" : "rgba(245,158,11,0.25)"),
+                                  }}
+                                >
+                                  {s.status}
+                                </span>
+                              </div>
+                              {/* 中部: 品牌 + 行政区 */}
+                              <div className="flex items-center gap-1.5 mb-2.5 flex-wrap">
+                                <span
+                                  className="text-[10px] px-1.5 py-0 rounded font-medium"
+                                  style={{ background: (BRAND_CONFIG[s.brand]?.color || "#909399") + "15", color: BRAND_CONFIG[s.brand]?.color || "#909399" }}
+                                >
+                                  {s.brand}
+                                </span>
+                                <span className="text-[10px]" style={{ color: "var(--color-ink-4)" }}>· {s.district}</span>
+                              </div>
+                              {/* 底部: 充电桩数 + 坐标 */}
+                              <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid var(--color-subtle)" }}>
+                                <div className="flex items-center gap-3 text-[11px]">
+                                  <span className="flex items-center gap-1">
+                                    <Zap className="w-3 h-3" style={{ color: "var(--color-brand)" }} />
+                                    <span className="font-num font-semibold" style={{ color: "var(--color-ink-2)" }}>{s.fastChargers}</span>
+                                    <span style={{ color: "var(--color-ink-5)" }}>快</span>
                                   </span>
-                                </td>
-                                <td className="px-3 py-2 text-slate-600">{s.district}</td>
-                                <td className="px-3 py-2 text-center text-green-600 font-medium">{s.fastChargers}</td>
-                                <td className="px-3 py-2 text-center text-blue-500 font-medium">{s.slowChargers}</td>
-                                <td className="px-3 py-2">
-                                  <span className={s.status === "运营中" ? "text-green-600" : "text-orange-500"}>{s.status}</span>
-                                </td>
-                                <td className="px-3 py-2 text-slate-400 font-mono text-[10px]">{Number(s.lng).toFixed(4)}, {Number(s.lat).toFixed(4)}</td>
-                                <td className="px-3 py-2 text-center">
-                                  <button onClick={() => setAdminEditing(s)}
-                                    className="text-[#00C896] hover:underline mr-2">编辑</button>
-                                  <button onClick={async () => {
+                                  <span className="flex items-center gap-1">
+                                    <span className="w-3 h-3 rounded-full inline-block" style={{ border: "1.5px solid var(--color-accent)" }} />
+                                    <span className="font-num font-semibold" style={{ color: "var(--color-ink-2)" }}>{s.slowChargers}</span>
+                                    <span style={{ color: "var(--color-ink-5)" }}>慢</span>
+                                  </span>
+                                </div>
+                                <span className="text-[9px] font-num" style={{ color: "var(--color-ink-5)" }}>
+                                  {Number(s.lng).toFixed(4)}, {Number(s.lat).toFixed(4)}
+                                </span>
+                              </div>
+                              {/* 操作按钮 - hover 显示 */}
+                              <div className="flex gap-1 mt-2 pt-2 opacity-0 group-hover:opacity-100 transition-opacity" style={{ borderTop: "1px solid var(--color-subtle)" }}>
+                                <button
+                                  onClick={() => setAdminEditing(s)}
+                                  className="flex-1 text-[11px] py-1 rounded font-medium transition-colors flex items-center justify-center gap-1"
+                                  style={{ background: "var(--color-subtle)", color: "var(--color-ink-3)" }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-brand-subtle)"; e.currentTarget.style.color = "var(--color-brand-text)"; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-3)"; }}
+                                >
+                                  编辑
+                                </button>
+                                <button
+                                  onClick={async () => {
                                     if (!confirm(`确定删除充电站「${s.name}」?`)) return;
                                     const r = await authFetch(`/api/v1/stations/${s.id}`, { method: "DELETE" });
                                     const j = await r.json();
                                     if (j.success) { loadAdminData(); alert("已删除"); }
                                     else alert(j.message);
-                                  }} className="text-red-500 hover:underline">删除</button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                                  }}
+                                  className="flex-1 text-[11px] py-1 rounded font-medium transition-colors flex items-center justify-center gap-1"
+                                  style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}
+                                  onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.08)"; e.currentTarget.style.color = "var(--color-danger)"; }}
+                                  onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {adminStations.filter((s: any) => {
+                          if (!adminSearch) return true;
+                          const q = adminSearch.toLowerCase();
+                          return safeText(s.name).toLowerCase().includes(q) || safeText(s.brand).toLowerCase().includes(q) || safeText(s.district).includes(adminSearch);
+                        }).length === 0 && (
+                          <div className="col-span-full py-12 text-center">
+                            <Zap className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--color-ink-6)" }} />
+                            <p className="text-[12px]" style={{ color: "var(--color-ink-5)" }}>未找到匹配的充电站</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
 
-                  {/* ===== 用户管理 ===== */}
+                  {/* ===== 用户管理 - 卡片网格 ===== */}
                   {adminTab === "users" && (
-                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-                        <h4 className="text-sm font-semibold text-slate-700">用户列表 ({users.length})</h4>
-                        <button onClick={() => setAdminEditing({ _type: "user" })}
-                          className="text-xs px-3 py-1.5 rounded-lg bg-[#00C896] hover:bg-[#00A078] text-white flex items-center gap-1">
-                          + 新增用户
+                    <div className="animate-fade-in">
+                      <div
+                        className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>用户</h4>
+                          <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>{users.length}</span>
+                        </div>
+                        <button
+                          onClick={() => setAdminEditing({ _type: "user" })}
+                          className="btn-brand text-xs px-3 py-1.5 rounded-md flex items-center gap-1 font-medium"
+                        >
+                          <span className="text-sm leading-none">+</span> 新增用户
                         </button>
                       </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                          <thead className="bg-slate-50">
-                            <tr className="text-slate-500">
-                              <th className="px-3 py-2 text-left">ID</th>
-                              <th className="px-3 py-2 text-left">用户名</th>
-                              <th className="px-3 py-2 text-left">角色</th>
-                              <th className="px-3 py-2 text-left">状态</th>
-                              <th className="px-3 py-2 text-left">注册时间</th>
-                              <th className="px-3 py-2 text-center">操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {users.map(u => (
-                              <tr key={u.id} className="border-t border-slate-100 hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-400">{u.id}</td>
-                                <td className="px-3 py-2 text-slate-700 font-medium">{u.username}</td>
-                                <td className="px-3 py-2">
-                                  <span className="px-1.5 py-0.5 rounded text-[10px]"
-                                    style={{ background: ROLE_CONFIG[u.role as UserRole]?.color + "15", color: ROLE_CONFIG[u.role as UserRole]?.color }}>
-                                    {ROLE_CONFIG[u.role as UserRole]?.label || u.role}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2">
-                                  <span className={u.status === "正常" ? "text-green-600" : "text-red-500"}>{u.status}</span>
-                                </td>
-                                <td className="px-3 py-2 text-slate-500">{u.create_time}</td>
-                                <td className="px-3 py-2 text-center">
-                                  <button onClick={() => setAdminEditing({ ...u, _type: "user" })}
-                                    className="text-[#00C896] hover:underline mr-2">编辑</button>
-                                  {u.username !== "admin" && (
-                                    <button onClick={async () => {
-                                      if (!confirm(`确定删除用户「${u.username}」?`)) return;
-                                      const r = await authFetch(`/api/v1/users/${u.id}`, { method: "DELETE" });
-                                      const j = await r.json();
-                                      if (j.success) { loadAdminData(); alert("已删除"); }
-                                      else alert(j.message);
-                                    }} className="text-red-500 hover:underline">删除</button>
+                      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+                        {users.map(u => {
+                          const isNormal = u.status === "正常";
+                          const roleColor = ROLE_CONFIG[u.role as UserRole]?.color || "var(--color-ink-5)";
+                          const isAdmin = u.username === "admin";
+                          return (
+                            <div
+                              key={u.id}
+                              className="rounded-lg p-3 transition-shadow hover:shadow-md group"
+                              style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                            >
+                              <div className="flex items-start gap-2.5 mb-2.5">
+                                <div
+                                  className="w-9 h-9 rounded-full flex items-center justify-center shrink-0 text-[13px] font-semibold font-mono"
+                                  style={{ background: roleColor + "15", color: roleColor, border: "1px solid " + roleColor + "30" }}
+                                >
+                                  {u.username.slice(0, 1).toUpperCase()}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <h5 className="text-[13px] font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{u.username}</h5>
+                                    {isAdmin && <ShieldCheck className="w-3 h-3 shrink-0" style={{ color: "var(--color-grape)" }} />}
+                                  </div>
+                                  <span className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>#{u.id}</span>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-1.5 mb-2.5 flex-wrap">
+                                <span
+                                  className="text-[10px] px-1.5 py-0 rounded font-medium"
+                                  style={{ background: roleColor + "15", color: roleColor }}
+                                >
+                                  {ROLE_CONFIG[u.role as UserRole]?.label || u.role}
+                                </span>
+                                <span className="flex items-center gap-1 text-[10px]" style={{ color: isNormal ? "var(--color-success)" : "var(--color-danger)" }}>
+                                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: isNormal ? "var(--color-success)" : "var(--color-danger)" }} />
+                                  {u.status}
+                                </span>
+                              </div>
+                              <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid var(--color-subtle)" }}>
+                                <span className="text-[10px] font-num" style={{ color: "var(--color-ink-5)" }}>{u.create_time}</span>
+                                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    onClick={() => setAdminEditing({ ...u, _type: "user" })}
+                                    className="text-[10px] px-2 py-0.5 rounded font-medium transition-colors"
+                                    style={{ background: "var(--color-subtle)", color: "var(--color-ink-3)" }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-brand-subtle)"; e.currentTarget.style.color = "var(--color-brand-text)"; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-3)"; }}
+                                  >
+                                    编辑
+                                  </button>
+                                  {!isAdmin && (
+                                    <button
+                                      onClick={async () => {
+                                        if (!confirm(`确定删除用户「${u.username}」?`)) return;
+                                        const r = await authFetch(`/api/v1/users/${u.id}`, { method: "DELETE" });
+                                        const j = await r.json();
+                                        if (j.success) { loadAdminData(); alert("已删除"); }
+                                        else alert(j.message);
+                                      }}
+                                      className="text-[10px] px-2 py-0.5 rounded font-medium transition-colors"
+                                      style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}
+                                      onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.08)"; e.currentTarget.style.color = "var(--color-danger)"; }}
+                                      onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                                    >
+                                      删除
+                                    </button>
                                   )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   )}
 
-                  {/* ===== 反馈管理 ===== */}
+                  {/* ===== 反馈管理 - 卡片列表 ===== */}
                   {adminTab === "feedback" && (
-                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-                        <h4 className="text-sm font-semibold text-slate-700">反馈列表 ({adminFeedback.length})</h4>
-                        <button onClick={async () => {
-                          if (!confirm("确定清空所有违禁驳回的反馈?")) return;
-                          const r = await authFetch("/api/v1/feedback/rejected/clear", { method: "DELETE" });
-                          const j = await r.json();
-                          if (j.success) { loadAdminData(); alert(j.message); }
-                          else alert(j.message);
-                        }} className="text-xs px-3 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200">
-                          清空违禁反馈
+                    <div className="animate-fade-in">
+                      <div
+                        className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>反馈</h4>
+                          <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>{adminFeedback.length}</span>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            if (!confirm("确定清空所有违禁驳回的反馈?")) return;
+                            const r = await authFetch("/api/v1/feedback/rejected/clear", { method: "DELETE" });
+                            const j = await r.json();
+                            if (j.success) { loadAdminData(); alert(j.message); }
+                            else alert(j.message);
+                          }}
+                          className="text-xs px-3 py-1.5 rounded-md flex items-center gap-1 font-medium transition-colors"
+                          style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)", border: "1px solid rgba(239,68,68,0.2)" }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.1)"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.06)"; }}
+                        >
+                          <Trash2 className="w-3 h-3" /> 清空违禁
                         </button>
                       </div>
-                      <div className="overflow-x-auto max-h-[calc(100vh-220px)] overflow-y-auto">
-                        <table className="w-full text-xs">
-                          <thead className="bg-slate-50 sticky top-0">
-                            <tr className="text-slate-500">
-                              <th className="px-3 py-2 text-left">ID</th>
-                              <th className="px-3 py-2 text-left">类型</th>
-                              <th className="px-3 py-2 text-left">评分</th>
-                              <th className="px-3 py-2 text-left">内容</th>
-                              <th className="px-3 py-2 text-left">提交人</th>
-                              <th className="px-3 py-2 text-left">时间</th>
-                              <th className="px-3 py-2 text-left">状态</th>
-                              <th className="px-3 py-2 text-center">操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {adminFeedback.map(f => (
-                              <tr key={f.id} className="border-t border-slate-100 hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-400">{f.id}</td>
-                                <td className="px-3 py-2">
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${f.type === "evaluation" ? "bg-blue-100 text-blue-600" : "bg-orange-100 text-orange-600"}`}>
-                                    {f.type === "evaluation" ? "评价" : "需求"}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2 text-yellow-500">{"★".repeat(Math.min(f.rating || 0, 5))}</td>
-                                <td className="px-3 py-2 text-slate-700 max-w-xs truncate">{f.description}</td>
-                                <td className="px-3 py-2 text-slate-600">{f.submitter}</td>
-                                <td className="px-3 py-2 text-slate-500">{f.create_time}</td>
-                                <td className="px-3 py-2">
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                                    f.status === "approved" ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"
-                                  }`}>
-                                    {f.status === "approved" ? "已通过" : "违禁驳回"}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2 text-center">
-                                  <button onClick={async () => {
-                                    if (!confirm("确定删除该反馈?")) return;
-                                    const r = await authFetch(`/api/v1/feedback/${f.id}`, { method: "DELETE" });
-                                    const j = await r.json();
-                                    if (j.success) { loadAdminData(); alert("已删除"); }
-                                    else alert(j.message);
-                                  }} className="text-red-500 hover:underline">删除</button>
-                                </td>
-                              </tr>
-                            ))}
-                            {adminFeedback.length === 0 && (
-                              <tr><td colSpan={8} className="text-center text-slate-400 py-8">暂无反馈数据</td></tr>
-                            )}
-                          </tbody>
-                        </table>
+                      <div className="space-y-2 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+                        {adminFeedback.map(f => {
+                          const isApproved = f.status === "approved";
+                          const isEvaluation = f.type === "evaluation";
+                          return (
+                            <div
+                              key={f.id}
+                              className="rounded-lg p-3 group transition-shadow hover:shadow-md"
+                              style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="shrink-0 flex flex-col items-center gap-1">
+                                  <div
+                                    className="w-7 h-7 rounded-md flex items-center justify-center"
+                                    style={{ background: isEvaluation ? "var(--color-accent-subtle)" : "rgba(245,158,11,0.08)", border: "1px solid " + (isEvaluation ? "var(--color-accent-border)" : "rgba(245,158,11,0.2)") }}
+                                  >
+                                    {isEvaluation ? <BarChart3 className="w-3.5 h-3.5" style={{ color: "var(--color-accent)" }} /> : <MessageSquare className="w-3.5 h-3.5" style={{ color: "var(--color-warning)" }} />}
+                                  </div>
+                                  <span className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>#{f.id}</span>
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                    <span
+                                      className="text-[10px] px-1.5 py-0 rounded font-medium font-mono"
+                                      style={{
+                                        background: isEvaluation ? "var(--color-accent-subtle)" : "rgba(245,158,11,0.08)",
+                                        color: isEvaluation ? "var(--color-accent)" : "var(--color-warning)",
+                                      }}
+                                    >
+                                      {isEvaluation ? "评价" : "需求"}
+                                    </span>
+                                    {f.rating > 0 && (
+                                      <span className="text-[10px]" style={{ color: "var(--color-warning)" }}>{"★".repeat(Math.min(f.rating, 5))}</span>
+                                    )}
+                                    <span
+                                      className="text-[10px] px-1.5 py-0 rounded font-medium ml-auto"
+                                      style={{
+                                        background: isApproved ? "var(--color-brand-subtle)" : "rgba(239,68,68,0.08)",
+                                        color: isApproved ? "var(--color-brand-text)" : "var(--color-danger)",
+                                      }}
+                                    >
+                                      {isApproved ? "已通过" : "违禁驳回"}
+                                    </span>
+                                  </div>
+                                  <p className="text-[12px] mb-1.5 leading-relaxed" style={{ color: "var(--color-ink-2)" }}>{f.description}</p>
+                                  <div className="flex items-center justify-between text-[10px]" style={{ color: "var(--color-ink-5)" }}>
+                                    <div className="flex items-center gap-2">
+                                      <span style={{ color: "var(--color-ink-4)" }}>{f.submitter}</span>
+                                      <span>·</span>
+                                      <span className="font-num">{f.create_time}</span>
+                                    </div>
+                                    <button
+                                      onClick={async () => {
+                                        if (!confirm("确定删除该反馈?")) return;
+                                        const r = await authFetch(`/api/v1/feedback/${f.id}`, { method: "DELETE" });
+                                        const j = await r.json();
+                                        if (j.success) { loadAdminData(); alert("已删除"); }
+                                        else alert(j.message);
+                                      }}
+                                      className="opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded font-medium"
+                                      style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)" }}
+                                    >
+                                      删除
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {adminFeedback.length === 0 && (
+                          <div className="py-12 text-center">
+                            <MessageSquare className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--color-ink-6)" }} />
+                            <p className="text-[12px]" style={{ color: "var(--color-ink-5)" }}>暂无反馈数据</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
 
-                  {/* ===== 方案管理 ===== */}
+                  {/* ===== 方案管理 - 卡片网格 ===== */}
                   {adminTab === "schemes" && (
-                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-200">
-                        <h4 className="text-sm font-semibold text-slate-700">选址方案列表 ({adminSchemes.length})</h4>
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                          <thead className="bg-slate-50">
-                            <tr className="text-slate-500">
-                              <th className="px-3 py-2 text-left">ID</th>
-                              <th className="px-3 py-2 text-left">方案名称</th>
-                              <th className="px-3 py-2 text-left">品牌</th>
-                              <th className="px-3 py-2 text-center">覆盖人口</th>
-                              <th className="px-3 py-2 text-center">覆盖社区</th>
-                              <th className="px-3 py-2 text-center">盲区消除</th>
-                              <th className="px-3 py-2 text-center">竞争避让</th>
-                              <th className="px-3 py-2 text-left">创建时间</th>
-                              <th className="px-3 py-2 text-center">操作</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {adminSchemes.map(s => (
-                              <tr key={s.id} className="border-t border-slate-100 hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-400">{s.id}</td>
-                                <td className="px-3 py-2 text-slate-700 font-medium">{s.name}</td>
-                                <td className="px-3 py-2">
-                                  <span className="px-1.5 py-0.5 rounded text-[10px]" style={{ background: (BRAND_CONFIG[s.brand]?.color || "#909399") + "15", color: BRAND_CONFIG[s.brand]?.color || "#909399" }}>
-                                    {s.brand}
-                                  </span>
-                                </td>
-                                <td className="px-3 py-2 text-center text-slate-700">{s.covered_population}</td>
-                                <td className="px-3 py-2 text-center text-slate-700">{s.covered_communities}</td>
-                                <td className="px-3 py-2 text-center text-green-600">{s.blind_spot_reduction}%</td>
-                                <td className="px-3 py-2 text-center text-blue-500">{s.competition_score}</td>
-                                <td className="px-3 py-2 text-slate-500">{s.create_time}</td>
-                                <td className="px-3 py-2 text-center">
-                                  <button onClick={async () => {
-                                    if (!confirm(`确定删除方案「${s.name}」?`)) return;
-                                    const r = await authFetch(`/api/v1/schemes/${s.id}`, { method: "DELETE" });
-                                    const j = await r.json();
-                                    if (j.success) { loadAdminData(); alert("已删除"); }
-                                    else alert(j.message);
-                                  }} className="text-red-500 hover:underline">删除</button>
-                                </td>
-                              </tr>
-                            ))}
-                            {adminSchemes.length === 0 && (
-                              <tr><td colSpan={9} className="text-center text-slate-400 py-8">暂无选址方案</td></tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ===== 系统日志 ===== */}
-                  {adminTab === "logs" && (
-                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
-                        <h4 className="text-sm font-semibold text-slate-700">系统日志 ({logs.length})</h4>
-                        <div className="flex gap-1">
-                          {["all", "登录系统", "新增", "修改", "删除", "查询", "选址", "反馈"].map(f => (
-                            <button key={f} onClick={() => setAdminLogFilter(f)}
-                              className={`text-[11px] px-2.5 py-1 rounded ${adminLogFilter === f ? "bg-[#00C896] text-white" : "bg-slate-100 text-slate-600"}`}>
-                              {f === "all" ? "全部" : f}
-                            </button>
-                          ))}
+                    <div className="animate-fade-in">
+                      <div
+                        className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>选址方案</h4>
+                          <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>{adminSchemes.length}</span>
                         </div>
                       </div>
-                      <div className="max-h-[calc(100vh-220px)] overflow-y-auto">
-                        <table className="w-full text-xs">
-                          <thead className="bg-slate-50 sticky top-0">
-                            <tr className="text-slate-500">
-                              <th className="px-3 py-2 text-left">ID</th>
-                              <th className="px-3 py-2 text-left">时间</th>
-                              <th className="px-3 py-2 text-left">用户</th>
-                              <th className="px-3 py-2 text-left">操作</th>
-                              <th className="px-3 py-2 text-left">详情</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {logs.filter(l => adminLogFilter === "all" || safeText(l.action).includes(adminLogFilter) || safeText(l.detail).includes(adminLogFilter)).map(l => (
-                              <tr key={l.id} className="border-t border-slate-100 hover:bg-slate-50">
-                                <td className="px-3 py-2 text-slate-400">{l.id}</td>
-                                <td className="px-3 py-2 text-slate-500 font-mono">{l.create_time}</td>
-                                <td className="px-3 py-2 text-slate-700">{l.user}</td>
-                                <td className="px-3 py-2 text-[#00C896] font-medium">{l.action}</td>
-                                <td className="px-3 py-2 text-slate-600">{l.detail}</td>
-                              </tr>
-                            ))}
-                            {logs.length === 0 && (
-                              <tr><td colSpan={5} className="text-center text-slate-400 py-8">暂无日志</td></tr>
-                            )}
-                          </tbody>
-                        </table>
+                      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
+                        {adminSchemes.map(s => (
+                          <div
+                            key={s.id}
+                            className="rounded-lg p-3 transition-shadow hover:shadow-md group"
+                            style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                          >
+                            <div className="flex items-start justify-between gap-2 mb-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5 mb-0.5">
+                                  <span className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>#{s.id}</span>
+                                </div>
+                                <h5 className="text-[13px] font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{s.name}</h5>
+                              </div>
+                              <span
+                                className="text-[10px] px-1.5 py-0 rounded font-medium shrink-0"
+                                style={{ background: (BRAND_CONFIG[s.brand]?.color || "#909399") + "15", color: BRAND_CONFIG[s.brand]?.color || "#909399" }}
+                              >
+                                {s.brand}
+                              </span>
+                            </div>
+                            {/* 指标网格 */}
+                            <div className="grid grid-cols-2 gap-2 mb-2.5 py-2" style={{ borderTop: "1px solid var(--color-subtle)", borderBottom: "1px solid var(--color-subtle)" }}>
+                              <div>
+                                <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>覆盖人口</p>
+                                <p className="text-[14px] font-bold font-num" style={{ color: "var(--color-ink-1)" }}>{s.covered_population}</p>
+                              </div>
+                              <div>
+                                <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>覆盖社区</p>
+                                <p className="text-[14px] font-bold font-num" style={{ color: "var(--color-ink-1)" }}>{s.covered_communities}</p>
+                              </div>
+                              <div>
+                                <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>盲区消除</p>
+                                <p className="text-[14px] font-bold font-num" style={{ color: "var(--color-success)" }}>{s.blind_spot_reduction}%</p>
+                              </div>
+                              <div>
+                                <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>竞争避让</p>
+                                <p className="text-[14px] font-bold font-num" style={{ color: "var(--color-accent)" }}>{s.competition_score}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-num" style={{ color: "var(--color-ink-5)" }}>{s.create_time}</span>
+                              <button
+                                onClick={async () => {
+                                  if (!confirm(`确定删除方案「${s.name}」?`)) return;
+                                  const r = await authFetch(`/api/v1/schemes/${s.id}`, { method: "DELETE" });
+                                  const j = await r.json();
+                                  if (j.success) { loadAdminData(); alert("已删除"); }
+                                  else alert(j.message);
+                                }}
+                                className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2 py-0.5 rounded font-medium"
+                                style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)" }}
+                              >
+                                删除
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        {adminSchemes.length === 0 && (
+                          <div className="col-span-full py-12 text-center">
+                            <Target className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--color-ink-6)" }} />
+                            <p className="text-[12px]" style={{ color: "var(--color-ink-5)" }}>暂无选址方案</p>
+                          </div>
+                        )}
                       </div>
+                    </div>
+                  )}
+
+                  {/* ===== 系统日志 - 时间线列表 ===== */}
+                  {adminTab === "logs" && (
+                    <div className="animate-fade-in">
+                      <div
+                        className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        <div className="flex items-center gap-3">
+                          <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>系统日志</h4>
+                          <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>{logs.length}</span>
+                        </div>
+                        <div className="flex gap-1 flex-wrap">
+                          {["all", "登录系统", "新增", "修改", "删除", "查询", "选址", "反馈"].map(f => {
+                            const isActive = adminLogFilter === f;
+                            return (
+                              <button
+                                key={f}
+                                onClick={() => setAdminLogFilter(f)}
+                                className="text-[11px] px-2.5 py-1 rounded font-medium transition-colors"
+                                style={{
+                                  background: isActive ? "var(--color-brand)" : "var(--color-subtle)",
+                                  color: isActive ? "#fff" : "var(--color-ink-4)",
+                                  border: "1px solid " + (isActive ? "var(--color-brand)" : "var(--color-muted)"),
+                                }}
+                              >
+                                {f === "all" ? "全部" : f}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div
+                        className="rounded-lg overflow-hidden max-h-[calc(100vh-220px)] overflow-y-auto"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        {logs.filter(l => adminLogFilter === "all" || safeText(l.action).includes(adminLogFilter) || safeText(l.detail).includes(adminLogFilter)).map((l, idx, arr) => (
+                          <div
+                            key={l.id}
+                            className="flex items-start gap-3 px-4 py-2.5 transition-colors hover:bg-[var(--color-subtle)]"
+                            style={{ borderBottom: idx < arr.length - 1 ? "1px solid var(--color-subtle)" : "none" }}
+                          >
+                            {/* 时间线节点 */}
+                            <div className="shrink-0 flex flex-col items-center pt-0.5">
+                              <div className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--color-brand)" }} />
+                            </div>
+                            <div className="min-w-0 flex-1 flex items-center gap-3">
+                              <span className="text-[10px] font-num shrink-0 w-32" style={{ color: "var(--color-ink-5)" }}>{l.create_time}</span>
+                              <span
+                                className="text-[10px] px-1.5 py-0 rounded font-medium shrink-0 font-mono"
+                                style={{ background: "var(--color-brand-subtle)", color: "var(--color-brand-text)", border: "1px solid var(--color-brand-border)" }}
+                              >
+                                {l.action}
+                              </span>
+                              <span className="text-[11px] truncate flex-1" style={{ color: "var(--color-ink-3)" }}>{l.detail}</span>
+                              <span className="text-[10px] shrink-0" style={{ color: "var(--color-ink-5)" }}>— {l.user}</span>
+                            </div>
+                          </div>
+                        ))}
+                        {logs.filter(l => adminLogFilter === "all" || safeText(l.action).includes(adminLogFilter) || safeText(l.detail).includes(adminLogFilter)).length === 0 && (
+                          <div className="py-12 text-center">
+                            <Database className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--color-ink-6)" }} />
+                            <p className="text-[12px]" style={{ color: "var(--color-ink-5)" }}>暂无日志</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ===== 统计报表中心 (阶段三 任务 3.2.2) - 交叉透视表 + 柱状图 + CSV 导出 ===== */}
+                  {adminTab === "report" && (
+                    <div className="animate-fade-in">
+                      <ReportCenter showToast={showToast} />
+                    </div>
+                  )}
+
+                  {/* ===== 阶段五 等时圈: 预计算进度监控卡片 ===== */}
+                  {adminTab === "isochrone" && (
+                    <div className="animate-fade-in space-y-4">
+                      {/* 说明卡 */}
+                      <div
+                        className="rounded-lg p-4"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div
+                            className="w-9 h-9 rounded-md flex items-center justify-center shrink-0"
+                            style={{ background: "rgba(124,58,237,0.1)", border: "1px solid rgba(124,58,237,0.3)" }}
+                          >
+                            <Activity className="w-4 h-4" style={{ color: "#7c3aed" }} />
+                          </div>
+                          <div className="flex-1">
+                            <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>路网等时圈服务区</h4>
+                            <p className="text-[11px] mt-1" style={{ color: "var(--color-ink-4)" }}>
+                              基于真实路网计算每座充电站的可达范围多边形：快充驾车 10 分钟、慢充步行 15 分钟。
+                              数据来自高德路径规划 API，并发 2 路，预计 3-5 分钟跑完全部站点。
+                            </p>
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(124,58,237,0.08)", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.2)" }}>
+                                GB/T 51313-2018
+                              </span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(124,58,237,0.08)", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.2)" }}>
+                                15 分钟生活圈
+                              </span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(124,58,237,0.08)", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.2)" }}>
+                                高德路径 API
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 状态总览卡 - 4 格 */}
+                      <div className="grid grid-cols-4 gap-3">
+                        {(() => {
+                          const stats = isochroneProgress?.stats;
+                          const total = stats?.total ?? adminStations.length;
+                          const ok = stats?.ok ?? 0;
+                          const partial = stats?.partial ?? 0;
+                          const pending = stats?.pending ?? 0;
+                          const failed = stats?.failed ?? 0;
+                          return [
+                            { label: "已计算完成", value: ok, color: "#10B981", icon: CheckCircle2, sub: "快慢充均成功" },
+                            { label: "部分成功", value: partial, color: "#F59E0B", icon: Clock, sub: "仅一种模式" },
+                            { label: "待计算", value: pending, color: "#6B7280", icon: Clock, sub: "未触发或排队中" },
+                            { label: "计算失败", value: failed, color: "#EF4444", icon: AlertCircle, sub: "需重算或检查" },
+                          ].map(s => {
+                            const Icon = s.icon;
+                            const pct = total > 0 ? (s.value / total) * 100 : 0;
+                            return (
+                              <div
+                                key={s.label}
+                                className="rounded-lg p-3.5"
+                                style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                              >
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-[11px] font-medium" style={{ color: "var(--color-ink-4)" }}>{s.label}</span>
+                                  <Icon className="w-3.5 h-3.5" style={{ color: s.color }} />
+                                </div>
+                                <p className="text-[24px] font-bold font-num leading-none" style={{ color: s.color }}>{s.value}</p>
+                                <div className="mt-2 h-1 rounded-full overflow-hidden" style={{ background: "var(--color-subtle)" }}>
+                                  <div className="h-full transition-all" style={{ width: `${pct}%`, background: s.color }} />
+                                </div>
+                                <p className="text-[10px] mt-1 font-mono" style={{ color: "var(--color-ink-5)" }}>{pct.toFixed(1)}% · {s.sub}</p>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+
+                      {/* 进度卡 */}
+                      <div
+                        className="rounded-lg p-4"
+                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>预计算进度</h4>
+                          <span className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>
+                            {isochroneProgress ? (
+                              isochroneProgress.running
+                                ? `运行中 · ${isochroneProgress.done}/${isochroneProgress.total}`
+                                : isochroneProgress.finishedAt
+                                  ? `已完成 · 用时 ${((isochroneProgress.finishedAt - (isochroneProgress.startedAt || 0)) / 1000).toFixed(1)}s`
+                                  : "空闲"
+                            ) : "加载中..."}
+                          </span>
+                        </div>
+
+                        {/* 进度条 */}
+                        {isochroneProgress && isochroneProgress.total > 0 && (
+                          <div className="mb-3">
+                            <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--color-subtle)" }}>
+                              <div
+                                className="h-full transition-all"
+                                style={{
+                                  width: `${(isochroneProgress.done / isochroneProgress.total) * 100}%`,
+                                  background: isochroneProgress.running ? "linear-gradient(90deg, #7c3aed 0%, #a78bfa 100%)" : "#10B981"
+                                }}
+                              />
+                            </div>
+                            <div className="flex justify-between mt-1.5 text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>
+                              <span>成功 {isochroneProgress.ok ?? 0}</span>
+                              <span>部分 {isochroneProgress.skipped ?? 0}</span>
+                              <span>失败 {isochroneProgress.failed ?? 0}</span>
+                              <span>{((isochroneProgress.done / isochroneProgress.total) * 100).toFixed(1)}%</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* 错误信息 */}
+                        {isochroneProgress?.lastError && (
+                          <div
+                            className="mb-3 px-2.5 py-1.5 rounded text-[11px] flex items-start gap-1.5"
+                            style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)", color: "#dc2626" }}
+                          >
+                            <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
+                            <span className="break-all">{isochroneProgress.lastError}</span>
+                          </div>
+                        )}
+
+                        {/* 操作按钮 */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => triggerIsochronePrecompute(false)}
+                            disabled={isochroneProgress?.running}
+                            className={`text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 font-medium transition-all ${
+                              isochroneProgress?.running
+                                ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                                : "btn-brand"
+                            }`}
+                          >
+                            {isochroneProgress?.running
+                              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> 运行中</>
+                              : <><Activity className="w-3.5 h-3.5" /> 增量预计算</>}
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm("全量重算将覆盖所有现有等时圈数据，确认继续？")) {
+                                triggerIsochronePrecompute(true);
+                              }
+                            }}
+                            disabled={isochroneProgress?.running}
+                            className={`text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 font-medium transition-all ${
+                              isochroneProgress?.running
+                                ? "bg-zinc-100 text-zinc-400 cursor-not-allowed"
+                                : "bg-zinc-100 hover:bg-zinc-200 text-zinc-700"
+                            }`}
+                            title="重新计算所有站点（包括已完成的），耗时长"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" /> 全量重算
+                          </button>
+                          <button
+                            onClick={fetchIsochroneProgress}
+                            className="text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 font-medium bg-zinc-100 hover:bg-zinc-200 text-zinc-700 transition-all"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" /> 刷新进度
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 站点状态列表 - 仅显示失败和待计算 */}
+                      {adminStations.length > 0 && (
+                        <div
+                          className="rounded-lg p-4"
+                          style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
+                        >
+                          <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>站点状态明细</h4>
+                            <span className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>仅展示待计算 / 失败</span>
+                          </div>
+                          <div className="max-h-72 overflow-y-auto space-y-1">
+                            {adminStations
+                              .filter((s: any) => {
+                                const st = s.isochroneStatus || "pending";
+                                return st === "pending" || st === "failed";
+                              })
+                              .slice(0, 50)
+                              .map((s: any) => {
+                                const st = s.isochroneStatus || "pending";
+                                const color = st === "failed" ? "#EF4444" : "#F59E0B";
+                                const Icon = st === "failed" ? AlertCircle : Clock;
+                                return (
+                                  <div
+                                    key={s.id}
+                                    className="flex items-center gap-2 text-[11px] py-1.5 px-2 rounded"
+                                    style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                                  >
+                                    <Icon className="w-3 h-3 shrink-0" style={{ color }} />
+                                    <span className="font-mono w-8 shrink-0" style={{ color: "var(--color-ink-5)" }}>#{s.id}</span>
+                                    <span className="flex-1 truncate" style={{ color: "var(--color-ink-2)" }}>{s.name}</span>
+                                    <span className="shrink-0 text-[10px]" style={{ color: "var(--color-ink-4)" }}>{s.district}</span>
+                                    <span
+                                      className="px-1.5 py-0 rounded text-[10px] font-medium shrink-0"
+                                      style={{ background: `${color}1a`, color, border: `1px solid ${color}40` }}
+                                    >
+                                      {st === "failed" ? "失败" : "待计算"}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            {adminStations.filter((s: any) => {
+                              const st = s.isochroneStatus || "pending";
+                              return st === "pending" || st === "failed";
+                            }).length === 0 && (
+                              <div className="py-6 text-center">
+                                <CheckCircle2 className="w-6 h-6 mx-auto mb-2" style={{ color: "#10B981" }} />
+                                <p className="text-[11px]" style={{ color: "var(--color-ink-4)" }}>所有站点已计算完成</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -3267,37 +6438,223 @@ export default function App() {
               </div>
           )}
 
-          {/* ===== 右侧图表面板 ===== */}
-          {/* 覆盖分析图表 */}
+          {/* ===== 右侧面板 - Bento 玻璃指挥甲板 (图表/社区/候选点) ===== */}
           {activeTab === "coverage" && coverageSummary && (
-            <div className="absolute top-3 right-3 w-72 bg-white/95 backdrop-blur border border-slate-200 rounded-xl p-3 shadow-lg z-20">
-              <h4 className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                <BarChart3 className="w-4 h-4 text-blue-500" /> 各行政区覆盖率
-              </h4>
-              <div ref={coverageChartRef} className="w-full h-48" />
+            <div
+              className="z-20 animate-panel-enter flex flex-col rounded-xl overflow-hidden bento-tile"
+              style={{
+                position: "fixed",
+                right: 12,
+                top: 258,
+                bottom: 16,
+                width: 300,
+                background: "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(250,250,250,0.82) 100%)",
+                backdropFilter: "blur(20px) saturate(1.4)",
+                WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+                border: "1px solid rgba(255,255,255,0.25)",
+                boxShadow: "var(--shadow-elevated)",
+              }}
+            >
+              {/* Tab 导航栏 - 玻璃风格 */}
+              <div className="flex shrink-0" style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", background: "linear-gradient(180deg, rgba(255,255,255,0.5), rgba(255,255,255,0.2))" }}>
+                {([
+                  { key: "charts", label: "图表", icon: BarChart3, show: true },
+                  { key: "communities", label: "社区", icon: Users, show: coverageResults.length > 0 },
+                  { key: "candidates", label: "候选点", icon: MapPin, show: blindSpotClusters.length > 0 },
+                ] as const).filter(t => t.show).map(t => {
+                  const Icon = t.icon;
+                  const active = rightPanelTab === t.key;
+                  return (
+                    <button
+                      key={t.key}
+                      onClick={() => setRightPanelTab(t.key)}
+                      className="flex-1 px-2 py-2.5 text-[11px] font-medium transition-all flex items-center justify-center gap-1"
+                      style={{
+                        color: active ? "var(--color-brand-text)" : "var(--color-ink-4)",
+                        borderBottom: active ? "2px solid var(--color-brand)" : "2px solid transparent",
+                        background: active ? "rgba(0,200,150,0.06)" : "transparent",
+                        textShadow: active ? "0 0 8px rgba(0,200,150,0.2)" : "none",
+                      }}
+                    >
+                      <Icon className="w-3.5 h-3.5" />
+                      {t.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Tab 内容区 (统一滚动, 切换带动画) */}
+              <div className="flex-1 overflow-y-auto p-2 min-h-0">
+                {/* 图表 Tab */}
+                {rightPanelTab === "charts" && (
+                  <div key="charts-tab" className="animate-slide-in-right flex flex-col gap-2 h-full">
+                    {/* 堆叠柱图: 各行政区覆盖率 */}
+                    <div className="bento-tile rounded-xl p-2 flex-1 flex flex-col min-h-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
+                      <div className="w-full flex items-center gap-1.5 mb-1 shrink-0" style={{ color: "var(--color-ink-2)" }}>
+                        <BarChart3 className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} />
+                        <span className="text-[11px] font-semibold flex-1">各行政区覆盖率</span>
+                      </div>
+                      <div ref={coverageChartRef} className="w-full flex-1 min-h-0" style={{ minHeight: 100 }} />
+                    </div>
+                    {/* 分级饼图 */}
+                    <div className="bento-tile rounded-xl p-2 flex-1 flex flex-col min-h-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
+                      <div className="w-full flex items-center gap-1.5 mb-1 shrink-0" style={{ color: "var(--color-ink-2)" }}>
+                        <BarChart3 className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} />
+                        <span className="text-[11px] font-semibold flex-1">覆盖率分级</span>
+                      </div>
+                      <div ref={coveragePieChartRef} className="w-full flex-1 min-h-0" style={{ minHeight: 100 }} />
+                    </div>
+                    {/* 效率柱图 */}
+                    <div className="bento-tile rounded-xl p-2 flex-1 flex flex-col min-h-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
+                      <div className="w-full flex items-center gap-1.5 mb-1 shrink-0" style={{ color: "var(--color-ink-2)" }}>
+                        <BarChart3 className="w-3.5 h-3.5" style={{ color: "var(--color-ink-4)" }} />
+                        <span className="text-[11px] font-semibold flex-1">充电站效率 Top10</span>
+                      </div>
+                      <div ref={stationEffChartRef} className="w-full flex-1 min-h-0" style={{ minHeight: 120 }} />
+                    </div>
+                  </div>
+                )}
+
+                {/* 社区列表 Tab */}
+                {rightPanelTab === "communities" && coverageResults.length > 0 && (
+                  <div key="communities-tab" className="animate-slide-in-right">
+                    <CoverageCommunityList
+                    communities={coverageResults}
+                    onLocate={(comm) => {
+                      const feat = communitySourceRef.current?.getFeatureById(comm.id);
+                      if (feat && mapRef.current) {
+                        const geom = feat.getGeometry();
+                        if (geom) {
+                          const centerCoord = geom.getExtent ? [(geom.getExtent()[0] + geom.getExtent()[2]) / 2, (geom.getExtent()[1] + geom.getExtent()[3]) / 2] : null;
+                          if (centerCoord) {
+                            mapRef.current.getView().animate({ center: centerCoord as [number, number], zoom: 14, duration: 600 });
+                          }
+                        }
+                      }
+                    }}
+                    onSelect={(comm) => {
+                      setCommunityDetail(comm);
+                      setCommunityDetailOpen(true);
+                    }}
+                  />
+                  </div>
+                )}
+
+                {/* 候选点 Tab */}
+                {rightPanelTab === "candidates" && blindSpotClusters.length > 0 && (
+                  <div key="candidates-tab" className="animate-slide-in-right">
+                    {/* 排序栏 */}
+                    <div className="px-1 py-1.5 flex items-center gap-1" style={{ borderBottom: "1px solid var(--color-muted)" }}>
+                      <span className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>排序</span>
+                      <select
+                        value={clusterSortBy}
+                        onChange={(e) => setClusterSortBy(e.target.value as "population" | "communityCount")}
+                        className="flex-1 h-6 text-[10px] rounded input-sys px-1"
+                        style={{ background: "var(--color-surface)" }}
+                      >
+                        <option value="population">人口降序</option>
+                        <option value="communityCount">社区数降序</option>
+                      </select>
+                    </div>
+                    {/* 候选点列表 - 直接平铺, 由外层统一滚动 */}
+                    <div>
+                      {[...blindSpotClusters]
+                        .sort((a, b) => {
+                          if (clusterSortBy === "population") return b.population - a.population;
+                          return b.communityCount - a.communityCount;
+                        })
+                        .map((c) => {
+                          const expanded = expandedClusterId === c.clusterId;
+                          return (
+                            <div
+                              key={c.clusterId}
+                              className="px-2 py-1.5 cursor-pointer hover:bg-amber-50/50 transition-colors"
+                              style={{ borderBottom: "1px solid var(--color-subtle)" }}
+                              onClick={() => setExpandedClusterId(expanded ? null : c.clusterId)}
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  <span className="text-[10px] font-mono text-amber-700 font-bold shrink-0">#{c.clusterId}</span>
+                                  <span className="text-[10px] truncate" style={{ color: "var(--color-ink-4)" }}>
+                                    {c.communityCount} 社区
+                                  </span>
+                                  <span className="text-[10px] text-orange-600 font-bold font-num shrink-0">
+                                    {c.population.toLocaleString()} 人
+                                  </span>
+                                </div>
+                                <ChevronDown
+                                  className={`w-3 h-3 shrink-0 transition-transform ${expanded ? "rotate-180" : ""}`}
+                                  style={{ color: "var(--color-ink-5)" }}
+                                />
+                              </div>
+                              {expanded && (
+                                <div className="mt-1 space-y-1 animate-fade-in">
+                                  <div className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>
+                                    社区数: {c.communityCount} · 人口: {c.population.toLocaleString()}
+                                  </div>
+                                  <div className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>
+                                    质心: {c.center[0].toFixed(4)}, {c.center[1].toFixed(4)}
+                                  </div>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setActiveTab("site");
+                                      placeVirtualStation(c.center[0], c.center[1]);
+                                    }}
+                                    className="w-full mt-1 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-bold py-1 rounded flex items-center justify-center gap-1 transition-colors"
+                                  >
+                                    <Target className="w-3 h-3" /> 在此选址
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          {/* 选址评估仪表盘 */}
+          {/* 选址评估仪表盘 - Bento 玻璃面板 */}
           {activeTab === "site" && siteMetrics && (
-            <div className="absolute top-3 right-3 w-72 bg-white/95 backdrop-blur border border-slate-200 rounded-xl p-3 shadow-lg z-20">
-              <h4 className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                <Gauge className="w-4 h-4 text-amber-500" /> 选址评估仪表盘
+            <div
+              className="absolute top-16 right-3 w-72 rounded-xl p-3.5 z-20 animate-panel-enter bento-tile"
+              style={{
+                background: "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(250,250,250,0.82) 100%)",
+                backdropFilter: "blur(20px) saturate(1.4)",
+                WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+                border: "1px solid rgba(255,255,255,0.25)",
+                boxShadow: "var(--shadow-elevated)",
+              }}
+            >
+              <h4 className="text-[11px] font-semibold mb-2 flex items-center gap-1.5" style={{ color: "var(--color-ink-2)" }}>
+                <Gauge className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} /> 选址评估
               </h4>
               <div ref={siteChartRef} className="w-full h-40" />
               {virtualStation && (
-                <div className="mt-2 text-[10px] text-slate-400 text-center">
-                  坐标: {virtualStation.lng.toFixed(4)}, {virtualStation.lat.toFixed(4)}
+                <div className="mt-2 text-[10px] text-center font-mono" style={{ color: "var(--color-ink-5)" }}>
+                  {virtualStation.lng.toFixed(4)}, {virtualStation.lat.toFixed(4)}
                 </div>
               )}
             </div>
           )}
 
-          {/* 方案对比雷达图 */}
+          {/* 方案对比雷达图 - Bento 玻璃面板 */}
           {activeTab === "site" && compareSchemes.length >= 2 && (
-            <div className="absolute bottom-3 right-3 w-72 bg-white/95 backdrop-blur border border-slate-200 rounded-xl p-3 shadow-lg z-20">
-              <h4 className="text-xs font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-                <Target className="w-4 h-4 text-purple-500" /> 方案雷达对比
+            <div
+              className="absolute bottom-3 right-3 w-72 rounded-xl p-3.5 z-20 animate-panel-enter bento-tile"
+              style={{
+                background: "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(250,250,250,0.82) 100%)",
+                backdropFilter: "blur(20px) saturate(1.4)",
+                WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+                border: "1px solid rgba(255,255,255,0.25)",
+                boxShadow: "var(--shadow-elevated)",
+              }}
+            >
+              <h4 className="text-[11px] font-semibold mb-2 flex items-center gap-1.5" style={{ color: "var(--color-ink-2)" }}>
+                <Target className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} /> 方案雷达对比
               </h4>
               <div ref={radarChartRef} className="w-full h-56" />
             </div>
@@ -3307,13 +6664,19 @@ export default function App() {
         </div>
       </div>
 
-      {/* ===== AI助手悬浮球 + 浮动面板 ===== */}
-      {/* 机器人面部悬浮球 */}
+      {/* ===== AI助手悬浮球 + 浮动面板 (Linear 风: 极简图标, 无渐变) ===== */}
+      {/* 悬浮球 - 可拖动, 默认往上 20px (bottom: 44) */}
       <div
         className="fixed z-50 select-none"
-        style={{ bottom: "calc(24px + 20px)", right: "24px" }}
+        style={{ bottom: aiBallPos?.bottom ?? 44, right: aiBallPos?.right ?? 24, cursor: aiDragging ? "grabbing" : "grab" }}
         onMouseDown={(e) => {
-          aiDragRef.current = { startX: e.clientX, startY: e.clientY, moved: false };
+          aiDragRef.current = {
+            startX: e.clientX,
+            startY: e.clientY,
+            startBottom: aiBallPos?.bottom ?? 44,
+            startRight: aiBallPos?.right ?? 24,
+            moved: false,
+          };
           setAiDragging(false);
           const onMove = (ev: MouseEvent) => {
             const dx = ev.clientX - aiDragRef.current.startX;
@@ -3321,6 +6684,10 @@ export default function App() {
             if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
               aiDragRef.current.moved = true;
               setAiDragging(true);
+              // 右下角锚点: 鼠标向右移 → right 减小; 鼠标向下移 → bottom 减小
+              const newRight = Math.max(8, Math.min(window.innerWidth - 60, aiDragRef.current.startRight - dx));
+              const newBottom = Math.max(8, Math.min(window.innerHeight - 60, aiDragRef.current.startBottom - dy));
+              setAiBallPos({ bottom: newBottom, right: newRight });
             }
           };
           const onUp = () => {
@@ -3339,115 +6706,116 @@ export default function App() {
         }}
       >
         <div
-          className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center cursor-pointer transition-all duration-300 ${aiBotBounce ? "animate-bounce" : ""}`}
+          className="w-11 h-11 rounded-xl flex items-center justify-center transition-all"
           style={{
-            background: aiPanelOpen
-              ? "linear-gradient(135deg, #6366F1 0%, #A855F7 100%)"
-              : "linear-gradient(135deg, #00C896 0%, #38BDF8 100%)",
+            background: aiPanelOpen ? "#18181B" : "var(--color-brand)",
+            border: "1px solid " + (aiPanelOpen ? "#27272A" : "var(--color-brand-hover)"),
             boxShadow: aiPanelOpen
-              ? "0 4px 20px rgba(168,85,247,0.4)"
-              : "0 4px 20px rgba(0,200,150,0.4)",
-            transform: aiBotBounce ? "scale(1.15)" : "scale(1)",
+              ? "0 4px 16px rgba(0,0,0,0.15)"
+              : "0 4px 16px rgba(0,200,150,0.25)",
+            transform: aiBotBounce ? "scale(1.08)" : "scale(1)",
+            transition: "transform var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out)",
           }}
         >
-          {/* 机器人面部 SVG */}
-          <svg viewBox="0 0 48 48" className="w-10 h-10">
-            {/* 头部轮廓 */}
-            <rect x="10" y="12" width="28" height="24" rx="8" fill="rgba(255,255,255,0.2)" stroke="white" strokeWidth="1.5"/>
-            {/* 天线 */}
-            <line x1="24" y1="12" x2="24" y2="6" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-            <circle cx="24" cy="5" r="2" fill="white" opacity="0.8">
-              {!aiDragging && !aiPanelOpen && (
-                <animate attributeName="opacity" values="0.4;1;0.4" dur="2s" repeatCount="indefinite"/>
-              )}
-            </circle>
-            {/* 眼睛 */}
-            {aiDragging ? (
-              /* 拖动时闭眼 - 横线 */
-              <>
-                <line x1="16" y1="23" x2="21" y2="23" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-                <line x1="27" y1="23" x2="32" y2="23" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-              </>
-            ) : aiPanelOpen ? (
-              /* 面板打开时 - 开心弯眼 */
-              <>
-                <path d="M16 24 Q18.5 20 21 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-                <path d="M27 24 Q29.5 20 32 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round"/>
-              </>
-            ) : (
-              /* 默认 - 圆眼睛带眨眼 */
-              <>
-                <circle cx="18.5" cy="23" r="2.5" fill="white">
-                  <animate attributeName="ry" values="2.5;0.3;2.5" dur="4s" repeatCount="indefinite" begin="2s"/>
-                </circle>
-                <circle cx="29.5" cy="23" r="2.5" fill="white">
-                  <animate attributeName="ry" values="2.5;0.3;2.5" dur="4s" repeatCount="indefinite" begin="2s"/>
-                </circle>
-              </>
-            )}
-            {/* 嘴巴 */}
-            {aiDragging ? (
-              /* 拖动时 - 紧张嘴 */
-              <ellipse cx="24" cy="31" rx="3" ry="1.5" fill="none" stroke="white" strokeWidth="1.5"/>
-            ) : aiPanelOpen ? (
-              /* 面板打开 - 开心大嘴 */
-              <path d="M19 30 Q24 35 29 30" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-            ) : (
-              /* 默认 - 微笑 */
-              <path d="M20 30 Q24 33 28 30" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round"/>
-            )}
-            {/* 腮红 */}
-            <circle cx="14" cy="28" r="2.5" fill="rgba(255,255,255,0.15)"/>
-            <circle cx="34" cy="28" r="2.5" fill="rgba(255,255,255,0.15)"/>
-          </svg>
+          {aiPanelOpen ? (
+            <X className="w-4 h-4 text-white" />
+          ) : (
+            <div className="relative">
+              <Bot className="w-5 h-5 text-white" />
+              {/* 状态指示点 */}
+              <span
+                className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-300 animate-status-pulse"
+                style={{ border: "1.5px solid var(--color-brand)" }}
+              />
+            </div>
+          )}
         </div>
       </div>
 
-      {/* 浮动AI面板 */}
+      {/* 浮动AI面板 - Bento 3D 玻璃拟态 */}
       <div
-        className="fixed z-50 w-[400px] max-w-[calc(100vw-48px)] transition-all duration-300 origin-bottom-right"
+        className="fixed z-50 w-[400px] max-w-[calc(100vw-48px)]"
         style={{
-          bottom: "calc(96px + 20px)",
-          right: "24px",
+          bottom: (aiBallPos?.bottom ?? 44) + 60,
+          right: aiBallPos?.right ?? 24,
           opacity: aiPanelOpen ? 1 : 0,
-          transform: aiPanelOpen ? "scale(1) translateY(0)" : "scale(0.85) translateY(20px)",
+          transform: aiPanelOpen
+            ? "perspective(1000px) rotateX(0deg) translateY(0) scale(1)"
+            : "perspective(1000px) rotateX(4deg) translateY(12px) scale(0.96)",
           pointerEvents: aiPanelOpen ? "auto" : "none",
+          transition: "opacity var(--duration-slow) var(--ease-out), transform var(--duration-slow) var(--ease-out)",
+          transformOrigin: "center bottom",
         }}
       >
-        <div className="bg-white/98 backdrop-blur-xl border border-slate-200/80 rounded-2xl shadow-2xl flex flex-col overflow-hidden" style={{ height: "min(560px, calc(100vh - 140px))" }}>
-          {/* 面板头部 */}
-          <div className="shrink-0 px-4 py-3 border-b border-slate-100 flex items-center gap-2"
-            style={{ background: "linear-gradient(135deg, rgba(0,200,150,0.06) 0%, rgba(168,85,247,0.06) 100%)" }}>
-            <div className="w-8 h-8 rounded-full flex items-center justify-center"
-              style={{ background: "linear-gradient(135deg, #00C896 0%, #A855F7 100%)" }}>
-              <Bot className="w-4 h-4 text-white" />
+        <div
+          className="flex flex-col overflow-hidden bento-tile"
+          style={{
+            background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
+            backdropFilter: "blur(20px) saturate(1.4)",
+            WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+            border: "1px solid rgba(255,255,255,0.4)",
+            boxShadow: "var(--shadow-elevated)",
+            borderRadius: 16,
+            height: "min(560px, calc(100vh - 140px))",
+          }}
+        >
+          {/* 面板头部 — 玻璃拟态 subtle */}
+          <div
+            className="shrink-0 px-3 py-2.5 flex items-center gap-2"
+            style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", background: "rgba(255,255,255,0.6)" }}
+          >
+            <div
+              className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
+              style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+            >
+              <Bot className="w-3.5 h-3.5 text-zinc-700" />
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="text-sm font-semibold text-slate-800">AI辅助决策助手</h3>
-              <p className="text-[10px] text-slate-400">基于DeepSeek · 空间数据驱动</p>
+              <div className="flex items-center gap-1.5">
+                <h3 className="text-[13px] font-semibold text-zinc-900">智能助手</h3>
+                <span
+                  className="text-[10px] px-1 py-0 rounded"
+                  style={{
+                    background: "rgba(0,200,150,0.08)",
+                    color: "var(--color-brand-text)",
+                    border: "1px solid rgba(0,200,150,0.2)",
+                  }}
+                >
+                  在线
+                </span>
+              </div>
+              <p className="text-[10px] text-zinc-500">空间数据驱动 · 多轮对话</p>
             </div>
             <div className="flex items-center gap-1">
               {aiMessages.length > 0 && (
                 <button onClick={clearAi}
-                  className="w-7 h-7 rounded-lg bg-slate-50 hover:bg-red-50 border border-slate-200 flex items-center justify-center transition-colors"
+                  className="w-6 h-6 rounded flex items-center justify-center hover:bg-zinc-100 text-zinc-500 hover:text-red-500 transition-colors"
                   title="清空对话">
-                  <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+                  <Trash2 className="w-3 h-3" />
                 </button>
               )}
             </div>
           </div>
 
           {/* 对话区域 */}
-          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 min-h-0">
+          <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 min-h-0">
             {aiMessages.length === 0 && (
-              <div className="text-center py-8">
-                <div className="w-14 h-14 rounded-2xl mx-auto mb-3 flex items-center justify-center"
-                  style={{ background: "linear-gradient(135deg, rgba(0,200,150,0.1) 0%, rgba(168,85,247,0.1) 100%)" }}>
-                  <Sparkles className="w-7 h-7 text-purple-500" />
+              <div className="py-6 animate-fade-in">
+                <div className="flex items-start gap-2.5 mb-4">
+                  <div
+                    className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
+                    style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-zinc-700" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[12px] text-zinc-800 font-medium">GeoPlan AI 助手</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5 leading-relaxed">
+                      可分析充电站分布、识别盲区、规划选址、空间查询。试试以下问题：
+                    </p>
+                  </div>
                 </div>
-                <p className="text-sm text-slate-500 mb-1">你好，我是GeoPlan AI助手</p>
-                <p className="text-xs text-slate-400 mb-4">可以帮您分析充电站、规划选址、空间查询</p>
-                <div className="space-y-2">
+                <div className="space-y-1">
                   {[
                     "徐州市充电设施分布概况",
                     "如何识别充电盲区",
@@ -3456,15 +6824,20 @@ export default function App() {
                     ...(userLocation ? ["推荐离我最近的充电站"] : []),
                   ].map(q => (
                     <button key={q} onClick={() => { setAiInput(q); }}
-                      className="block w-full text-xs text-left px-3 py-2.5 bg-slate-50 border border-slate-200 rounded-xl hover:border-purple-400/50 hover:bg-purple-50/30 text-slate-600 transition-colors">
-                      💬 {q}
+                      className="block w-full text-[11.5px] text-left px-2.5 py-1.5 rounded-md text-zinc-700 transition-all hover:bg-zinc-50 group"
+                      style={{ border: "1px solid var(--color-muted)" }}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-zinc-400 group-hover:text-zinc-700 transition-colors">→</span>
+                        <span className="flex-1">{q}</span>
+                      </div>
                     </button>
                   ))}
                 </div>
                 {!userLocation && (
                   <button onClick={locateUser}
-                    className="mt-4 text-xs text-[#00C896] hover:underline flex items-center gap-1 mx-auto">
-                    <LocateFixed className="w-3.5 h-3.5" /> 先获取我的位置以启用最近站点推荐
+                    className="mt-3 text-[11px] text-zinc-500 hover:text-zinc-900 flex items-center gap-1 mx-auto transition-colors"
+                    style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)", padding: "4px 10px", borderRadius: "var(--radius-sm)" }}>
+                    <LocateFixed className="w-3 h-3" /> 启用位置服务
                   </button>
                 )}
               </div>
@@ -3472,44 +6845,75 @@ export default function App() {
             {aiMessages.map((msg, i) => {
               const isLastAssistant = msg.role === "assistant" && i === aiMessages.length - 1;
               return (
-                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in`}>
                   <div className="max-w-[88%]">
-                    <div className={`px-3 py-2.5 rounded-2xl text-xs leading-relaxed ${
-                      msg.role === "user"
-                        ? "bg-[#00C896] text-white whitespace-pre-wrap rounded-br-md"
-                        : "bg-slate-50 border border-slate-100 text-slate-800 shadow-sm rounded-bl-md"
-                    }`}>
+                    <div
+                      className={`px-2.5 py-2 text-[12px] leading-relaxed ${
+                        msg.role === "user"
+                          ? "text-white whitespace-pre-wrap rounded-br-sm"
+                          : "rounded-bl-sm"
+                      }`}
+                      style={
+                        msg.role === "user"
+                          ? { background: "var(--color-brand)", borderRadius: "var(--radius-md) var(--radius-md) 2px var(--radius-md)" }
+                          : { background: "var(--color-subtle)", border: "1px solid var(--color-muted)", color: "var(--color-ink-1)", borderRadius: "var(--radius-md) var(--radius-md) 2px var(--radius-md)" }
+                      }
+                    >
                       {msg.role === "user"
                         ? msg.content
                         : (
                           <>
                             {msg.gisResult && (
-                              <div className="mb-2.5">
-                                <div className="bg-gradient-to-r from-[#00C896]/10 to-blue-500/10 border border-[#00C896]/30 rounded-xl p-3 mb-2">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <div className="w-7 h-7 rounded-full bg-[#00C896]/20 flex items-center justify-center">
-                                      <Sparkles className="w-4 h-4 text-[#00C896]" />
-                                    </div>
-                                    <span className="text-xs font-bold text-slate-700">
-                                      {(msg.gisResult.radius > 0 ? `${(msg.gisResult.radius / 1000).toFixed(1)}km 缓冲区` : msg.gisResult.district || msg.gisResult.brand) + " 空间分析"}
+                              <div className="mb-2">
+                                {/* GIS 卡片 - Linear 风: 无渐变, 单色边框 + 大等宽数字 */}
+                                <div
+                                  className="rounded-md p-2.5 mb-1.5"
+                                  style={{
+                                    background: "var(--color-surface)",
+                                    border: "1px solid var(--color-muted)",
+                                    borderLeft: "2px solid var(--color-brand)",
+                                  }}
+                                >
+                                  <div className="flex items-center gap-1.5 mb-2">
+                                    <Sparkles className="w-3 h-3 text-zinc-700" />
+                                    <span className="text-[11px] font-semibold text-zinc-900">
+                                      {(msg.gisResult.radius > 0 ? `${(msg.gisResult.radius / 1000).toFixed(1)}公里 缓冲区` : msg.gisResult.district || msg.gisResult.brand) + " 空间分析"}
+                                    </span>
+                                    <span
+                                      className="text-[9px] px-1 py-0 rounded ml-auto"
+                                      style={{
+                                        background: "rgba(0,200,150,0.08)",
+                                        color: "var(--color-brand-text)",
+                                      }}
+                                    >
+                                      空间分析
                                     </span>
                                   </div>
-                                  <div className="grid grid-cols-3 gap-2 mb-2.5">
-                                    <div className="text-center">
-                                      <p className="text-xl font-bold text-[#00C896]">{msg.gisResult.count}</p>
-                                      <p className="text-[10px] text-slate-500">充电站</p>
+                                  <div className="grid grid-cols-3 gap-1.5 mb-2">
+                                    <div
+                                      className="rounded px-1.5 py-1 text-center"
+                                      style={{ background: "var(--color-subtle)" }}
+                                    >
+                                      <p className="text-[15px] font-bold text-zinc-900 font-num">{msg.gisResult.count}</p>
+                                      <p className="text-[9px] text-zinc-500">充电站</p>
                                     </div>
-                                    <div className="text-center">
-                                      <p className="text-xl font-bold text-blue-500">
+                                    <div
+                                      className="rounded px-1.5 py-1 text-center"
+                                      style={{ background: "var(--color-subtle)" }}
+                                    >
+                                      <p className="text-[15px] font-bold text-zinc-900 font-num">
                                         {msg.gisResult.coveredPopulation >= 10000
                                           ? `${(msg.gisResult.coveredPopulation / 10000).toFixed(1)}万`
                                           : msg.gisResult.coveredPopulation.toLocaleString()}
                                       </p>
-                                      <p className="text-[10px] text-slate-500">覆盖人口</p>
+                                      <p className="text-[9px] text-zinc-500">覆盖人口</p>
                                     </div>
-                                    <div className="text-center">
-                                      <p className="text-xl font-bold text-purple-500">{msg.gisResult.coveredCommunities}</p>
-                                      <p className="text-[10px] text-slate-500">覆盖社区</p>
+                                    <div
+                                      className="rounded px-1.5 py-1 text-center"
+                                      style={{ background: "var(--color-subtle)" }}
+                                    >
+                                      <p className="text-[15px] font-bold text-zinc-900 font-num">{msg.gisResult.coveredCommunities}</p>
+                                      <p className="text-[9px] text-zinc-500">覆盖社区</p>
                                     </div>
                                   </div>
                                   <button
@@ -3519,33 +6923,39 @@ export default function App() {
                                       center: msg.gisResult.center,
                                       radius: msg.gisResult.radius,
                                     })}
-                                    className="w-full text-xs py-1.5 rounded-lg bg-[#00C896]/10 border border-[#00C896]/30 text-[#00C896] hover:bg-[#00C896]/20 transition-colors flex items-center justify-center gap-1"
+                                    className="w-full text-[11px] py-1 rounded flex items-center justify-center gap-1 transition-colors font-medium"
+                                    style={{
+                                      background: "var(--color-brand-subtle)",
+                                      border: "1px solid var(--color-brand-border)",
+                                      color: "var(--color-brand-text)",
+                                    }}
                                   >
-                                    <MapPin className="w-3.5 h-3.5" /> 在地图上查看
+                                    <MapPin className="w-3 h-3" /> 在地图上查看
                                   </button>
                                 </div>
 
                                 {msg.gisResult.stations.length > 0 && (
-                                  <div className="space-y-1.5">
-                                    <p className="text-[10px] text-slate-400 font-medium">点击站点名可跳转地图：</p>
+                                  <div className="space-y-1">
+                                    <p className="text-[10px] text-zinc-500">点击可跳转至地图</p>
                                     {msg.gisResult.stations.map((station) => (
                                       <button
                                         key={station.id}
                                         onClick={() => flyToStationById(station.id)}
-                                        className="w-full text-left p-2 bg-white border border-slate-200 rounded-xl hover:border-[#00C896]/50 hover:bg-[#00C896]/5 transition-colors group"
+                                        className="w-full text-left p-1.5 rounded-md transition-all group"
+                                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)" }}
                                       >
-                                        <div className="flex items-start gap-2">
-                                          <MapPin className="w-3.5 h-3.5 text-[#00C896] shrink-0 mt-0.5" />
+                                        <div className="flex items-start gap-1.5">
+                                          <MapPin className="w-3 h-3 text-zinc-400 group-hover:text-zinc-900 shrink-0 mt-0.5 transition-colors" />
                                           <div className="flex-1 min-w-0">
-                                            <p className="text-xs font-medium text-slate-700 truncate group-hover:text-[#00C896] transition-colors">
+                                            <p className="text-[11px] font-medium text-zinc-800 truncate group-hover:text-zinc-900 transition-colors">
                                               {station.name}
                                             </p>
-                                            <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
+                                            <div className="flex items-center gap-1.5 text-[9px] text-zinc-500 mt-0.5">
                                               {station.distanceKm != null && (
-                                                <span className="text-[#00C896] font-medium">{station.distanceKm}km</span>
+                                                <span className="text-emerald-600 font-semibold">{station.distanceKm}公里</span>
                                               )}
                                               <span>{station.brand}</span>
-                                              <span>· 快充{station.fastChargers}/慢充{station.slowChargers}</span>
+                                              <span>· 快{station.fastChargers}/慢{station.slowChargers}</span>
                                             </div>
                                           </div>
                                         </div>
@@ -3557,24 +6967,29 @@ export default function App() {
                             )}
                             {msg.content
                               ? renderAiContent(msg.content)
-                              : <span className="text-slate-400">思考中...</span>}
+                              : (
+                                <div className="flex items-center gap-1.5 text-zinc-500">
+                                  <span className="w-1 h-1 rounded-full bg-zinc-400 animate-pulse" />
+                                  <span className="text-[11px]">思考中...</span>
+                                </div>
+                              )}
                           </>
                         )}
                     </div>
                     {msg.role === "assistant" && msg.content && (
-                      <div className="flex items-center justify-end gap-1 mt-1">
+                      <div className="flex items-center justify-end gap-0.5 mt-1">
                         <button onClick={() => copyAi(msg.content, i)}
-                          className="w-6 h-6 rounded-lg flex items-center justify-center hover:bg-slate-100 transition-colors"
+                          className="w-5 h-5 rounded flex items-center justify-center hover:bg-zinc-100 transition-colors"
                           title={copiedIndex === i ? "已复制" : "复制内容"}>
                           {copiedIndex === i
-                            ? <Check className="w-3.5 h-3.5 text-green-500" />
-                            : <Copy className="w-3.5 h-3.5 text-slate-400" />}
+                            ? <Check className="w-3 h-3 text-emerald-500" />
+                            : <Copy className="w-3 h-3 text-zinc-400" />}
                         </button>
                         {isLastAssistant && !aiStreaming && (
                           <button onClick={regenerateAi}
-                            className="w-6 h-6 rounded-lg flex items-center justify-center hover:bg-slate-100 transition-colors"
+                            className="w-5 h-5 rounded flex items-center justify-center hover:bg-zinc-100 transition-colors"
                             title="重新生成">
-                            <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
+                            <RotateCcw className="w-3 h-3 text-zinc-400" />
                           </button>
                         )}
                       </div>
@@ -3588,9 +7003,12 @@ export default function App() {
 
           {/* AI 站点详情已移至地图 Overlay */}
 
-          {/* 输入区域 */}
-          <div className="shrink-0 px-4 py-3 border-t border-slate-100 bg-white/80 backdrop-blur">
-            <div className="flex gap-2 items-end">
+          {/* 输入区域 - Linear 风: 紧凑, 黑底白字发送 */}
+          <div
+            className="shrink-0 px-3 py-2.5 bg-white"
+            style={{ borderTop: "1px solid var(--color-muted)" }}
+          >
+            <div className="flex gap-1.5 items-end">
               <textarea
                 ref={aiInputRef}
                 value={aiInput}
@@ -3601,22 +7019,70 @@ export default function App() {
                     sendAiMessage();
                   }
                 }}
-                placeholder="输入您的问题，Shift+Enter 换行..."
+                placeholder="输入问题 · 回车发送 · Shift+回车换行"
                 disabled={aiStreaming}
                 rows={1}
-                className="flex-1 text-xs bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-slate-700 resize-none overflow-hidden min-h-[36px] max-h-[120px] focus:border-purple-400 focus:ring-1 focus:ring-purple-200 transition-all"
+                className="input-sys flex-1 text-[12px] px-2.5 py-1.5 text-zinc-900 resize-none overflow-hidden min-h-[32px] max-h-[120px]"
               />
               <button onClick={aiStreaming ? stopAi : sendAiMessage}
                 disabled={!aiStreaming && !aiInput.trim()}
-                className={`text-white px-3 py-2 rounded-xl disabled:bg-slate-200 shrink-0 transition-colors ${
-                  aiStreaming ? "bg-red-400 hover:bg-red-500" : "bg-[#A855F7] hover:bg-purple-400"
+                className={`w-8 h-8 rounded-md shrink-0 flex items-center justify-center transition-all ${
+                  aiStreaming
+                    ? "bg-red-500 hover:bg-red-600 text-white"
+                    : "bg-zinc-900 hover:bg-zinc-800 text-white disabled:bg-zinc-200 disabled:text-zinc-400"
                 }`}>
-                {aiStreaming ? <Square className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
+                {aiStreaming ? <Square className="w-3 h-3" /> : <Send className="w-3 h-3" />}
               </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* ===== 全局 Toast 通知 (底部居中, 2.5 秒自动消失) ===== */}
+      {toast && (
+        <div
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2 rounded-md text-sm animate-fade-in pointer-events-none"
+          style={{
+            background: toast.type === "success"
+              ? "rgba(0,160,120,0.95)"
+              : "rgba(24,24,27,0.95)",
+            color: "#fff",
+            boxShadow: "var(--shadow-lg)",
+            border: "1px solid rgba(255,255,255,0.12)",
+            fontFamily: "var(--font-sans)",
+          }}
+        >
+          {toast.msg}
+        </div>
+      )}
+
+      {/* ===== 打印出图对话框 (工具栏"打印"按钮触发) ===== */}
+      {printDialogOpen && (
+        <PrintDialog
+          map={mapRef.current}
+          onClose={() => setPrintDialogOpen(false)}
+          showToast={showToast}
+        />
+      )}
+
+      {/* ===== 决策大屏 (阶段三 任务 3.1, 全屏覆盖) ===== */}
+      <Dashboard open={showDashboard} onBack={() => setShowDashboard(false)} />
+
+      {/* ===== 命令面板 (阶段四 任务 4.2, Ctrl+K 唤起) ===== */}
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onCommand={(cmd) => {
+          handleCommandExecute(cmd);
+          setCommandPaletteOpen(false);
+        }}
+      />
+
+      {/* ===== 快捷键帮助弹窗 (阶段四 任务 4.1.2, Ctrl+/ 唤起) ===== */}
+      <ShortcutsHelp
+        open={shortcutsHelpOpen}
+        onClose={() => setShortcutsHelpOpen(false)}
+      />
     </div>
   );
 }
@@ -3650,18 +7116,36 @@ function StationEditModal({ data, onClose, onSave }: {
   });
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
-      style={{ background: "rgba(15,23,42,0.5)", backdropFilter: "blur(2px)" }}
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in"
+      style={{ background: "rgba(9,9,11,0.4)" }}
       onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
-        style={{ boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}
+      <div
+        className="rounded-xl w-full max-w-md overflow-hidden animate-scale-in"
+        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xl)" }}
         onClick={(e) => e.stopPropagation()}>
-        <div className="px-5 py-3 border-b border-slate-200 flex justify-between items-center"
-          style={{ background: "linear-gradient(90deg, rgba(0,200,150,0.05) 0%, rgba(56,189,248,0.05) 100%)" }}>
-          <h3 className="text-sm font-semibold text-slate-800">
-            {isUser ? (isEdit ? "编辑用户" : "新增用户") : (isEdit ? "编辑充电站" : "新增充电站")}
-          </h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700">
+        {/* 头部 - Linear 风: 无渐变, 紧凑 */}
+        <div
+          className="px-5 py-3 flex justify-between items-center"
+          style={{ borderBottom: "1px solid var(--color-muted)", background: "var(--color-surface)" }}
+        >
+          <div className="flex items-center gap-2">
+            <div
+              className="w-6 h-6 rounded-md flex items-center justify-center"
+              style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+            >
+              {isUser ? <UserIcon className="w-3.5 h-3.5" style={{ color: "var(--color-ink-3)" }} /> : <Zap className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} />}
+            </div>
+            <h3 className="text-[14px] font-semibold" style={{ color: "var(--color-ink-1)" }}>
+              {isUser ? (isEdit ? "编辑用户" : "新增用户") : (isEdit ? "编辑充电站" : "新增充电站")}
+            </h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="w-6 h-6 flex items-center justify-center rounded transition-colors"
+            style={{ color: "var(--color-ink-5)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-5)"; }}
+          >
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -3669,31 +7153,31 @@ function StationEditModal({ data, onClose, onSave }: {
           {isUser ? (
             <>
               <div>
-                <label className="text-xs text-slate-600 font-medium block mb-1">用户名</label>
+                <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>用户名</label>
                 <input type="text" value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                  className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }} />
               </div>
               <div>
-                <label className="text-xs text-slate-600 font-medium block mb-1">密码 {isEdit && "(留空则不修改)"}</label>
+                <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>密码 {isEdit && "(留空不改)"}</label>
                 <input type="text" value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                   placeholder={isEdit ? "******" : "请输入密码"}
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                  className="input-sys w-full text-sm px-3 py-2 font-mono" style={{ color: "var(--color-ink-1)" }} />
               </div>
               <div>
-                <label className="text-xs text-slate-600 font-medium block mb-1">角色</label>
+                <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>角色</label>
                 <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none">
+                  className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }}>
                   <option value="新能源车主">新能源车主</option>
                   <option value="投资商">充电设施投资商</option>
                   <option value="管理员">系统管理员</option>
                 </select>
               </div>
               <div>
-                <label className="text-xs text-slate-600 font-medium block mb-1">状态</label>
+                <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>状态</label>
                 <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none">
+                  className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }}>
                   <option value="正常">正常</option>
                   <option value="禁用">禁用</option>
                 </select>
@@ -3702,65 +7186,65 @@ function StationEditModal({ data, onClose, onSave }: {
           ) : (
             <>
               <div>
-                <label className="text-xs text-slate-600 font-medium block mb-1">站点名称</label>
+                <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>站点名称</label>
                 <input type="text" value={form.name}
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                  className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-slate-600 font-medium block mb-1">品牌</label>
+                  <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>品牌</label>
                   <select value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })}
-                    className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none">
+                    className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }}>
                     {BRANDS.map(b => <option key={b} value={b}>{b}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs text-slate-600 font-medium block mb-1">行政区</label>
+                  <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>行政区</label>
                   <select value={form.district} onChange={(e) => setForm({ ...form, district: e.target.value })}
-                    className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none">
+                    className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }}>
                     {["鼓楼区", "云龙区", "贾汪区", "泉山区", "铜山区"].map(d => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-slate-600 font-medium block mb-1">经度 (GCJ02)</label>
+                  <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>经度 (GCJ02)</label>
                   <input type="number" step="0.000001" value={form.lng}
                     onChange={(e) => setForm({ ...form, lng: e.target.value })}
-                    className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                    className="input-sys w-full text-sm px-3 py-2 font-num" style={{ color: "var(--color-ink-1)" }} />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-600 font-medium block mb-1">纬度 (GCJ02)</label>
+                  <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>纬度 (GCJ02)</label>
                   <input type="number" step="0.000001" value={form.lat}
                     onChange={(e) => setForm({ ...form, lat: e.target.value })}
-                    className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                    className="input-sys w-full text-sm px-3 py-2 font-num" style={{ color: "var(--color-ink-1)" }} />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs text-slate-600 font-medium block mb-1">快充桩数</label>
+                  <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>快充桩数</label>
                   <input type="number" value={form.fast_chargers}
                     onChange={(e) => setForm({ ...form, fast_chargers: e.target.value })}
-                    className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                    className="input-sys w-full text-sm px-3 py-2 font-num" style={{ color: "var(--color-ink-1)" }} />
                 </div>
                 <div>
-                  <label className="text-xs text-slate-600 font-medium block mb-1">慢充桩数</label>
+                  <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>慢充桩数</label>
                   <input type="number" value={form.slow_chargers}
                     onChange={(e) => setForm({ ...form, slow_chargers: e.target.value })}
-                    className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                    className="input-sys w-full text-sm px-3 py-2 font-num" style={{ color: "var(--color-ink-1)" }} />
                 </div>
               </div>
               <div>
-                <label className="text-xs text-slate-600 font-medium block mb-1">详细地址</label>
+                <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>详细地址</label>
                 <input type="text" value={form.address}
                   onChange={(e) => setForm({ ...form, address: e.target.value })}
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none" />
+                  className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }} />
               </div>
               <div>
-                <label className="text-xs text-slate-600 font-medium block mb-1">运营状态</label>
+                <label className="text-[11px] font-medium block mb-1.5" style={{ color: "var(--color-ink-4)" }}>运营状态</label>
                 <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}
-                  className="w-full text-sm bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-700 focus:border-[#00C896] focus:outline-none">
+                  className="input-sys w-full text-sm px-3 py-2" style={{ color: "var(--color-ink-1)" }}>
                   <option value="运营中">运营中</option>
                   <option value="建设中">建设中</option>
                   <option value="停运">停运</option>
@@ -3769,14 +7253,24 @@ function StationEditModal({ data, onClose, onSave }: {
             </>
           )}
         </div>
-        <div className="px-5 py-3 border-t border-slate-200 flex justify-end gap-2 bg-slate-50">
-          <button onClick={onClose}
-            className="text-xs px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100">
+        {/* 底部操作 - Linear 风: 单色, 无渐变 */}
+        <div
+          className="px-5 py-3 flex justify-end gap-2"
+          style={{ borderTop: "1px solid var(--color-muted)", background: "var(--color-subtle)" }}
+        >
+          <button
+            onClick={onClose}
+            className="text-xs px-4 py-2 rounded-md font-medium transition-colors"
+            style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", color: "var(--color-ink-3)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-muted)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-surface)"; }}
+          >
             取消
           </button>
-          <button onClick={() => onSave(form)}
-            className="text-xs px-4 py-2 rounded-lg text-white"
-            style={{ background: "linear-gradient(90deg, #00C896 0%, #4FD4B1 100%)" }}>
+          <button
+            onClick={() => onSave(form)}
+            className="btn-brand text-xs px-4 py-2 rounded-md font-medium"
+          >
             保存
           </button>
         </div>

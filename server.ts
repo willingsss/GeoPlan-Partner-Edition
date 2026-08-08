@@ -6,6 +6,7 @@ import * as turf from "@turf/turf";
 import { createServer as createViteServer } from "vite";
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
+import { precomputeAsync, getPrecomputeProgress } from "./server/services/isochronePrecompute";
 
 dotenv.config();
 
@@ -105,6 +106,43 @@ function projectGeometryTo4326(geom: any): any {
 }
 
 // =========================================================================
+// 1.1 空间索引与几何缓存工具（覆盖分析性能优化用）
+// =========================================================================
+// 矩形 bbox: [minX, minY, maxX, maxY]
+type BBox = [number, number, number, number];
+
+// 矩形快速相交判定（不接触视为不相交）
+function bboxIntersect(b1: BBox, b2: BBox): boolean {
+  return !(b1[2] < b2[0] || b1[0] > b2[2] || b1[3] < b2[1] || b1[1] > b2[3]);
+}
+
+// 计算几何在 EPSG:3857 下的 bbox（懒缓存到 feature 上）
+function getCachedBBox3857(feature: any): BBox {
+  if (!feature._bbox3857) {
+    const projected = projectGeometryTo3857(feature);
+    const bbox = turf.bbox(projected); // [minX, minY, maxX, maxY]
+    feature._bbox3857 = bbox;
+    feature._proj3857 = projected;
+  }
+  return feature._bbox3857;
+}
+
+// 计算几何在 EPSG:3857 下的质心（懒缓存到 feature 上）
+function getCachedCentroid3857(feature: any): [number, number] {
+  if (!feature._centroid3857) {
+    const bbox = getCachedBBox3857(feature);
+    // 用 bbox 中心近似质心（更快，社区面足够规则）
+    feature._centroid3857 = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2];
+  }
+  return feature._centroid3857;
+}
+
+// 取已缓存的 3857 投影几何（必须先调用 getCachedBBox3857）
+function getCachedProj3857(feature: any): any {
+  return feature._proj3857;
+}
+
+// =========================================================================
 // 2. 平面多边形面积计算 (鞋带定理, EPSG:3857)
 // =========================================================================
 function getPlanarPolygonArea3857(poly: any): number {
@@ -168,6 +206,12 @@ interface ChargingStation {
   district: string;
   updateTime: string;
   operator?: string;
+  // 等时圈服务区（基于真实路网的可达范围）
+  isochroneFastGeom?: any;      // 快充等时圈多边形 (WGS84 GeoJSON Polygon)
+  isochroneSlowGeom?: any;      // 慢充等时圈多边形
+  isochroneFastUpdated?: string;
+  isochroneSlowUpdated?: string;
+  isochroneStatus?: "pending" | "ok" | "partial" | "failed";
 }
 
 // operator 英文代码 -> 中文品牌名映射
@@ -242,25 +286,49 @@ if (fs.existsSync(csvPath)) {
   }).filter(s => s.lng > 0 && s.lat > 0); // 过滤无效坐标
 }
 
-// 从数据库加载充电站数据 (WGS84 坐标)
+// 从数据库加载充电站数据 (WGS84 坐标 + 等时圈几何)
 async function loadStationsFromDB(): Promise<ChargingStation[]> {
   const [rows] = await dbPool.query(
-    `SELECT id, name, brand, district, address, fast_chargers, slow_chargers, status, lng, lat, update_time
+    `SELECT id, name, brand, district, address, fast_chargers, slow_chargers, status, lng, lat, update_time,
+            isochrone_fast_geom, isochrone_slow_geom,
+            isochrone_fast_updated, isochrone_slow_updated, isochrone_status
      FROM t_charging_station ORDER BY id`
   );
-  return (rows as any[]).map((r) => ({
-    id: r.id,
-    name: r.name,
-    brand: r.brand,
-    lng: Number(r.lng),
-    lat: Number(r.lat),
-    fastChargers: Number(r.fast_chargers),
-    slowChargers: Number(r.slow_chargers),
-    address: r.address,
-    status: r.status == 1 ? "运营中" : "维护中",
-    district: r.district,
-    updateTime: r.update_time ? new Date(r.update_time).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
-  }));
+  return (rows as any[]).map((r) => {
+    // mysql2 对 JSON 字段可能返回对象或字符串，统一为对象
+    const parseJson = (v: any): any | undefined => {
+      if (v == null) return undefined;
+      if (typeof v === "string") { try { return JSON.parse(v); } catch { return undefined; } }
+      return v;
+    };
+    // 等时圈几何在数据库中以 Geometry 存储, 统一包装为 Feature 以兼容预计算内存格式
+    // (saveStationIsochrone 存的是 geom.geometry, 服务器重启后从 DB 加载需还原为 Feature)
+    const parseIsochroneGeom = (v: any): any | undefined => {
+      const geom = parseJson(v);
+      if (!geom) return undefined;
+      if (geom.type === "Feature") return geom;
+      if (geom.type === "Polygon" || geom.type === "MultiPolygon") return turf.feature(geom);
+      return undefined;
+    };
+    return {
+      id: r.id,
+      name: r.name,
+      brand: r.brand,
+      lng: Number(r.lng),
+      lat: Number(r.lat),
+      fastChargers: Number(r.fast_chargers),
+      slowChargers: Number(r.slow_chargers),
+      address: r.address,
+      status: r.status == 1 ? "运营中" : "维护中",
+      district: r.district,
+      updateTime: r.update_time ? new Date(r.update_time).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+      isochroneFastGeom: parseIsochroneGeom(r.isochrone_fast_geom),
+      isochroneSlowGeom: parseIsochroneGeom(r.isochrone_slow_geom),
+      isochroneFastUpdated: r.isochrone_fast_updated ? new Date(r.isochrone_fast_updated).toISOString() : undefined,
+      isochroneSlowUpdated: r.isochrone_slow_updated ? new Date(r.isochrone_slow_updated).toISOString() : undefined,
+      isochroneStatus: r.isochrone_status || "pending",
+    };
+  });
 }
 
 // =========================================================================
@@ -527,15 +595,19 @@ app.get("/api/v1/stations", (req, res) => {
   if (district && district !== "全部") {
     stations = stations.filter(s => s.district === district);
   }
-  // 转为 GeoJSON FeatureCollection
+  // 转为 GeoJSON FeatureCollection (剔除等时圈几何字段避免响应过大, 仅保留状态/时间)
   const fc = {
     type: "FeatureCollection",
-    features: stations.map(s => ({
-      type: "Feature",
-      id: s.id,
-      geometry: { type: "Point", coordinates: [s.lng, s.lat] },
-      properties: { ...s },
-    })),
+    features: stations.map(s => {
+      // 解构剔除重型几何字段, 其余属性原样下发
+      const { isochroneFastGeom, isochroneSlowGeom, ...rest } = s;
+      return {
+        type: "Feature",
+        id: s.id,
+        geometry: { type: "Point", coordinates: [s.lng, s.lat] },
+        properties: { ...rest },
+      };
+    }),
   };
   res.json({ success: true, data: fc });
 });
@@ -660,16 +732,75 @@ app.post("/api/v1/feedback/:id/review", requireAuth, requireRole("管理员"), a
   }
 });
 
+// =========================================================================
+// 等时圈预计算管理接口
+// =========================================================================
+// 查询预计算进度
+app.get("/api/v1/admin/isochrone-progress", (req, res) => {
+  const progress = getPrecomputeProgress();
+  const totalStations = chargingStations.length;
+  const okCount = chargingStations.filter(s => s.isochroneStatus === "ok").length;
+  const partialCount = chargingStations.filter(s => s.isochroneStatus === "partial").length;
+  const pendingCount = chargingStations.filter(s => s.isochroneStatus === "pending").length;
+  const failedCount = chargingStations.filter(s => s.isochroneStatus === "failed").length;
+  res.json({
+    success: true,
+    data: {
+      ...progress,
+      stats: {
+        total: totalStations,
+        ok: okCount,
+        partial: partialCount,
+        pending: pendingCount,
+        failed: failedCount,
+      },
+    },
+  });
+});
+
+// 手动触发预计算（仅对 pending/failed 站点）
+app.post("/api/v1/admin/precompute-isochrones", async (req, res) => {
+  const progress = getPrecomputeProgress();
+  if (progress.running) {
+    return res.status(409).json({
+      success: false,
+      message: "已有预计算任务在执行中",
+      data: progress,
+    });
+  }
+  const { force } = req.body || {};
+  const targets = (force
+    ? chargingStations
+    : chargingStations.filter(s => s.isochroneStatus === "pending" || s.isochroneStatus === "failed")
+  ).map(s => ({ id: s.id, lng: s.lng, lat: s.lat, fastChargers: s.fastChargers, slowChargers: s.slowChargers }));
+
+  if (targets.length === 0) {
+    return res.json({ success: true, message: "无待计算站点", data: getPrecomputeProgress() });
+  }
+  precomputeAsync(dbPool, targets, { force, memoryStations: chargingStations });
+  res.json({
+    success: true,
+    message: `已触发 ${targets.length} 座站点的等时圈预计算`,
+    data: getPrecomputeProgress(),
+  });
+});
+
 // 充电覆盖分析：识别盲区
 app.post("/api/v1/analysis/coverage", (req, res) => {
   try {
-    const { chargeMode, radius, district } = req.body; // "fast" | "slow"
+    const { chargeMode, radius, district, serviceAreaMode } = req.body; // "fast" | "slow"
+    // serviceAreaMode: "buffer"（默认，圆形缓冲区）/ "isochrone"（路网等时圈）/ "hybrid"（混合，缺失回退缓冲区）
+    const saMode: "buffer" | "isochrone" | "hybrid" = ["buffer", "isochrone", "hybrid"].includes(serviceAreaMode)
+      ? serviceAreaMode
+      : "buffer";
     // 快充: 驾车10分钟 ~800m半径; 慢充: 步行15分钟 ~400m半径
     // 优先使用传入的自定义 radius，未传时回退到 chargeMode 推导
     const serviceRadius = (typeof radius === "number" && radius > 0)
       ? radius
       : (chargeMode === "fast" ? 800 : 400);
-    const activeStations = chargingStations.filter(s => s.status === "运营中" && s.brand !== "蔚来换电");
+    // 覆盖分析纳入所有有效坐标的充电站 (含维护中, 因为规划分析需考虑全部基础设施)
+    // 仅排除蔚来换电 (换电站与充电站服务模式不同) 和坐标无效的站点
+    const activeStations = chargingStations.filter(s => s.brand !== "蔚来换电" && s.lng > 0 && s.lat > 0);
 
     // 行政区过滤：若指定 district（非空且非 "all"），仅分析该区社区
     const districtFilter = typeof district === "string" && district && district !== "all" ? district : null;
@@ -677,15 +808,104 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
       ? communitiesDatabase.features.filter((comm: any) => comm.properties.district === districtFilter)
       : communitiesDatabase.features;
 
-    // 为每个运营中的充电站生成服务区缓冲区
+    // 为每个运营中的充电站生成服务区
+    // 三种模式：buffer（圆形缓冲区，默认）/ isochrone（路网等时圈，缺失不计入）/ hybrid（优先等时圈，缺失回退缓冲区）
+    const isFast = chargeMode !== "slow";
+    const serviceRadiusSq = serviceRadius * serviceRadius;
     const serviceAreas: any[] = [];
-    activeStations.forEach(station => {
+    let isochroneCoverageCount = 0;
+    let fallbackCount = 0;
+
+    for (const station of activeStations) {
       const center3857 = toEPSG3857([station.lng, station.lat]);
-      const buffer = createPlanarBuffer3857(center3857, serviceRadius);
-      serviceAreas.push({ station, buffer });
-    });
+
+      // 尝试取等时圈几何
+      const isochroneGeomWgs84 = isFast ? station.isochroneFastGeom : station.isochroneSlowGeom;
+      let useIsochrone = false;
+
+      if (saMode === "isochrone" || saMode === "hybrid") {
+        if (isochroneGeomWgs84 && isochroneGeomWgs84.geometry) {
+          // 等时圈几何是 WGS84，需投影到 3857 以便后续叠置
+          const isochroneProj = projectGeometryTo3857(isochroneGeomWgs84);
+          const isochroneBbox = turf.bbox(isochroneProj);
+          const isochroneCenter: [number, number] = [
+            (isochroneBbox[0] + isochroneBbox[2]) / 2,
+            (isochroneBbox[1] + isochroneBbox[3]) / 2,
+          ];
+          serviceAreas.push({
+            station,
+            buffer: isochroneProj,
+            center: isochroneCenter,
+            bbox: isochroneBbox as BBox,
+            source: "isochrone",
+          });
+          isochroneCoverageCount++;
+          useIsochrone = true;
+        } else if (saMode === "isochrone") {
+          // 严格等时圈模式：缺失则跳过该站点
+          continue;
+        }
+      }
+
+      if (!useIsochrone) {
+        // 回退到圆形缓冲区
+        const buffer = createPlanarBuffer3857(center3857, serviceRadius);
+        const bbox: BBox = [
+          center3857[0] - serviceRadius, center3857[1] - serviceRadius,
+          center3857[0] + serviceRadius, center3857[1] + serviceRadius,
+        ];
+        serviceAreas.push({ station, buffer, center: center3857, bbox, source: "buffer" });
+        if (saMode === "hybrid") fallbackCount++;
+      }
+    }
+
+    // 服务区重叠分析：双层循环求交，识别冗余覆盖区域
+    // 性能优化：用质心距离预筛（两圆心距 > 2r 必不相交）+ bbox 快速判定
+    const overlapFeatures: any[] = [];
+    let totalOverlapArea = 0;
+    for (let i = 0; i < serviceAreas.length; i++) {
+      const sa1 = serviceAreas[i];
+      for (let j = i + 1; j < serviceAreas.length; j++) {
+        const sa2 = serviceAreas[j];
+        // 快速判定：质心距离 > 2r 必不相交
+        const dx = sa1.center[0] - sa2.center[0];
+        const dy = sa1.center[1] - sa2.center[1];
+        if (dx * dx + dy * dy > 4 * serviceRadiusSq) continue;
+        // 快速判定：bbox 不相交
+        if (!bboxIntersect(sa1.bbox, sa2.bbox)) continue;
+
+        let intersection: any = null;
+        try {
+          intersection = turf.intersect(turf.featureCollection([sa1.buffer, sa2.buffer]));
+        } catch { intersection = null; }
+        if (intersection) {
+          const overlapArea = getPlanarPolygonArea3857(intersection);
+          if (overlapArea > 0) {
+            // 累加重叠面积（含多重重叠，作为冗余度近似指标）
+            totalOverlapArea += overlapArea;
+            overlapFeatures.push(turf.feature(
+              projectGeometryTo4326(intersection.geometry),
+              {
+                stations: [sa1.station.name, sa2.station.name],
+                area: Math.round(overlapArea),
+              }
+            ));
+          }
+        }
+      }
+    }
+    // 服务区总面积（EPSG:3857 平面面积之和）
+    const totalServiceArea = serviceAreas.reduce((sum, s) => sum + getPlanarPolygonArea3857(s.buffer), 0);
+    // 冗余度 = Σ重叠面积 / Σ服务区面积 × 100，保留 1 位小数；总面积为 0 时记 0
+    const redundancyScore = totalServiceArea > 0
+      ? Math.round((totalOverlapArea / totalServiceArea) * 1000) / 10
+      : 0;
+    const overlapAreas = { type: "FeatureCollection", features: overlapFeatures };
 
     // 分析每个社区的覆盖情况
+    // 性能优化：① 懒缓存社区的 3857 投影/bbox/质心（多次分析复用）
+    //         ② bbox 快速判定 + 质心距离预筛，跳过远距离服务区
+    //         ③ 覆盖率 ≥0.95 时早退（视为基本完全覆盖）
     const communityResults: any[] = [];
     const blindSpotFeatures: any[] = [];
     let totalCoveredPop = 0;
@@ -694,19 +914,37 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
     let blindSpotCount = 0;
 
     targetCommunities.forEach((comm: any) => {
-      const commProj = projectGeometryTo3857(comm);
+      const commBbox = getCachedBBox3857(comm);
+      const commProj = getCachedProj3857(comm);
+      const commCentroid = getCachedCentroid3857(comm);
       const commArea = getPlanarPolygonArea3857(commProj);
       const pop = comm.properties.population_total;
       totalPopulation += pop;
+
+      // 社区外接圆半径近似（bbox 对角线一半），用于质心距离预筛
+      const commHalfDiag = Math.hypot(
+        (commBbox[2] - commBbox[0]) / 2,
+        (commBbox[3] - commBbox[1]) / 2
+      );
+      const maxSearchDist = serviceRadius + commHalfDiag;
+      const maxSearchDistSq = maxSearchDist * maxSearchDist;
 
       // 检查社区是否被任何服务区覆盖
       let maxCoverageRatio = 0;
       let coveredByStation: string | null = null;
 
-      for (const { station, buffer } of serviceAreas) {
+      for (const sa of serviceAreas) {
+        // 快速判定1：bbox 不相交则跳过
+        if (!bboxIntersect(commBbox, sa.bbox)) continue;
+        // 快速判定2：质心距离 > (serviceRadius + commHalfDiag) 则跳过
+        const dx = sa.center[0] - commCentroid[0];
+        const dy = sa.center[1] - commCentroid[1];
+        if (dx * dx + dy * dy > maxSearchDistSq) continue;
+
+        // 精确求交
         let intersection: any = null;
         try {
-          intersection = turf.intersect(turf.featureCollection([commProj, buffer]));
+          intersection = turf.intersect(turf.featureCollection([commProj, sa.buffer]));
         } catch { intersection = null; }
 
         if (intersection) {
@@ -714,17 +952,26 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
           const ratio = intersectArea / commArea;
           if (ratio > maxCoverageRatio) {
             maxCoverageRatio = ratio;
-            coveredByStation = station.name;
+            coveredByStation = sa.station.name;
           }
+          // 早退：已找到 ≥95% 覆盖，无需继续（视为基本完全覆盖）
+          if (maxCoverageRatio >= 0.95) break;
         }
       }
 
       const coveragePercent = Math.round(maxCoverageRatio * 1000) / 10;
       const isBlindSpot = maxCoverageRatio < 0.1; // 覆盖率<10%视为盲区
 
+      // 根据覆盖率百分比计算分级（极差/较差/一般/良好/优秀）
+      let level: string;
+      if (coveragePercent < 10) level = "极差";
+      else if (coveragePercent < 30) level = "较差";
+      else if (coveragePercent < 60) level = "一般";
+      else if (coveragePercent < 90) level = "良好";
+      else level = "优秀";
+
       if (isBlindSpot) {
         blindSpotCount++;
-        totalPopulation; // 盲区人口
         blindSpotFeatures.push({
           type: "Feature",
           id: comm.id,
@@ -746,6 +993,7 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
         district: comm.properties.district,
         population: pop,
         coverageRatio: coveragePercent,
+        level,
         isBlindSpot,
         coveredBy: coveredByStation,
       });
@@ -767,10 +1015,16 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
       }
     });
 
-    // 生成服务区 GeoJSON
-    const serviceAreaFeatures = serviceAreas.map(({ station, buffer }) => {
+    // 生成服务区 GeoJSON (附带 source 字段: isochrone / buffer, 供前端差异化渲染)
+    const serviceAreaFeatures = serviceAreas.map(({ station, buffer, source }) => {
       const wgs84Geom = projectGeometryTo4326(buffer.geometry);
-      return turf.feature(wgs84Geom, { stationName: station.name, brand: station.brand, radius: serviceRadius });
+      return turf.feature(wgs84Geom, {
+        stationName: station.name,
+        brand: station.brand,
+        radius: serviceRadius,
+        source: source || "buffer",
+        mode: saMode,
+      });
     });
 
     // 盲区聚类：基于质心距离的贪心聚合（质心距离≤1500米归入同一聚类）
@@ -823,6 +1077,86 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
         population: c.population,
       }));
 
+    // 充电站覆盖效率统计：按 stationId 聚合各站覆盖的社区与人口
+    const stationByName = new Map(activeStations.map(s => [s.name, s]));
+    const stationById = new Map(activeStations.map(s => [s.id, s]));
+    const stationEfficiencyMap = new Map<string, {
+      stationId: number;
+      stationName: string;
+      brand: string;
+      fastChargers: number;
+      slowChargers: number;
+      coveredCommunities: number;
+      coveredPopulation: number;
+      coverageRatioSum: number;
+    }>();
+    communityResults.forEach(c => {
+      if (c.coveredBy === null) return;
+      // 从 activeStations 中按 name 匹配对应的充电站对象
+      const station = stationByName.get(c.coveredBy);
+      if (!station) return;
+      const key = String(station.id);
+      let entry = stationEfficiencyMap.get(key);
+      if (!entry) {
+        entry = {
+          stationId: station.id,
+          stationName: station.name,
+          brand: station.brand,
+          fastChargers: station.fastChargers,
+          slowChargers: station.slowChargers,
+          coveredCommunities: 0,
+          coveredPopulation: 0,
+          coverageRatioSum: 0,
+        };
+        stationEfficiencyMap.set(key, entry);
+      }
+      entry.coveredCommunities += 1;
+      entry.coveredPopulation += c.population;
+      entry.coverageRatioSum += c.coverageRatio;
+    });
+
+    // 计算 loadIndex（负荷指数，复用 /api/v1/analysis/heatmap 算法）
+    // loadIndex = (快充×2 + 慢充×1) × (1 + 覆盖人口/10000) / (1 + 竞品距离衰减)
+    const stationEfficiency: any[] = Array.from(stationEfficiencyMap.values()).map((e: any) => {
+      const station = stationById.get(e.stationId);
+      if (!station) return null;
+      const stationPt = turf.point([station.lng, station.lat]);
+      // 竞品距离衰减：找最近的其他品牌充电站，距离 km，衰减 = 1 / (1 + distance)
+      let minCompetitorDist = Infinity;
+      chargingStations.forEach(other => {
+        if (other.id === station.id || other.brand === station.brand) return;
+        const d = turf.distance(stationPt, turf.point([other.lng, other.lat]), { units: "kilometers" });
+        if (d < minCompetitorDist) minCompetitorDist = d;
+      });
+      // 简化实现：找不到竞品时衰减记 0
+      const competitorDecay = minCompetitorDist === Infinity ? 0 : 1 / (1 + minCompetitorDist);
+      const base = e.fastChargers * 2 + e.slowChargers * 1;
+      const loadIndex = Math.round((base * (1 + e.coveredPopulation / 10000) / (1 + competitorDecay)) * 100) / 100;
+      return {
+        stationId: e.stationId,
+        stationName: e.stationName,
+        brand: e.brand,
+        fastChargers: e.fastChargers,
+        slowChargers: e.slowChargers,
+        coveredCommunities: e.coveredCommunities,
+        coveredPopulation: e.coveredPopulation,
+        avgCoverageRatio: e.coveredCommunities > 0 ? Math.round((e.coverageRatioSum / e.coveredCommunities) * 10) / 10 : 0,
+        loadIndex,
+      };
+    }).filter((x: any) => x !== null)
+      .sort((a: any, b: any) => b.coveredPopulation - a.coveredPopulation);
+
+    // 覆盖率分级统计：按 level 分组，顺序为 极差/较差/一般/良好/优秀
+    const levelOrder = ["极差", "较差", "一般", "良好", "优秀"];
+    const coverageLevels = levelOrder.map(level => {
+      const items = communityResults.filter(c => c.level === level);
+      return {
+        level,
+        count: items.length,
+        population: items.reduce((s: number, c: any) => s + c.population, 0),
+      };
+    });
+
     res.json({
       success: true,
       data: {
@@ -830,18 +1164,34 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
         serviceRadius,
         district: districtFilter || "all",
         serviceAreas: { type: "FeatureCollection", features: serviceAreaFeatures },
+        overlapAreas,
+        redundancyScore,
         blindSpots: { type: "FeatureCollection", features: blindSpotFeatures },
         blindSpotClusters,
         communityResults: communityResults.sort((a, b) => a.coverageRatio - b.coverageRatio),
+        coverageLevels,
         districtStats: Object.values(districtStats),
+        stationEfficiency,
         summary: {
           totalCommunities: communityResults.length,
           coveredCommunities: coveredCount,
           blindSpotCommunities: blindSpotCount,
           coverageRate: communityResults.length > 0 ? Math.round((coveredCount / communityResults.length) * 1000) / 10 : 0,
+          populationCoverageRate: totalPopulation > 0 ? Math.round((totalCoveredPop / totalPopulation) * 1000) / 10 : 0,
           totalPopulation,
           blindSpotPopulation: communityResults.filter(c => c.isBlindSpot).reduce((s, c) => s + c.population, 0),
           totalStations: activeStations.length,
+          redundancyScore,
+        },
+        // 服务区模式信息
+        serviceAreaMode: saMode,
+        isochroneCoverage: {
+          covered: isochroneCoverageCount,
+          total: activeStations.length,
+          fallback: fallbackCount,
+          ratio: activeStations.length > 0
+            ? Math.round((isochroneCoverageCount / activeStations.length) * 1000) / 10
+            : 0,
         },
       },
     });
@@ -1037,6 +1387,7 @@ app.get("/api/v1/stats/regions", (req, res) => {
 
   communitiesDatabase.features.forEach((c: any) => {
     const d = c.properties.district;
+    if (!d || d === "未知" || d === "未知区") return;  // 跳过无效行政区
     if (!districtStats[d]) districtStats[d] = { district: d, stations: 0, fastChargers: 0, slowChargers: 0, brands: new Set() };
     if (!districtStats[d].communities) districtStats[d].communities = 0;
     if (!districtStats[d].population) districtStats[d].population = 0;
@@ -1044,7 +1395,10 @@ app.get("/api/v1/stats/regions", (req, res) => {
     districtStats[d].population += c.properties.population_total;
   });
 
-  const result = Object.values(districtStats).map((s: any) => ({
+  // 过滤掉无效行政区 (null / 空字符串 / "未知"), 避免下拉框出现 "未知" 选项
+  const result = Object.values(districtStats)
+    .filter((s: any) => s.district && s.district !== "未知" && s.district !== "未知区" && s.district.trim() !== "")
+    .map((s: any) => ({
     ...s,
     brands: s.brands.size,
     brandList: Array.from(s.brands),
@@ -1820,6 +2174,746 @@ app.get("/api/v1/places/search", async (req, res) => {
 });
 
 // =========================================================================
+// 10.7 充电站负荷热度分析 (阶段二 任务 2.1)
+// 计算: 负荷指数 = (fastChargers * 2 + slowChargers * 1) * (1 + 周边人口因子) / (1 + 竞品距离衰减)
+// =========================================================================
+function getLoadLevel(load: number): "低" | "中" | "高" | "超载" {
+  if (load < 5) return "低";
+  if (load < 15) return "中";
+  if (load < 30) return "高";
+  return "超载";
+}
+
+app.post("/api/v1/analysis/heatmap", (req, res) => {
+  try {
+    const { district } = req.body || {};
+    const districtFilter = typeof district === "string" && district && district !== "all" ? district : null;
+    const targetStations = districtFilter
+      ? chargingStations.filter(s => s.district === districtFilter)
+      : chargingStations;
+
+    // 预计算所有社区质心 (WGS84), 用于缓冲区内人口统计
+    const communityCentroids = communitiesDatabase.features.map((comm: any) => ({
+      comm,
+      centroid: turf.centroid(comm),
+      pop: Number(comm.properties?.population_total || 0),
+    }));
+
+    const stations = targetStations.map(station => {
+      const stationPt = turf.point([station.lng, station.lat]);
+      // 周边人口因子: 800m 缓冲区内社区人口总和 / 10000
+      const buffer800 = turf.circle(stationPt, 0.8, { units: "kilometers" });
+      let nearbyPop = 0;
+      communityCentroids.forEach(({ centroid, pop }) => {
+        if (turf.booleanPointInPolygon(centroid, buffer800)) {
+          nearbyPop += pop;
+        }
+      });
+      const populationFactor = nearbyPop / 10000;
+
+      // 竞品距离衰减: 找最近的其他品牌充电站, 距离 km
+      let minCompetitorDist = Infinity;
+      chargingStations.forEach(other => {
+        if (other.id === station.id || other.brand === station.brand) return;
+        const d = turf.distance(stationPt, turf.point([other.lng, other.lat]), { units: "kilometers" });
+        if (d < minCompetitorDist) minCompetitorDist = d;
+      });
+      const competitorDecay = minCompetitorDist === Infinity ? 0 : 1 / (1 + minCompetitorDist);
+
+      const base = (station.fastChargers * 2 + station.slowChargers * 1);
+      const load = Math.round((base * (1 + populationFactor) / (1 + competitorDecay)) * 100) / 100;
+
+      return {
+        id: station.id,
+        lng: station.lng,
+        lat: station.lat,
+        name: station.name,
+        brand: station.brand,
+        district: station.district,
+        fastChargers: station.fastChargers,
+        slowChargers: station.slowChargers,
+        load,
+        level: getLoadLevel(load),
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        district: districtFilter || "all",
+        stations,
+      },
+    });
+  } catch (error: any) {
+    console.error("负荷热力分析错误:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// =========================================================================
+// 10.8 投资回报 ROI 估算 (阶段二 任务 2.3)
+// 建站成本 = fastChargers * 80000 + slowChargers * 30000 + 土地成本 200000
+// 年收益 = coveredPopulation * 0.05 * 1.5 * 365 * 0.3
+// 回收周期 = 建站成本 / 年收益
+// =========================================================================
+app.post("/api/v1/analysis/roi", (req, res) => {
+  try {
+    const { fastChargers, slowChargers, coveredPopulation } = req.body || {};
+    const fast = parseInt(fastChargers) || 0;
+    const slow = parseInt(slowChargers) || 0;
+    const pop = parseInt(coveredPopulation) || 0;
+
+    const fastCost = fast * 80000;
+    const slowCost = slow * 30000;
+    const landCost = 200000;
+    const cost = fastCost + slowCost + landCost;
+
+    const demandRate = 0.05;        // 需求率 (车辆渗透)
+    const unitPrice = 1.5;          // 客单价 (元)
+    const conversionRate = 0.3;     // 转化率
+    const annualRevenue = Math.round(pop * demandRate * unitPrice * 365 * conversionRate);
+
+    const paybackYears = annualRevenue > 0 ? Math.round((cost / annualRevenue) * 100) / 100 : -1;
+
+    res.json({
+      success: true,
+      data: {
+        cost,
+        costBreakdown: { fast: fastCost, slow: slowCost, land: landCost },
+        annualRevenue,
+        revenueBreakdown: {
+          population: pop,
+          demandRate,
+          unitPrice,
+          conversionRate,
+        },
+        paybackYears,
+      },
+    });
+  } catch (error: any) {
+    console.error("ROI 估算错误:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// =========================================================================
+// 10.9 多方案深度对比矩阵 (阶段二 任务 2.2)
+// 输入: { schemeIds: [id1, id2] } 返回 6 维度评分 + 归一化得分
+// =========================================================================
+function computeSchemeMetrics(scheme: any): {
+  coverageRate: number;
+  coveredPopulation: number;
+  coveredCommunities: number;
+  competitionScore: number;
+  roi: number;
+  blindSpotReduction: number;
+} {
+  // 重新基于站点位置计算覆盖率: 站点半径内覆盖社区数 / 总社区数
+  const stationPt = turf.point([Number(scheme.lng), Number(scheme.lat)]);
+  const radius = Number(scheme.radius) || 800;
+  const buffer = turf.circle(stationPt, radius / 1000, { units: "kilometers" });
+
+  let coveredCommunities = 0;
+  let coveredPopulation = 0;
+  const totalCommunities = communitiesDatabase.features.length || 1;
+
+  communitiesDatabase.features.forEach((comm: any) => {
+    const centroid = turf.centroid(comm);
+    if (turf.booleanPointInPolygon(centroid, buffer)) {
+      coveredCommunities++;
+      coveredPopulation += Number(comm.properties?.population_total || 0);
+    }
+  });
+
+  const coverageRate = Math.round((coveredCommunities / totalCommunities) * 1000) / 10;
+
+  // 竞争避让度: 周边 1.5km 内其他品牌站数衰减
+  let nearbyCount = 0;
+  chargingStations.forEach(s => {
+    if (s.brand === scheme.brand) return;
+    const d = turf.distance(stationPt, turf.point([s.lng, s.lat]), { units: "meters" });
+    if (d < 1500) nearbyCount++;
+  });
+  const competitionScore = Math.max(0, Math.round(100 - nearbyCount * 12));
+
+  // ROI 估算 (按方案覆盖人口估算)
+  const fast = 4;  // 默认假设 4 快充 (无字段时)
+  const slow = 4;  // 默认假设 4 慢充
+  const cost = fast * 80000 + slow * 30000 + 200000;
+  const annualRevenue = coveredPopulation * 0.05 * 1.5 * 365 * 0.3;
+  const roi = annualRevenue > 0 ? Math.round((annualRevenue / cost) * 100) / 100 : 0;
+
+  return {
+    coverageRate,
+    coveredPopulation,
+    coveredCommunities,
+    competitionScore,
+    roi,
+    blindSpotReduction: Number(scheme.blind_spot_reduction) || 0,
+  };
+}
+
+app.post("/api/v1/analysis/compare", (req, res) => {
+  try {
+    const { schemeIds } = req.body || {};
+    if (!Array.isArray(schemeIds) || schemeIds.length !== 2) {
+      return res.status(400).json({ success: false, message: "请选择两个方案进行对比" });
+    }
+    const s1 = schemesDatabase.find(s => s.id === Number(schemeIds[0]));
+    const s2 = schemesDatabase.find(s => s.id === Number(schemeIds[1]));
+    if (!s1 || !s2) {
+      return res.status(404).json({ success: false, message: "方案不存在" });
+    }
+
+    const m1 = computeSchemeMetrics(s1);
+    const m2 = computeSchemeMetrics(s2);
+
+    // 6 维度: 覆盖率/覆盖人口/覆盖社区/竞争避让/ROI/盲区消除
+    const dimensions = [
+      { key: "coverageRate",      label: "覆盖率",     value1: m1.coverageRate,        value2: m2.coverageRate },
+      { key: "coveredPopulation", label: "覆盖人口",   value1: m1.coveredPopulation,   value2: m2.coveredPopulation },
+      { key: "coveredCommunities",label: "覆盖社区",   value1: m1.coveredCommunities,  value2: m2.coveredCommunities },
+      { key: "competitionScore",  label: "竞争避让",   value1: m1.competitionScore,    value2: m2.competitionScore },
+      { key: "roi",               label: "ROI",        value1: m1.roi,                 value2: m2.roi },
+      { key: "blindSpotReduction",label: "盲区消除",   value1: m1.blindSpotReduction,  value2: m2.blindSpotReduction },
+    ];
+
+    // 百分制归一化 (max-min 归一化到 0-100)
+    const dimensionsWithScore = dimensions.map(d => {
+      const max = Math.max(d.value1, d.value2);
+      const min = Math.min(d.value1, d.value2);
+      const range = max - min;
+      const score1 = range === 0 ? 50 : Math.round(((d.value1 - min) / range) * 100);
+      const score2 = range === 0 ? 50 : Math.round(((d.value2 - min) / range) * 100);
+      return { ...d, score1, score2 };
+    });
+
+    // 综合得分 (6 维度百分制平均)
+    const totalScore1 = dimensionsWithScore.reduce((sum, d) => sum + d.score1, 0) / 6;
+    const totalScore2 = dimensionsWithScore.reduce((sum, d) => sum + d.score2, 0) / 6;
+
+    // 推荐方案
+    const recommendId = totalScore1 >= totalScore2 ? s1.id : s2.id;
+    const recommendName = totalScore1 >= totalScore2 ? s1.name : s2.name;
+    const winnerScore = Math.max(totalScore1, totalScore2);
+    const loserScore = Math.min(totalScore1, totalScore2);
+    const reason = `综合得分 ${winnerScore.toFixed(1)} vs ${loserScore.toFixed(1)}，"${recommendName}" 在 6 维度归一化对比中整体领先，建议优先采纳。`;
+
+    res.json({
+      success: true,
+      data: {
+        schemes: [
+          { id: s1.id, name: s1.name, lng: s1.lng, lat: s1.lat, radius: s1.radius, brand: s1.brand, metrics: m1, totalScore: Math.round(totalScore1 * 10) / 10 },
+          { id: s2.id, name: s2.name, lng: s2.lng, lat: s2.lat, radius: s2.radius, brand: s2.brand, metrics: m2, totalScore: Math.round(totalScore2 * 10) / 10 },
+        ],
+        dimensions: dimensionsWithScore,
+        recommendation: { id: recommendId, name: recommendName, reason },
+      },
+    });
+  } catch (error: any) {
+    console.error("方案对比错误:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// =========================================================================
+// 10.10 区域竞争态势分析 (阶段二 任务 2.4)
+// 返回: 品牌市占率 / 各行政区品牌分布 / 饱和度 / 空白市场
+// =========================================================================
+app.post("/api/v1/analysis/competition", (req, res) => {
+  try {
+    // 1. 品牌市占率
+    const brandCount: Record<string, number> = {};
+    chargingStations.forEach(s => {
+      brandCount[s.brand] = (brandCount[s.brand] || 0) + 1;
+    });
+    const total = chargingStations.length || 1;
+    const brandShare = Object.entries(brandCount)
+      .map(([brand, count]) => ({ brand, count, percentage: Math.round((count / total) * 1000) / 10 }))
+      .sort((a, b) => b.count - a.count);
+
+    // 2. 各行政区品牌分布
+    const districtMap: Record<string, Record<string, number>> = {};
+    chargingStations.forEach(s => {
+      if (!districtMap[s.district]) districtMap[s.district] = {};
+      districtMap[s.district][s.brand] = (districtMap[s.district][s.brand] || 0) + 1;
+    });
+    const districtDistribution = Object.entries(districtMap).map(([district, brands]) => ({
+      district,
+      brands,
+    }));
+
+    // 3. 饱和度: 各行政区充电站密度 (座/km²) - 用社区总面积近似
+    const districtArea: Record<string, number> = {};
+    communitiesDatabase.features.forEach((c: any) => {
+      const d = c.properties?.district;
+      if (!d) return;
+      // 用 turf 计算多边形面积 (平方公里)
+      try {
+        const areaKm2 = turf.area(c) / 1_000_000;
+        districtArea[d] = (districtArea[d] || 0) + (areaKm2 > 0 ? areaKm2 : 0);
+      } catch {}
+    });
+    const stationByDistrict: Record<string, number> = {};
+    chargingStations.forEach(s => {
+      stationByDistrict[s.district] = (stationByDistrict[s.district] || 0) + 1;
+    });
+    const allDistricts = new Set([...Object.keys(districtArea), ...Object.keys(stationByDistrict)]);
+    const saturation = Array.from(allDistricts).map(d => {
+      const area = districtArea[d] || 0;
+      const count = stationByDistrict[d] || 0;
+      return {
+        district: d,
+        stationsPerKm2: area > 0 ? Math.round((count / area) * 100) / 100 : 0,
+        stationCount: count,
+        areaKm2: Math.round(area * 100) / 100,
+      };
+    }).sort((a, b) => b.stationsPerKm2 - a.stationsPerKm2);
+
+    // 4. 空白市场: 复用覆盖分析的盲区聚类逻辑
+    // 找出所有"无充电站覆盖"的社区, 贪心聚类
+    const operatingStations = chargingStations.filter(s => s.status === "运营中");
+    const blindSpotFeatures: any[] = [];
+    communitiesDatabase.features.forEach((comm: any) => {
+      const centroid = turf.centroid(comm);
+      let minDist = Infinity;
+      operatingStations.forEach(s => {
+        const d = turf.distance(centroid, turf.point([s.lng, s.lat]), { units: "meters" });
+        if (d < minDist) minDist = d;
+      });
+      // 1.5km 内无充电站视为空白市场
+      if (minDist > 1500) {
+        blindSpotFeatures.push(comm);
+      }
+    });
+
+    // 贪心聚类 (质心距离 ≤ 1500m)
+    const clusters: any[] = [];
+    blindSpotFeatures.forEach((feature: any) => {
+      const centroid = turf.centroid(feature);
+      const [lng, lat] = centroid.geometry.coordinates;
+      let target: any = null;
+      for (const c of clusters) {
+        const d = turf.distance(centroid, turf.point(c._center), { units: "meters" });
+        if (d <= 1500) { target = c; break; }
+      }
+      if (target) {
+        target._lngSum += lng;
+        target._latSum += lat;
+        target.communityCount += 1;
+        target._center = [target._lngSum / target.communityCount, target._latSum / target.communityCount];
+      } else {
+        clusters.push({
+          _lngSum: lng, _latSum: lat, _center: [lng, lat], communityCount: 1,
+        });
+      }
+    });
+
+    const blankMarkets = clusters
+      .sort((a, b) => b.communityCount - a.communityCount)
+      .slice(0, 10)
+      .map((c, idx) => ({
+        clusterId: idx + 1,
+        center: [
+          Number(c._center[0].toFixed(6)),
+          Number(c._center[1].toFixed(6)),
+        ] as [number, number],
+        communityCount: c.communityCount,
+      }));
+
+    res.json({
+      success: true,
+      data: {
+        brandShare,
+        districtDistribution,
+        saturation,
+        blankMarkets,
+      },
+    });
+  } catch (error: any) {
+    console.error("竞争态势分析错误:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// =========================================================================
+// 10.11 充电桩缺口预测 (阶段二 任务 2.5)
+// 需求桩数 = 人口 * 0.05 (车辆渗透率) * 0.3 (日充电频次) / 30 (单桩日服务能力)
+// 现有桩数 = 该区所有充电站的 fastChargers + slowChargers 总和
+// =========================================================================
+app.post("/api/v1/analysis/gap-prediction", (req, res) => {
+  try {
+    // 按行政区统计人口与现有桩数
+    const districtPop: Record<string, number> = {};
+    const districtChargers: Record<string, number> = {};
+
+    communitiesDatabase.features.forEach((c: any) => {
+      const d = c.properties?.district;
+      if (!d) return;
+      districtPop[d] = (districtPop[d] || 0) + Number(c.properties?.population_total || 0);
+    });
+    chargingStations.forEach(s => {
+      districtChargers[s.district] = (districtChargers[s.district] || 0) + s.fastChargers + s.slowChargers;
+    });
+
+    const allDistricts = new Set([...Object.keys(districtPop), ...Object.keys(districtChargers)]);
+    const districts = Array.from(allDistricts).map(name => {
+      const population = districtPop[name] || 0;
+      const currentChargers = districtChargers[name] || 0;
+      const demandChargers = Math.round((population * 0.05 * 0.3) / 30);
+      const gap = demandChargers - currentChargers;
+      return { name, population, currentChargers, demandChargers, gap };
+    }).sort((a, b) => b.gap - a.gap);
+
+    // Top 10 缺口最大
+    const topGap = districts.slice(0, 10);
+
+    res.json({
+      success: true,
+      data: {
+        districts,
+        topGap,
+      },
+    });
+  } catch (error: any) {
+    console.error("缺口预测错误:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// =========================================================================
+// 10.12 方案报告 PDF 导出 (阶段二 任务 2.6)
+// 后端只返回方案完整数据, 前端组装打印 HTML 后调用 window.print()
+// =========================================================================
+app.post("/api/v1/export/scheme-pdf", (req, res) => {
+  try {
+    const { schemeId } = req.body || {};
+    if (!schemeId) {
+      return res.status(400).json({ success: false, message: "缺少 schemeId 参数" });
+    }
+    const scheme = schemesDatabase.find(s => s.id === Number(schemeId));
+    if (!scheme) {
+      return res.status(404).json({ success: false, message: "方案不存在" });
+    }
+
+    // 重新计算指标
+    const metrics = computeSchemeMetrics(scheme);
+
+    // ROI 估算
+    const fast = 4, slow = 4; // 默认假设 4 快充 + 4 慢充
+    const cost = fast * 80000 + slow * 30000 + 200000;
+    const annualRevenue = Math.round(metrics.coveredPopulation * 0.05 * 1.5 * 365 * 0.3);
+    const paybackYears = annualRevenue > 0 ? Math.round((cost / annualRevenue) * 100) / 100 : -1;
+
+    // 周边站点列表 (1.5km 内)
+    const stationPt = turf.point([Number(scheme.lng), Number(scheme.lat)]);
+    const nearbyStations = chargingStations
+      .map(s => ({
+        id: s.id,
+        name: s.name,
+        brand: s.brand,
+        district: s.district,
+        fastChargers: s.fastChargers,
+        slowChargers: s.slowChargers,
+        distance: Math.round(turf.distance(stationPt, turf.point([s.lng, s.lat]), { units: "meters" })),
+      }))
+      .filter(s => s.distance < 3000)
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 10);
+
+    // AI 建议 (基于指标的简易建议)
+    const advice: string[] = [];
+    if (metrics.coverageRate < 10) advice.push("覆盖率偏低, 建议适当扩大服务半径或调整选址位置");
+    if (metrics.competitionScore > 70) advice.push("竞争避让度较高, 周边竞品较少, 市场空间充足");
+    else advice.push("周边竞争较激烈, 建议差异化定位 (如主打快充或夜间慢充)");
+    if (paybackYears > 0 && paybackYears < 5) advice.push(`回收周期约 ${paybackYears} 年, 投资回报良好`);
+    else if (paybackYears >= 5) advice.push(`回收周期约 ${paybackYears} 年, 建议优化规模或选址`);
+    advice.push("建议持续关注公众反馈与实际利用率, 动态调整运营策略");
+
+    res.json({
+      success: true,
+      data: {
+        scheme: {
+          id: scheme.id,
+          name: scheme.name,
+          lng: scheme.lng,
+          lat: scheme.lat,
+          radius: scheme.radius,
+          brand: scheme.brand,
+          creator: scheme.creator,
+          create_time: scheme.create_time,
+        },
+        metrics,
+        roi: {
+          cost,
+          costBreakdown: { fast: fast * 80000, slow: slow * 30000, land: 200000 },
+          annualRevenue,
+          paybackYears,
+        },
+        nearbyStations,
+        advice,
+        exportTime: new Date().toLocaleString("zh-CN"),
+      },
+    });
+  } catch (error: any) {
+    console.error("方案报告导出错误:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// =========================================================================
+// 10.13 决策大屏聚合接口 (阶段三 任务 3.1)
+// 返回所有 KPI 与图表数据, 供前端 Dashboard.tsx 一次拉取
+// =========================================================================
+app.get("/api/v1/stats/dashboard", async (req, res) => {
+  try {
+    // ----- KPI 指标 -----
+    const totalStations = chargingStations.length;
+    const totalFast = chargingStations.reduce((s, x) => s + (x.fastChargers || 0), 0);
+    const totalSlow = chargingStations.reduce((s, x) => s + (x.slowChargers || 0), 0);
+    const totalPorts = totalFast + totalSlow;
+
+    // 覆盖率 = 已覆盖社区数 / 总社区数
+    const totalCommunities = communitiesDatabase.features.length || 0;
+    const coveredCommunities = communitiesDatabase.features.filter((c: any) => c.properties.coverageRatio > 0).length;
+    const blindSpotCommunities = totalCommunities - coveredCommunities;
+    const coverageRate = totalCommunities > 0 ? Math.round((coveredCommunities / totalCommunities) * 1000) / 10 : 0;
+
+    // 今日新增反馈 (按日期字符串匹配)
+    const todayStr = new Date().toLocaleDateString("zh-CN");
+    const todayFeedback = feedbackDatabase.filter(f => {
+      const t = f.create_time || "";
+      return t.includes(todayStr) || t.includes(new Date().toISOString().slice(0, 10));
+    }).length;
+
+    // ----- 品牌市占率 -----
+    const brandMap: Record<string, number> = {};
+    chargingStations.forEach(s => {
+      brandMap[s.brand] = (brandMap[s.brand] || 0) + 1;
+    });
+    const brandShare = Object.entries(brandMap)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+
+    // ----- 行政区分布 -----
+    const districtMap: Record<string, { stations: number; ports: number; communities: number; population: number }> = {};
+    chargingStations.forEach(s => {
+      if (!districtMap[s.district]) districtMap[s.district] = { stations: 0, ports: 0, communities: 0, population: 0 };
+      districtMap[s.district].stations++;
+      districtMap[s.district].ports += (s.fastChargers || 0) + (s.slowChargers || 0);
+    });
+    communitiesDatabase.features.forEach((c: any) => {
+      const d = c.properties.district;
+      if (!districtMap[d]) districtMap[d] = { stations: 0, ports: 0, communities: 0, population: 0 };
+      districtMap[d].communities++;
+      districtMap[d].population += Number(c.properties.population_total || 0);
+    });
+    const districtDist = Object.entries(districtMap).map(([district, v]) => ({ district, ...v }));
+
+    // ----- 增长趋势 (近 12 个月, 按方案 create_time 与站点 update_time 简易聚合) -----
+    const months: { month: string; stations: number; schemes: number; feedback: number }[] = [];
+    const now = new Date();
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const st = chargingStations.filter(s => (s.updateTime || "").startsWith(key)).length;
+      const sc = schemesDatabase.filter(s => (s.create_time || "").includes(key) || (s.create_time || "").includes(`${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}`)).length;
+      const fb = feedbackDatabase.filter(f => (f.create_time || "").includes(key) || (f.create_time || "").includes(`${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}`)).length;
+      months.push({ month: key, stations: st, schemes: sc, feedback: fb });
+    }
+
+    // ----- Top5 盲区社区 (按人口降序) -----
+    const topBlindSpots = communitiesDatabase.features
+      .filter((c: any) => !c.properties.coverageRatio || c.properties.coverageRatio === 0)
+      .map((c: any) => ({
+        id: c.properties.id,
+        name: c.properties.name,
+        district: c.properties.district,
+        population: Number(c.properties.population_total || 0),
+      }))
+      .sort((a, b) => b.population - a.population)
+      .slice(0, 5);
+
+    // ----- 滚动条: 实时反馈 + 日志 -----
+    const feedItems = feedbackDatabase
+      .slice(-20)
+      .reverse()
+      .map(f => ({
+        type: f.type === "evaluation" ? "评价" : "需求",
+        content: (f.description || "").slice(0, 60),
+        submitter: f.submitter || "匿名",
+        time: f.create_time || "",
+      }));
+    const logItems = systemLogs.slice(0, 10).map(l => ({
+      type: "日志",
+      content: `${l.action} - ${l.detail || ""}`.slice(0, 60),
+      submitter: l.user,
+      time: l.create_time || "",
+    }));
+    const ticker = [...feedItems, ...logItems];
+
+    // ----- 站点 GeoJSON (供大屏地图渲染) -----
+    const stationsFC = {
+      type: "FeatureCollection",
+      features: chargingStations.map(s => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [s.lng, s.lat] },
+        properties: { id: s.id, name: s.name, brand: s.brand, district: s.district, fast: s.fastChargers, slow: s.slowChargers },
+      })),
+    };
+
+    // 尝试更新数据库中的实时统计 (失败则忽略)
+    res.json({
+      success: true,
+      data: {
+        kpi: {
+          totalStations,
+          totalPorts,
+          totalFast,
+          totalSlow,
+          coverageRate,
+          blindSpotCommunities,
+          todayFeedback,
+          totalCommunities,
+          totalPopulation: communitiesDatabase.features.reduce((s: number, c: any) => s + Number(c.properties.population_total || 0), 0),
+        },
+        brandShare,
+        districtDist,
+        growthTrend: months,
+        topBlindSpots,
+        ticker,
+        stations: stationsFC,
+        updateTime: new Date().toLocaleString("zh-CN"),
+      },
+    });
+  } catch (e: any) {
+    console.error("大屏聚合接口错误:", e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// =========================================================================
+// 10.14 多维统计报表接口 (阶段三 任务 3.2)
+// 支持 query 参数 district / brand / chargeMode / status, 返回交叉透视数据
+// =========================================================================
+app.get("/api/v1/stats/report", (req, res) => {
+  try {
+    const { district, brand, chargeMode, status } = req.query;
+    // 1. 过滤充电站
+    let filtered = chargingStations.slice();
+    if (district && district !== "all") filtered = filtered.filter(s => s.district === district);
+    if (brand && brand !== "all") filtered = filtered.filter(s => s.brand === brand);
+    if (status && status !== "all") filtered = filtered.filter(s => s.status === status);
+    if (chargeMode && chargeMode !== "all") {
+      if (chargeMode === "fast") filtered = filtered.filter(s => s.fastChargers > 0);
+      else if (chargeMode === "slow") filtered = filtered.filter(s => s.slowChargers > 0);
+    }
+
+    // 2. 交叉透视: 行=行政区, 列=品牌, 值=充电站数 / 充电桩数
+    const districtsSet = Array.from(new Set(filtered.map(s => s.district)));
+    const brandsSet = Array.from(new Set(filtered.map(s => s.brand)));
+    const pivot: { district: string; rows: Record<string, number>; total: number; ports: number }[] = [];
+    districtsSet.forEach(d => {
+      const rows: Record<string, number> = {};
+      let total = 0, ports = 0;
+      brandsSet.forEach(b => {
+        const count = filtered.filter(s => s.district === d && s.brand === b).length;
+        rows[b] = count;
+        total += count;
+      });
+      ports = filtered.filter(s => s.district === d).reduce((sum, s) => sum + s.fastChargers + s.slowChargers, 0);
+      pivot.push({ district: d, rows, total, ports });
+    });
+    pivot.sort((a, b) => b.total - a.total);
+
+    // 3. 品牌汇总
+    const brandSummary = brandsSet.map(b => ({
+      brand: b,
+      stations: filtered.filter(s => s.brand === b).length,
+      ports: filtered.filter(s => s.brand === b).reduce((sum, s) => sum + s.fastChargers + s.slowChargers, 0),
+    })).sort((a, b) => b.stations - a.stations);
+
+    // 4. 行政区汇总
+    const districtSummary = districtsSet.map(d => ({
+      district: d,
+      stations: filtered.filter(s => s.district === d).length,
+      ports: filtered.filter(s => s.district === d).reduce((sum, s) => sum + s.fastChargers + s.slowChargers, 0),
+      brands: new Set(filtered.filter(s => s.district === d).map(s => s.brand)).size,
+    })).sort((a, b) => b.stations - a.stations);
+
+    res.json({
+      success: true,
+      data: {
+        total: filtered.length,
+        totalPorts: filtered.reduce((s, x) => s + x.fastChargers + x.slowChargers, 0),
+        brands: brandsSet,
+        districts: districtsSet,
+        pivot,
+        brandSummary,
+        districtSummary,
+        filter: { district: district || "all", brand: brand || "all", chargeMode: chargeMode || "all", status: status || "all" },
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// =========================================================================
+// 10.15 报表 CSV 导出接口 (阶段三 任务 3.2.4)
+// 返回交叉透视表的 CSV 文件
+// =========================================================================
+app.get("/api/v1/export/report-csv", (req, res) => {
+  try {
+    const { district, brand, chargeMode, status } = req.query;
+    let filtered = chargingStations.slice();
+    if (district && district !== "all") filtered = filtered.filter(s => s.district === district);
+    if (brand && brand !== "all") filtered = filtered.filter(s => s.brand === brand);
+    if (status && status !== "all") filtered = filtered.filter(s => s.status === status);
+    if (chargeMode && chargeMode !== "all") {
+      if (chargeMode === "fast") filtered = filtered.filter(s => s.fastChargers > 0);
+      else if (chargeMode === "slow") filtered = filtered.filter(s => s.slowChargers > 0);
+    }
+    const brandsSet = Array.from(new Set(filtered.map(s => s.brand)));
+    const districtsSet = Array.from(new Set(filtered.map(s => s.district)));
+
+    // CSV 表头: 行政区,品牌1,品牌2,...,合计,充电桩合计
+    const header = ["行政区", ...brandsSet, "合计", "充电桩合计"];
+    const lines: string[] = [header.join(",")];
+    districtsSet.forEach(d => {
+      const row: (string | number)[] = [d];
+      let total = 0;
+      brandsSet.forEach(b => {
+        const c = filtered.filter(s => s.district === d && s.brand === b).length;
+        row.push(c);
+        total += c;
+      });
+      const ports = filtered.filter(s => s.district === d).reduce((sum, s) => sum + s.fastChargers + s.slowChargers, 0);
+      row.push(total, ports);
+      lines.push(row.join(","));
+    });
+    // 合计行
+    const totalRow: (string | number)[] = ["合计"];
+    let grand = 0;
+    brandsSet.forEach(b => {
+      const c = filtered.filter(s => s.brand === b).length;
+      totalRow.push(c);
+      grand += c;
+    });
+    totalRow.push(grand, filtered.reduce((s, x) => s + x.fastChargers + x.slowChargers, 0));
+    lines.push(totalRow.join(","));
+
+    // 加 BOM 头让 Excel 正确识别 UTF-8
+    const csv = "\uFEFF" + lines.join("\r\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename=geoplan-report-${Date.now()}.csv`);
+    res.send(csv);
+  } catch (e: any) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// =========================================================================
 // 11. Vite + Express 服务器启动
 // =========================================================================
 async function startServer() {
@@ -1857,6 +2951,16 @@ async function startServer() {
     console.warn(`[GeoPlan] 数据库加载失败，使用 CSV 后备数据: ${err.message}`);
   }
 
+  // Fallback: 数据库未连接或无用户时，填充 demo 用户 (与前端 DEMO_ACCOUNTS 一致)
+  if (usersDatabase.length === 0) {
+    usersDatabase = [
+      { id: 1, username: "admin", password: "admin123", role: "管理员", status: "正常", create_time: new Date().toLocaleString("zh-CN") },
+      { id: 2, username: "车主_张先生", password: "123456", role: "新能源车主", status: "正常", create_time: new Date().toLocaleString("zh-CN") },
+      { id: 3, username: "投资商_王总", password: "123456", role: "投资商", status: "正常", create_time: new Date().toLocaleString("zh-CN") },
+    ];
+    console.warn("[GeoPlan] 使用 fallback 用户数据 (3 个 demo 账号) — 请配置 MySQL 以启用完整功能");
+  }
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1874,6 +2978,19 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[GeoPlan 充电设施规划平台] 服务已启动: http://localhost:${PORT}`);
     console.log(`[GeoPlan] AI助手: ${DEEPSEEK_API_KEY ? "DeepSeek已连接" : "降级模式(无DeepSeek API Key)"}`);
+
+    // 异步预计算等时圈（不阻塞主服务）
+    // 仅对 isochrone_status='pending' 的站点计算，已计算的跳过
+    const pendingStations = chargingStations
+      .filter(s => s.isochroneStatus === "pending" || s.isochroneStatus === "failed")
+      .map(s => ({ id: s.id, lng: s.lng, lat: s.lat, fastChargers: s.fastChargers, slowChargers: s.slowChargers }));
+    if (pendingStations.length > 0) {
+      console.log(`[GeoPlan] 检测到 ${pendingStations.length} 座站点待计算等时圈，后台异步开始...`);
+      precomputeAsync(dbPool, pendingStations, { memoryStations: chargingStations });
+    } else {
+      const okCount = chargingStations.filter(s => s.isochroneStatus === "ok").length;
+      console.log(`[GeoPlan] 等时圈已全部就绪（${okCount}/${chargingStations.length} 座站点）`);
+    }
   });
 }
 

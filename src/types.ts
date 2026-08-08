@@ -12,6 +12,10 @@ export interface ChargingStation {
   status: string;
   district: string;
   updateTime: string;
+  // 等时圈服务区计算状态 (阶段五 等时圈功能)
+  isochroneStatus?: "pending" | "ok" | "partial" | "failed";
+  isochroneFastUpdated?: string;
+  isochroneSlowUpdated?: string;
 }
 
 export interface CommunityResult {
@@ -22,6 +26,8 @@ export interface CommunityResult {
   coverageRatio: number;
   isBlindSpot: boolean;
   coveredBy: string | null;
+  // 覆盖率分级 (极差 / 较差 / 一般 / 良好 / 优秀, 后端返回)
+  level?: string;
 }
 
 export interface CoverageSummary {
@@ -29,9 +35,47 @@ export interface CoverageSummary {
   coveredCommunities: number;
   blindSpotCommunities: number;
   coverageRate: number;
+  // 人口加权覆盖率 (阶段一 任务 1.1.3)
+  populationCoverageRate?: number;
   totalPopulation: number;
   blindSpotPopulation: number;
   totalStations: number;
+  // 服务区冗余度评分 (阶段一 任务 1.2.3, 0-100)
+  redundancyScore?: number;
+}
+
+// 覆盖率分级统计 (阶段一 任务 1.1.4)
+export interface CoverageLevel {
+  level: string;       // 极差 / 较差 / 一般 / 良好 / 优秀
+  count: number;       // 该分级下社区数
+  population: number;  // 该分级下总人口
+}
+
+// 覆盖分析历史记录 (阶段四 任务 4.2)
+// 用于多次分析结果的并排对比, 最多保留 3 条
+export interface CoverageHistoryItem {
+  id: string;
+  timestamp: number;
+  params: {
+    chargeMode: string;  // "fast" | "slow"
+    radius: number;      // 服务半径 (米), 0 表示用预设
+    district: string;    // 行政区, "all" 表示全部
+    serviceAreaMode?: "buffer" | "isochrone" | "hybrid";  // 阶段五 等时圈: 服务区建模方式
+  };
+  summary: CoverageSummary;
+}
+
+// 充电站覆盖效率 (阶段一 任务 1.3.4)
+export interface StationEfficiency {
+  stationId: number;
+  stationName: string;
+  brand: string;
+  fastChargers: number;
+  slowChargers: number;
+  coveredCommunities: number;
+  coveredPopulation: number;
+  avgCoverageRatio: number;
+  loadIndex: number;
 }
 
 // 盲区聚类候选点 (覆盖分析返回, 按 population 降序)

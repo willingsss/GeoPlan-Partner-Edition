@@ -31,11 +31,18 @@ CREATE TABLE t_charging_station (
     lng             DECIMAL(10,6) NOT NULL COMMENT '经度 (WGS84)',
     lat             DECIMAL(10,6) NOT NULL COMMENT '纬度 (WGS84)',
     geom            POINT SRID 4326 NOT NULL COMMENT '空间点几何 (EPSG:4326)',
+    -- 等时圈服务区（基于真实路网的可达范围多边形，WGS84 GeoJSON）
+    isochrone_fast_geom   JSON         DEFAULT NULL COMMENT '快充等时圈多边形(驾车10分钟,WGS84 GeoJSON)',
+    isochrone_slow_geom   JSON         DEFAULT NULL COMMENT '慢充等时圈多边形(步行15分钟,WGS84 GeoJSON)',
+    isochrone_fast_updated DATETIME    DEFAULT NULL COMMENT '快充等时圈更新时间',
+    isochrone_slow_updated DATETIME    DEFAULT NULL COMMENT '慢充等时圈更新时间',
+    isochrone_status      ENUM('pending','ok','partial','failed') NOT NULL DEFAULT 'pending' COMMENT '等时圈计算状态',
     create_time     DATETIME     DEFAULT CURRENT_TIMESTAMP,
     update_time     DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     SPATIAL INDEX idx_station_geom (geom),
     INDEX idx_station_brand (brand),
-    INDEX idx_station_district (district)
+    INDEX idx_station_district (district),
+    INDEX idx_station_isochrone (isochrone_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='充电站信息表';
 
 -- =========================================================================
