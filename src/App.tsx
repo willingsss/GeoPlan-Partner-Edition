@@ -3216,6 +3216,10 @@ export default function App() {
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           locating={locating}
           onLocate={locateUser}
+          map={mapRef.current}
+          activeTool={activeTool}
+          onToolChange={handleToolChange}
+          onClearMeasurements={handleClearMeasurements}
         />
 
         {/* 内容区域 (垂直功能栏 + 水平分析栏 + 地图) - 主背景改 Zinc-50 */}
@@ -3830,15 +3834,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* 地图工具栏 (左上角, 垂直布局, 仅非管理页显示) */}
-              {activeTab !== "admin" && (
-                <MapToolbar
-                  map={mapRef.current}
-                  activeTool={activeTool}
-                  onToolChange={handleToolChange}
-                  onClearMeasurements={handleClearMeasurements}
-                />
-              )}
+              {/* 地图工具栏已移至顶部横栏 (避免遮挡地图) */}
 
               {/* 空间查询结果浮窗 (右下角, Bento 3D 玻璃) */}
               {queryResult && (queryResult.stations.length > 0 || queryResult.communities.length > 0) && (

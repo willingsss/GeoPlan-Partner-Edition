@@ -1,6 +1,8 @@
 import React from "react";
 import { Menu, ChevronRight, MapPin, Sun, Moon, Keyboard, Search, LocateFixed } from "lucide-react";
 import type { SubsystemTab } from "../types";
+import MapToolbar, { type MapTool } from "./MapToolbar";
+import type { Map as OlMap } from "ol";
 
 interface TopBarProps {
   activeTab: SubsystemTab;
@@ -13,6 +15,10 @@ interface TopBarProps {
   onOpenCommandPalette: () => void;
   locating: boolean;
   onLocate: () => void;
+  map: OlMap | null;
+  activeTool: MapTool | null;
+  onToolChange: (tool: MapTool | null) => void;
+  onClearMeasurements: () => void;
 }
 
 /**
@@ -29,6 +35,10 @@ export default function TopBar({
   onOpenCommandPalette,
   locating,
   onLocate,
+  map,
+  activeTool,
+  onToolChange,
+  onClearMeasurements,
 }: TopBarProps) {
   return (
     <header
@@ -77,6 +87,16 @@ export default function TopBar({
           {activeTab === "site" && "DECIDE"}
           {activeTab === "admin" && "ADMIN"}
         </span>
+
+        {/* 地图工具栏 (内嵌横栏, 避免遮挡地图) */}
+        {activeTab !== "admin" && (
+          <MapToolbar
+            map={map}
+            activeTool={activeTool}
+            onToolChange={onToolChange}
+            onClearMeasurements={onClearMeasurements}
+          />
+        )}
       </div>
 
       {/* 右侧: 区域信息 + 时间 + 主题切换 + 快捷键帮助 */}
