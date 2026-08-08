@@ -6270,6 +6270,9 @@ export default function App() {
           onFocusStation={(s) => {
             const map = mapRef.current;
             if (map) map.getView().animate({ center: fromLonLat([s.lng, s.lat]), zoom: 15 });
+            // 与地图点击一致的选中交互: 金色高亮 + 上方弹出名称/桩数
+            selectedStationId = s.id;
+            stationLayerRef.current?.changed();
           }}
           onFocusCommunity={(c) => {
             const map = mapRef.current;
