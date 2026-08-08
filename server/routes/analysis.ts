@@ -27,6 +27,10 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
     const targetCommunities = districtFilter
       ? communitiesDatabase.features.filter((comm: any) => comm.properties.district === districtFilter)
       : communitiesDatabase.features;
+    // 行政区过滤也作用于站点: 仅生成所选行政区内站点的服务区
+    const filteredStations = districtFilter
+      ? activeStations.filter(s => s.district === districtFilter)
+      : activeStations;
 
     // 为每个运营中的充电站生成服务区
     // 三种模式：buffer（圆形缓冲区，默认）/ isochrone（路网等时圈，缺失不计入）/ hybrid（优先等时圈，缺失回退缓冲区）
@@ -36,7 +40,7 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
     let isochroneCoverageCount = 0;
     let fallbackCount = 0;
 
-    for (const station of activeStations) {
+    for (const station of filteredStations) {
       const center3857 = toEPSG3857([station.lng, station.lat]);
 
       // 尝试取等时圈几何
@@ -302,8 +306,8 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
       }));
 
     // 充电站覆盖效率统计：按 stationId 聚合各站覆盖的社区与人口
-    const stationByName = new Map(activeStations.map(s => [s.name, s]));
-    const stationById = new Map(activeStations.map(s => [s.id, s]));
+    const stationByName = new Map(filteredStations.map(s => [s.name, s]));
+    const stationById = new Map(filteredStations.map(s => [s.id, s]));
     const stationEfficiencyMap = new Map<string, {
       stationId: number;
       stationName: string;
