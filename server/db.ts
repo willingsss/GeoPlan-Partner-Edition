@@ -100,7 +100,8 @@ async function loadStationsFromDB(): Promise<ChargingStation[]> {
   const [rows] = await dbPool.query(
     `SELECT id, station_code, name, brand, district, address,
             fast_chargers, slow_chargers, total_power, status, lng, lat,
-            ST_AsGeoJSON(geom) AS geom_geojson
+            ST_AsGeoJSON(geom) AS geom_geojson,
+            isochrone_fast_geom, isochrone_slow_geom, isochrone_status, isochrone_fast_updated
      FROM t_charging_station ORDER BY id`
   );
   return (rows as any[]).map((r) => {
@@ -117,10 +118,10 @@ async function loadStationsFromDB(): Promise<ChargingStation[]> {
       district: r.district || "",
       updateTime: r.update_time ? new Date(r.update_time).toISOString().slice(0, 10) : "",
     };
-    // 等时圈几何（GCJ02 系，需转为 WGS84 存储）
+    // 等时圈几何（预计算时已转为 WGS84 经纬度 GeoJSON；mysql2 对 JSON 字段自动解析为对象，直接使用）
     try {
-      if (r.isochrone_fast_geom) base.isochroneFastGeom = toEPSG4326(JSON.parse(r.isochrone_fast_geom));
-      if (r.isochrone_slow_geom) base.isochroneSlowGeom = toEPSG4326(JSON.parse(r.isochrone_slow_geom));
+      if (r.isochrone_fast_geom) base.isochroneFastGeom = r.isochrone_fast_geom;
+      if (r.isochrone_slow_geom) base.isochroneSlowGeom = r.isochrone_slow_geom;
       base.isochroneStatus = r.isochrone_status || undefined;
       base.isochroneFastUpdated = r.isochrone_fast_updated ? new Date(r.isochrone_fast_updated).toISOString() : undefined;
     } catch { /* 几何解析失败则忽略 */ }

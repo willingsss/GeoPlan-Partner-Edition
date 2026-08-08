@@ -44,9 +44,11 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
       let useIsochrone = false;
 
       if (saMode === "isochrone" || saMode === "hybrid") {
-        if (isochroneGeomWgs84 && isochroneGeomWgs84.geometry) {
+        // 兼容两种存储格式: Feature(带 .geometry) 或裸几何({type,coordinates})
+        const isochroneGeom = isochroneGeomWgs84?.geometry ?? isochroneGeomWgs84;
+        if (isochroneGeom && isochroneGeom.type) {
           // 等时圈几何是 WGS84，需投影到 3857 以便后续叠置
-          const isochroneProj = projectGeometryTo3857(isochroneGeomWgs84);
+          const isochroneProj = projectGeometryTo3857(isochroneGeom);
           const isochroneBbox = turf.bbox(isochroneProj);
           const isochroneCenter: [number, number] = [
             (isochroneBbox[0] + isochroneBbox[2]) / 2,
@@ -54,7 +56,7 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
           ];
           serviceAreas.push({
             station,
-            buffer: isochroneProj,
+            buffer: turf.feature(isochroneProj), // 包装为 Feature, 与缓冲区模式格式一致 (turf.intersect 需要)
             center: isochroneCenter,
             bbox: isochroneBbox as BBox,
             source: "isochrone",
@@ -237,7 +239,9 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
 
     // 生成服务区 GeoJSON (附带 source 字段: isochrone / buffer, 供前端差异化渲染)
     const serviceAreaFeatures = serviceAreas.map(({ station, buffer, source }) => {
-      const wgs84Geom = projectGeometryTo4326(buffer.geometry);
+      // buffer 可能是 Feature(turf.polygon) 或裸几何(projectGeometryTo3857 返回), 统一取几何
+      const rawGeom = buffer?.geometry ?? buffer;
+      const wgs84Geom = projectGeometryTo4326(rawGeom);
       return turf.feature(wgs84Geom, {
         stationName: station.name,
         brand: station.brand,
