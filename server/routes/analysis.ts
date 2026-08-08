@@ -293,12 +293,17 @@ app.post("/api/v1/analysis/coverage", (req, res) => {
     });
 
     // 行政区可视化边界: 目标行政区所有社区多边形 union 的外轮廓 (前端划定界限用)
+    // 缓冲粘连碎片 + 简化, 形成连续规整的行政区轮廓
     let districtBoundary: any = null;
     if (districtFilter && targetCommunities.length > 0) {
       try {
         const commGeoms = targetCommunities.map((comm: any) => turf.feature(comm.geometry));
-        const merged = turf.union(turf.featureCollection(commGeoms));
-        districtBoundary = merged ? (merged.geometry ?? merged) : null;
+        let merged: any = turf.union(turf.featureCollection(commGeoms));
+        if (merged) {
+          merged = turf.buffer(merged, 0.4, { units: "kilometers" });
+          merged = turf.simplify(merged, { tolerance: 0.001, highQuality: true });
+          districtBoundary = merged.geometry ?? merged;
+        }
       } catch { districtBoundary = null; }
     }
 
