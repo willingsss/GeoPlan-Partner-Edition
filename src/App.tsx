@@ -3839,7 +3839,7 @@ export default function App() {
               {/* 空间查询结果浮窗 (右下角, Bento 3D 玻璃) */}
               {queryResult && (queryResult.stations.length > 0 || queryResult.communities.length > 0) && (
                 <div
-                  className="absolute right-3 bottom-3 z-40 w-[340px] max-h-[320px] flex flex-col overflow-hidden animate-panel-enter bento-tile"
+                  className="fixed right-4 bottom-4 z-[60] w-[340px] max-h-[320px] flex flex-col overflow-hidden animate-panel-enter bento-tile"
                   style={{
                     background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
                     backdropFilter: "blur(20px) saturate(1.4)",
