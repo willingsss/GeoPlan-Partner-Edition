@@ -461,6 +461,8 @@ app.post("/api/v1/analysis/evaluate-site", requireAuth, requireRole("投资商",
 
     // 判定选址缓冲区是否落入覆盖盲区（盲区几何为 WGS84，需将缓冲区投影至4326后再判定相交）
     let inBlindSpot = false;
+    // 缓冲区范围内的盲区面 (供对比弹窗地图展示, 只显示范围内盲区)
+    const blindSpotsInBuffer: any[] = [];
     if (Array.isArray(coverageBlindSpots) && coverageBlindSpots.length > 0) {
       const bufferPolyWgs84 = turf.feature(projectGeometryTo4326(bufferPoly.geometry));
       for (const blindGeom of coverageBlindSpots) {
@@ -472,7 +474,7 @@ app.post("/api/v1/analysis/evaluate-site", requireAuth, requireRole("投资商",
         }
         if (intersects) {
           inBlindSpot = true;
-          break;
+          blindSpotsInBuffer.push(turf.feature(blindGeom));
         }
       }
     }
@@ -547,6 +549,7 @@ app.post("/api/v1/analysis/evaluate-site", requireAuth, requireRole("投资商",
         radius: radiusMeters,
         bufferGeometry: bufferWgs84,
         in_blind_spot: inBlindSpot,
+        blindSpotsInBuffer: { type: "FeatureCollection", features: blindSpotsInBuffer },
         intersections: { type: "FeatureCollection", features: intersectionFeatures },
         covered_communities: coveredCommunities,
         covered_population: coveredPopulation,

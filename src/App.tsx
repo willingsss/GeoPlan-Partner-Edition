@@ -418,6 +418,12 @@ export default function App() {
   const [schemeDetailId, setSchemeDetailId] = useState<number | null>(null);
   const schemeMapRef = useRef<HTMLDivElement>(null);
   const schemeMapInstRef = useRef<OlMap | null>(null);
+  // 方案对比弹窗: 左右双地图 (A/B 各一个, 可独立拖动)
+  const compareMapARef = useRef<HTMLDivElement>(null);
+  const compareMapBRef = useRef<HTMLDivElement>(null);
+  const compareMapAInstRef = useRef<OlMap | null>(null);
+  const compareMapBInstRef = useRef<OlMap | null>(null);
+  const compareMapDataRef = useRef<{ a: any; b: any } | null>(null);
   // 打开方案深度评估弹窗 (同时在地图上定位该方案)
   const openSchemeDetail = (id: number) => {
     setSchemeDetailId(id);
@@ -468,22 +474,20 @@ export default function App() {
 
   // 服务区图层显示切换 (图例点击): 关闭时服务区多边形不渲染
   const toggleServiceArea = () => {
-    setShowServiceArea(prev => {
-      const next = !prev;
-      showServiceAreaGlobal = next;
-      serviceAreaLayerRef.current?.changed();
-      return next;
-    });
+    const next = !showServiceArea;
+    setShowServiceArea(next);
+    showServiceAreaGlobal = next;
+    serviceAreaLayerRef.current?.changed();
+    serviceAreaSourceRef.current?.changed();
   };
 
   // 重叠区图层显示切换 (图例点击): 关闭时重叠区斜线不渲染
   const toggleOverlapArea = () => {
-    setShowOverlapArea(prev => {
-      const next = !prev;
-      showOverlapAreaGlobal = next;
-      overlapLayerRef.current?.changed();
-      return next;
-    });
+    const next = !showOverlapArea;
+    setShowOverlapArea(next);
+    showOverlapAreaGlobal = next;
+    overlapLayerRef.current?.changed();
+    overlapSourceRef.current?.changed();
   };
 
   // 覆盖率分级筛选切换 (图例点击): 支持多选, 空 = 全部显示
@@ -1055,20 +1059,21 @@ export default function App() {
     communityStyleRef.current = communityStyle;
 
     // 服务区重叠区样式: 45° 斜线 pattern 填充 (阶段二 任务 2.3)
+    // 斜线加粗加深, 保证行政区模式下重叠区肉眼可见 (开关才有感知)
     const overlapPatternCanvas = document.createElement("canvas");
-    overlapPatternCanvas.width = 8;
-    overlapPatternCanvas.height = 8;
+    overlapPatternCanvas.width = 10;
+    overlapPatternCanvas.height = 10;
     const overlapPctx = overlapPatternCanvas.getContext("2d")!;
-    overlapPctx.strokeStyle = "rgba(245, 158, 11, 0.6)";
-    overlapPctx.lineWidth = 1;
+    overlapPctx.strokeStyle = "rgba(245, 158, 11, 0.9)";
+    overlapPctx.lineWidth = 2;
     overlapPctx.beginPath();
-    overlapPctx.moveTo(0, 8);
-    overlapPctx.lineTo(8, 0);
+    overlapPctx.moveTo(0, 10);
+    overlapPctx.lineTo(10, 0);
     overlapPctx.stroke();
     const overlapPattern = overlapPctx.createPattern(overlapPatternCanvas, "repeat")!;
     const overlapStyle = new Style({
       fill: new Fill({ color: overlapPattern as any }),
-      stroke: new Stroke({ color: "#F59E0B", width: 1 }),
+      stroke: new Stroke({ color: "#F59E0B", width: 1.5 }),
     });
     // 重叠区显示开关 (图例点击): 关闭时不渲染
     const overlapStyleFn = () => (showOverlapAreaGlobal ? overlapStyle : new Style({}));
@@ -1104,7 +1109,7 @@ export default function App() {
         });
       }
       return new Style({
-        stroke: new Stroke({ color, width: 1 }),
+        stroke: new Stroke({ color, width: 1.5 }),
         fill: new Fill({ color: color + "08" }),
       });
     };
@@ -3087,18 +3092,34 @@ export default function App() {
     const s1 = schemes.find(s => s.id === compareSchemes[0]);
     const s2 = schemes.find(s => s.id === compareSchemes[1]);
     if (!s1 || !s2) return;
+    // 各维度动态范围: 按两方案该维度最大值*1.3 设定, 保证不超界且差异可视
+    // 低值维度(盲区消除率)给最小范围, 避免贴中心不可视
+    const dimMax = (a: number, b: number, min: number) => Math.max(min, Math.ceil(Math.max(a, b) * 1.3));
+    const maxPop = dimMax(Number(s1.covered_population) || 0, Number(s2.covered_population) || 0, 1000);
+    const maxComm = dimMax(Number(s1.covered_communities) || 0, Number(s2.covered_communities) || 0, 5);
+    const maxBlind = dimMax(Number(s1.blind_spot_reduction) || 0, Number(s2.blind_spot_reduction) || 0, 2);
     const chart = echarts.init(radarChartRef.current);
     chart.setOption({
       backgroundColor: "transparent",
-      tooltip: {},
+      tooltip: {
+        trigger: "item",
+        formatter: (params: any) => {
+          const name = params.name;
+          const vals = params.value || [];
+          const labels = ["覆盖总人口", "盲区消除率", "同行红海避让度", "社会效益", "覆盖社区数"];
+          const units = ["人", "%", "分", "分", "个"];
+          const lines = labels.map((lb, i) => `${lb}: ${vals[i] ?? 0}${units[i]}`);
+          return `<b>${name}</b><br/>${lines.join("<br/>")}`;
+        },
+      },
       legend: { data: [s1.name, s2.name], textStyle: { color: "#6B7280" }, bottom: 0 },
       radar: {
         indicator: [
-          { name: "覆盖人口", max: 20000 },
-          { name: "盲区消除率", max: 100 },
-          { name: "竞争避让度", max: 100 },
+          { name: "覆盖总人口（收益）", max: maxPop },
+          { name: "盲区消除率（社会效益）", max: maxBlind },
+          { name: "同行红海避让度（避免恶性竞争）", max: 100 },
           { name: "社会效益", max: 100 },
-          { name: "覆盖社区数", max: 10 },
+          { name: "覆盖社区数", max: maxComm },
         ],
         axisName: { color: "#6B7280", fontSize: 11 },
         splitLine: { lineStyle: { color: "#E5E7EB" } },
@@ -3158,6 +3179,116 @@ export default function App() {
       schemeMapInstRef.current = null;
     };
   }, [schemeDetailOpen, schemeDetailId, schemes]);
+
+  // =========================================================================
+  // 方案对比弹窗: 左右双地图 (A/B 各一个, 可独立拖动)
+  // 展示: 方案点 + 服务区 + 范围内覆盖社区 + 范围内盲区 (只显示范围内)
+  // =========================================================================
+  useEffect(() => {
+    if (!compareDialogOpen) return;
+    const s1 = schemes.find(x => x.id === compareSchemes[0]);
+    const s2 = schemes.find(x => x.id === compareSchemes[1]);
+    if (!s1 || !s2) return;
+
+    const renderCompareMap = (div: HTMLDivElement, s: any, accent: string) => {
+      const [gcjLng, gcjLat] = wgs84ToGcj02(Number(s.lng), Number(s.lat));
+      const center = fromLonLat([gcjLng, gcjLat]);
+      const m = new OlMap({
+        target: div,
+        layers: [
+          new TileLayer({
+            source: new XYZ({
+              url: "https://webrd0{1-4}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+              crossOrigin: "anonymous",
+              attributions: "© 高德地图 AutoNavi",
+              maxZoom: 20,
+            }),
+          }),
+        ],
+        view: new View({ center, zoom: 13 }),
+        controls: [],
+      });
+      const feats: Feature[] = [];
+      // 方案点
+      const pt = new Feature({ geometry: new Point(center) });
+      pt.setStyle(new Style({
+        image: new CircleStyle({ radius: 9, fill: new Fill({ color: accent }), stroke: new Stroke({ color: "#ffffff", width: 3 }) }),
+      }));
+      feats.push(pt);
+      // 服务区面 (bufferGeometry, 范围内覆盖范围)
+      const bufGeom = (compareMapDataRef.current as any)?.[s.id === compareSchemes[0] ? "a" : "b"]?.bufferGeometry;
+      if (bufGeom) {
+        const bufFeats = readFeaturesFromWGS84({ type: "FeatureCollection", features: [bufGeom] });
+        bufFeats.forEach((f: any) => f.setStyle(new Style({
+          stroke: new Stroke({ color: accent, width: 2 }),
+          fill: new Fill({ color: accent + "1A" }),
+        })));
+        feats.push(...bufFeats);
+      }
+      // 范围内覆盖社区 (intersections, 绿色面)
+      const inter = (compareMapDataRef.current as any)?.[s.id === compareSchemes[0] ? "a" : "b"]?.intersections;
+      if (inter?.features?.length) {
+        const interFeats = readFeaturesFromWGS84(inter);
+        interFeats.forEach((f: any) => f.setStyle(new Style({
+          stroke: new Stroke({ color: "#22c55e", width: 1.5 }),
+          fill: new Fill({ color: "rgba(34,197,94,0.3)" }),
+        })));
+        feats.push(...interFeats);
+      }
+      // 范围内盲区 (blindSpotsInBuffer, 红色面)
+      const blinds = (compareMapDataRef.current as any)?.[s.id === compareSchemes[0] ? "a" : "b"]?.blindSpotsInBuffer;
+      if (blinds?.features?.length) {
+        const blindFeats = readFeaturesFromWGS84(blinds);
+        blindFeats.forEach((f: any) => f.setStyle(new Style({
+          stroke: new Stroke({ color: "#ef4444", width: 2 }),
+          fill: new Fill({ color: "rgba(239,68,68,0.3)" }),
+        })));
+        feats.push(...blindFeats);
+      }
+      m.addLayer(new VectorLayer({ source: new VectorSource({ features: feats }) }));
+      return m;
+    };
+
+    let m1: OlMap | null = null;
+    let m2: OlMap | null = null;
+    let cancelled = false;
+    (async () => {
+      // 并行评估两个方案, 获取 buffer/intersections/范围内盲区
+      const [r1, r2] = await Promise.all([
+        authFetch("/api/v1/analysis/evaluate-site", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lng: Number(s1.lng), lat: Number(s1.lat), radius: Number(s1.radius) || 800,
+            chargeMode: "fast", coverageBlindSpots: lastCoverageBlindSpotsRef.current || [],
+          }),
+        }),
+        authFetch("/api/v1/analysis/evaluate-site", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            lng: Number(s2.lng), lat: Number(s2.lat), radius: Number(s2.radius) || 800,
+            chargeMode: "fast", coverageBlindSpots: lastCoverageBlindSpotsRef.current || [],
+          }),
+        }),
+      ]);
+      const [j1, j2] = await Promise.all([r1.json(), r2.json()]);
+      if (cancelled) return;
+      compareMapDataRef.current = { a: j1.data || {}, b: j2.data || {} };
+      if (compareMapARef.current) m1 = renderCompareMap(compareMapARef.current, s1, "#00C896");
+      if (compareMapBRef.current) m2 = renderCompareMap(compareMapBRef.current, s2, "#38BDF8");
+      compareMapAInstRef.current = m1;
+      compareMapBInstRef.current = m2;
+    })();
+    return () => {
+      cancelled = true;
+      compareMapAInstRef.current?.setTarget(undefined);
+      compareMapBInstRef.current?.setTarget(undefined);
+      compareMapAInstRef.current = null;
+      compareMapBInstRef.current = null;
+      compareMapDataRef.current = null;
+    };
+  }, [compareDialogOpen, compareSchemes, schemes]);
 
   const asArray = (value: any) => Array.isArray(value) ? value : [];
   const safeText = (value: any) => String(value ?? "");
@@ -5961,6 +6092,30 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                {/* 指标口径说明 (竞争避让度/社会效益等评分逻辑严谨化) */}
+                <div className="rounded-xl px-4 py-3" style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
+                  <p className="text-[10px] font-semibold mb-2 flex items-center gap-1" style={{ color: "var(--color-ink-3)" }}>
+                    <AlertCircle className="w-3 h-3" /> 指标口径说明
+                  </p>
+                  <div className="space-y-1.5 text-[10px] leading-relaxed" style={{ color: "var(--color-ink-4)" }}>
+                    <p>
+                      <b style={{ color: "#A855F7" }}>竞争避让度（同行红海避让度）</b>：反映拟建站点周边 1.5km 内现有充电站的密集程度，避免陷入同行恶性竞争。
+                      基础分 100，每存在 1 个周边充电站扣 12 分，0 分封底——周边站越少，分数越高，市场空间越充足。
+                    </p>
+                    <p>
+                      <b style={{ color: "#F43F5E" }}>社会效益</b>：反映该站点对周边常住人口充电需求的覆盖能力，按新增覆盖人口计分（覆盖人口 ÷ 200，100 分封顶），
+                      即覆盖约 2 万人即达到满分，覆盖人口越多社会价值越大。
+                    </p>
+                    <p>
+                      <b style={{ color: "#F59E0B" }}>盲区消除率</b>：该站点覆盖的社区数占全市社区总数（{Number(s.covered_communities || 0)} 个覆盖 ÷ 全市 1848 个社区）的比例，
+                      用于衡量对充电盲区的改善程度。
+                    </p>
+                    <p>
+                      <b style={{ color: "#10B981" }}>覆盖人口 / 覆盖社区</b>：按服务半径内社区面与站点缓冲区相交的面积比例加权计算，
+                      体现真实可达范围内的人口与社区覆盖规模。
+                    </p>
+                  </div>
+                </div>
                 {/* 综合评分 */}
                 <div className="rounded-xl px-4 py-3 flex items-center gap-3"
                   style={{
@@ -6038,6 +6193,36 @@ export default function App() {
                 </button>
               </div>
               <div className="p-5 space-y-4">
+                {/* 空间视图对比: 左右双地图 (可独立拖动) */}
+                <div>
+                  <p className="text-[10px] font-semibold mb-1.5 flex items-center gap-1" style={{ color: "var(--color-ink-4)" }}>
+                    <MapPin className="w-3 h-3" /> 空间视图对比（可拖动 · 只显示范围内覆盖社区与盲区）
+                  </p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--color-muted)" }}>
+                      <div className="px-2 py-1.5 text-[10px] font-semibold flex items-center gap-1.5"
+                        style={{ background: "rgba(0,200,150,0.06)", color: "#059669" }}>
+                        <span className="inline-block w-2 h-2 rounded-full" style={{ background: "#00C896" }} />
+                        {s1.name}
+                      </div>
+                      <div ref={compareMapARef} className="w-full h-48" style={{ background: "#f5f5f5" }} />
+                    </div>
+                    <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--color-muted)" }}>
+                      <div className="px-2 py-1.5 text-[10px] font-semibold flex items-center gap-1.5"
+                        style={{ background: "rgba(56,189,248,0.06)", color: "#0369a1" }}>
+                        <span className="inline-block w-2 h-2 rounded-full" style={{ background: "#38BDF8" }} />
+                        {s2.name}
+                      </div>
+                      <div ref={compareMapBRef} className="w-full h-48" style={{ background: "#f5f5f5" }} />
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 mt-1.5 text-[9px]" style={{ color: "var(--color-ink-5)" }}>
+                    <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: "rgba(34,197,94,0.4)" }} />覆盖社区</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm" style={{ background: "rgba(239,68,68,0.4)" }} />范围内盲区</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full" style={{ background: "#00C896" }} />方案A点</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full" style={{ background: "#38BDF8" }} />方案B点</span>
+                  </div>
+                </div>
                 {/* 雷达图 (从地图浮动面板移入) */}
                 <div>
                   <p className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--color-ink-4)" }}>
