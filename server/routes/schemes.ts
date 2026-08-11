@@ -6,11 +6,12 @@ export default function registerSchemesRoutes(app: express.Express) {
 app.post("/api/v1/schemes", requireAuth, requireRole("投资商", "管理员"), async (req, res) => {
   const { name, lng, lat, radius, brand, metrics } = req.body;
   const creator = (req as any).currentUser?.username || "";
-  const coveredPopulation = metrics?.coveredPopulation || 0;
-  const coveredCommunities = metrics?.coveredCommunities || 0;
-  const blindSpotReduction = metrics?.blindSpotReduction || 0;
-  const competitionScore = metrics?.competitionScore || 0;
-  const socialBenefit = metrics?.socialBenefit || 0;
+  // 兼容前端下划线字段 (siteMetrics) 与驼峰字段 (历史调用): 下划线优先
+  const coveredPopulation = metrics?.covered_population ?? metrics?.coveredPopulation ?? 0;
+  const coveredCommunities = metrics?.covered_communities ?? metrics?.coveredCommunities ?? 0;
+  const blindSpotReduction = metrics?.blind_spot_reduction ?? metrics?.blindSpotReduction ?? 0;
+  const competitionScore = metrics?.competition_score ?? metrics?.competitionScore ?? 0;
+  const socialBenefit = metrics?.social_benefit ?? metrics?.socialBenefit ?? 0;
   try {
     // t_scheme.geom 为 NOT NULL POINT; 本环境 MySQL 的 ST_GeomFromText 校验视首坐标为纬度, 用 POINT(lat lng)
     const pointWkt = `POINT(${parseFloat(lat)} ${parseFloat(lng)})`;
