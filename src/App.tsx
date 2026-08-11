@@ -413,6 +413,10 @@ export default function App() {
   const [selectedStation, setSelectedStation] = useState<any>(null);
   // 候选点"在此选址"联动: 记录从覆盖分析点进来的候选点, 选址面板只显示对应那一个
   const [activeCandidate, setActiveCandidate] = useState<BlindSpotCluster | null>(null);
+  // 选址评估覆盖的社区明细 (盲区社区联动, 可点开看详情)
+  const [siteCoveredCommunities, setSiteCoveredCommunities] = useState<any[]>([]);
+  // 选址约束: 周边已有站点 (evaluate-site 返回, 500m 禁选 + 品牌配额提示)
+  const [siteNearbyStations, setSiteNearbyStations] = useState<any[]>([]);
   // 单方案深度评估弹窗: 方案详情 + 内嵌地图
   const [schemeDetailOpen, setSchemeDetailOpen] = useState(false);
   const [schemeDetailId, setSchemeDetailId] = useState<number | null>(null);
@@ -2480,6 +2484,10 @@ export default function App() {
         // 合并 in_blind_spot 进 siteMetrics (减少独立 state)
         setSiteMetrics({ ...json.data.metrics, in_blind_spot: json.data.in_blind_spot });
         setSiteInBlindSpot(json.data.in_blind_spot === true);
+        // 盲区社区联动明细: 保存覆盖社区列表 (含名称/区/覆盖比例/影响人口)
+        setSiteCoveredCommunities(json.data.covered_communities || []);
+        // 选址约束: 周边已有站点 (1.5km 内, 500m 内禁选提示 + 品牌配额)
+        setSiteNearbyStations(json.data.nearbyStations || []);
         // 渲染缓冲区和相交区
         if (intersectionSourceRef.current) {
           intersectionSourceRef.current.clear();
@@ -5608,6 +5616,17 @@ export default function App() {
                   compareSchemes={compareSchemes}
                   blindSpotClusters={blindSpotClusters}
                   activeCandidate={activeCandidate}
+                  coveredCommunities={siteCoveredCommunities}
+                  onViewCommunity={(c) => {
+                    // 盲区社区联动: 打开社区详情弹窗
+                    setCommunityDetail({
+                      id: c.id, name: c.name, district: c.district, population: c.population,
+                      coverageRatio: c.coverageRatio, isBlindSpot: true, coveredBy: "虚拟站点",
+                    });
+                    setCommunityDetailOpen(true);
+                  }}
+                  nearbyStations={siteNearbyStations}
+                  siteBrand={siteBrand}
                   onPlaceCandidate={(lng, lat) => {
                     setActiveTab("site");
                     placeVirtualStation(lng, lat);
@@ -6266,6 +6285,13 @@ export default function App() {
           </div>
         );
       })()}
+
+      {/* ===== ROI 投资回报估算弹窗 ===== */}
+      <RoiDialog
+        open={roiDialogOpen}
+        onClose={() => setRoiDialogOpen(false)}
+        initParams={roiInitParams}
+      />
 
       {/* ===== 决策大屏 (阶段三 任务 3.1, 全屏覆盖) ===== */}
       <Dashboard open={showDashboard} onBack={() => setShowDashboard(false)} />

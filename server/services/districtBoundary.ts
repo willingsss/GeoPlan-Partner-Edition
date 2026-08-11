@@ -34,7 +34,35 @@ function gcj02ToWgs84(lng: number, lat: number): [number, number] {
   return [lng - dLng, lat - dLat];
 }
 
-const cache = new Map<string, any | null>();
+const cache = new Map<string, { data: any | null; ts: number }>();
+// 失败缓存 30 秒后允许重试 (网络瞬断快速自愈)
+const FAIL_TTL = 30 * 1000;
+// 本地文件缓存: 成功获取的边界落盘, 避免高德 API 配额超限后功能失效
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CACHE_FILE = path.join(__dirname, "../data/district_boundaries.json");
+
+function loadFileCache(): void {
+  try {
+    if (!fs.existsSync(CACHE_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8"));
+    for (const [k, v] of Object.entries(data)) {
+      if (v) cache.set(k, { data: v, ts: Date.now() });
+    }
+  } catch { /* 文件损坏忽略 */ }
+}
+function saveFileCache(district: string, boundary: any): void {
+  try {
+    let data: Record<string, any> = {};
+    if (fs.existsSync(CACHE_FILE)) data = JSON.parse(fs.readFileSync(CACHE_FILE, "utf-8"));
+    data[district] = boundary;
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(data));
+  } catch { /* 写盘失败忽略 */ }
+}
+loadFileCache();
 
 // 徐州各区行政区划代码 (adcode 唯一, 避免"鼓楼区"等重名区匹配到其他城市)
 // 320300=徐州市, 鼓楼320302/云龙320303/贾汪320305/泉山320311/铜山320312
@@ -48,21 +76,28 @@ const XUZHOU_ADCODES: Record<string, string> = {
 
 /**
  * 获取行政区的真实边界 (WGS84 GeoJSON 几何)
- * 优先高德官方行政区划边界, 失败返回 null
+ * 优先高德官方行政区划边界, 失败返回 null (5 分钟后自动重试)
  */
 export async function fetchDistrictBoundary(district: string): Promise<any | null> {
-  if (cache.has(district)) return cache.get(district) ?? null;
+  const hit = cache.get(district);
+  if (hit && (hit.data !== null || Date.now() - hit.ts < FAIL_TTL)) {
+    return hit.data ?? null;
+  }
 
   try {
     const key = process.env.VITE_AMAP_KEY;
-    if (!key) { cache.set(district, null); return null; }
+    if (!key) { cache.set(district, { data: null, ts: Date.now() }); return null; }
     // 用 adcode 查询 (唯一), 无 adcode 时回退区名 (仅徐州市区无歧义区名无歧义)
     const query = XUZHOU_ADCODES[district] || district;
     const url = `https://restapi.amap.com/v3/config/district?keywords=${encodeURIComponent(query)}&subdistrict=0&extensions=all&key=${key}`;
     const res = await fetch(url);
     const data = await res.json() as any;
     const polyline: string | undefined = data.districts?.[0]?.polyline;
-    if (!polyline) { cache.set(district, null); return null; }
+    if (!polyline) {
+      console.error(`[districtBoundary] ${district} 无边界数据 (status=${data.status}, info=${data.info})`);
+      cache.set(district, { data: null, ts: Date.now() });
+      return null;
+    }
 
     // 解析 polyline: "|" 分隔多个环, ";" 分隔点, "," 分隔经纬度 (GCJ02)
     const rings = polyline
@@ -77,11 +112,12 @@ export async function fetchDistrictBoundary(district: string): Promise<any | nul
       ? { type: "MultiPolygon", coordinates: rings.map(r => [r]) }
       : { type: "Polygon", coordinates: [rings[0]] };
 
-    cache.set(district, boundary);
+    cache.set(district, { data: boundary, ts: Date.now() });
+    saveFileCache(district, boundary); // 成功边界落盘
     return boundary;
   } catch (e) {
     console.error(`[districtBoundary] 获取 ${district} 边界失败:`, (e as Error).message);
-    cache.set(district, null);
+    cache.set(district, { data: null, ts: Date.now() });
     return null;
   }
 }

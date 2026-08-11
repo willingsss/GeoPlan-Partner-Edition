@@ -1,7 +1,8 @@
 // SiteResultPanel.tsx
 // 选址决策子系统 - 结果面板 (综合评分卡 + 指标卡 + 盲区联动 + Top3推荐 + 方案列表)
 // 拆分自 App.tsx; 纯展示组件, 状态+回调全部 props 传入
-import { Target, Radar, Sparkles, Star, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Target, Radar, Sparkles, Star, Trash2, AlertTriangle } from "lucide-react";
 import { SchemeReportButton } from "./SchemeReportPrint";
 import type { SiteMetrics, SavedScheme } from "../hooks/useSiteAnalysis";
 
@@ -14,6 +15,12 @@ interface SiteResultPanelProps {
   blindSpotClusters: { clusterId: number; center: [number, number]; communityCount: number; population: number }[];
   // 覆盖分析点"在此选址"联动: 只展示该候选点 (一一对应), 为空则显示 Top3 推荐
   activeCandidate: { clusterId: number; center: [number, number]; communityCount: number; population: number } | null;
+  // 选址覆盖的社区明细 (盲区社区联动, 点击看详情)
+  coveredCommunities: { id: number; name: string; district: string; population: number; coverageRatio: number; affectedPopulation: number }[];
+  onViewCommunity: (comm: any) => void;
+  // 选址约束: 周边已有站点 + 拟建品牌 (500m 禁选 + 品牌配额)
+  nearbyStations: { name: string; brand: string; distance: number }[];
+  siteBrand: string;
   onToggleCompare: (id: number, checked: boolean) => void;
   onPlaceCandidate: (lng: number, lat: number) => void;
   onViewSchemeDetail: (id: number) => void;
@@ -37,12 +44,21 @@ function calcScore(m: SiteMetrics): { score: number; grade: string; gradeColor: 
 
 export default function SiteResultPanel(props: SiteResultPanelProps) {
   const { siteMetrics, siteInBlindSpot, lastCoverageSummary, schemes, compareSchemes,
-          blindSpotClusters, activeCandidate, onToggleCompare, onPlaceCandidate, onViewSchemeDetail, onDeleteScheme, onNotify } = props;
+          blindSpotClusters, activeCandidate, coveredCommunities, onViewCommunity,
+          nearbyStations, siteBrand,
+          onToggleCompare, onPlaceCandidate, onViewSchemeDetail, onDeleteScheme, onNotify } = props;
 
   // 候选点一一对应: 从覆盖分析点"在此选址"进来时只显示该候选点; 否则按盲区人口排序 Top3
   const topCandidates = activeCandidate
     ? [activeCandidate]
     : [...blindSpotClusters].sort((a, b) => b.population - a.population).slice(0, 3);
+
+  // 方案按行政区筛选 (纯 UI 状态)
+  const [districtFilter, setDistrictFilter] = useState("all");
+  const schemeDistricts = [...new Set(schemes.map(s => s.district).filter(Boolean))] as string[];
+  const filteredSchemes = districtFilter === "all"
+    ? schemes
+    : schemes.filter(s => s.district === districtFilter);
 
   return (
     <>
@@ -180,16 +196,97 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
               </div>
             </div>
           )}
+          {/* 覆盖社区明细 - 盲区社区联动 (点击查看社区详情) */}
+          {coveredCommunities.length > 0 && (
+            <div className="mt-1.5 rounded-lg px-2.5 py-2"
+              style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <Radar className="w-3 h-3 text-emerald-500" />
+                <p className="text-[10px] text-zinc-600">覆盖社区明细（{coveredCommunities.length}）</p>
+                <span className="text-[9px] px-1 py-0 rounded ml-auto"
+                  style={{ background: "rgba(16,185,129,0.08)", color: "#059669", border: "1px solid rgba(16,185,129,0.2)" }}>
+                  点击看详情
+                </span>
+              </div>
+              <div className="max-h-28 overflow-y-auto space-y-1">
+                {coveredCommunities.map(c => (
+                  <button key={c.id}
+                    onClick={() => onViewCommunity(c)}
+                    className="w-full flex items-center gap-2 px-2 py-1 rounded-md transition-all hover:bg-white text-left"
+                    style={{ border: "1px solid var(--color-muted)" }}>
+                    <span className="text-[10px] text-zinc-700 font-medium flex-1 truncate">{c.name}</span>
+                    <span className="text-[9px] text-zinc-400 shrink-0">{c.district}</span>
+                    <span className="text-[9px] font-semibold font-num text-emerald-600 shrink-0">{c.coverageRatio}%</span>
+                    <span className="text-[9px] font-num text-zinc-500 shrink-0">{c.affectedPopulation.toLocaleString()}人</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* 选址约束: 500m 内已有站点禁止 + 品牌配额提示 */}
+          {nearbyStations.length > 0 && (
+            <div className="mt-1.5 rounded-lg px-2.5 py-2"
+              style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <AlertTriangle className="w-3 h-3 text-amber-500" />
+                <p className="text-[10px] text-zinc-600">选址约束</p>
+              </div>
+              {(() => {
+                const close = nearbyStations.filter(s => s.distance < 500);
+                const sameBrand = nearbyStations.filter(s => s.brand === siteBrand);
+                return (
+                  <div className="space-y-1">
+                    {close.length > 0 && (
+                      <div className="rounded-md px-2 py-1.5" style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)" }}>
+                        <p className="text-[9px] font-semibold text-red-600 mb-1">⚠ 距以下已有站点 &lt;500m（建议避免）：</p>
+                        {close.map(s => (
+                          <p key={s.name} className="text-[9px] text-red-500 flex justify-between">
+                            <span className="truncate">{s.name}（{s.brand}）</span>
+                            <span className="font-num shrink-0 ml-2">{s.distance}m</span>
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-2 text-[9px]" style={{ color: "var(--color-ink-4)" }}>
+                      <span>周边 1.5km 共 <b className="font-num text-zinc-700">{nearbyStations.length}</b> 站</span>
+                      <span className="text-zinc-300">|</span>
+                      <span>
+                        同品牌「{siteBrand}」<b className="font-num" style={{ color: sameBrand.length > 2 ? "#EF4444" : "#059669" }}>{sameBrand.length}</b> 站
+                        {sameBrand.length > 2 && <span className="text-red-500">（配额偏满）</span>}
+                      </span>
+                    </div>
+                    {close.length === 0 && (
+                      <p className="text-[9px] text-emerald-600">✅ 500m 内无已有站点，符合选址间距约束</p>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
         </>
       )}
       {/* 已保存方案 - Linear 风: 标签按钮 */}
       {schemes.length > 0 && (
         <div className="mt-2">
-          <p className="text-[10px] text-zinc-500 mb-1">
-            已保存方案（{schemes.length}）· 勾选 2 个方案进行深度对比
-          </p>
+          <div className="flex items-center gap-1.5 mb-1">
+            <p className="text-[10px] text-zinc-500">
+              已保存方案（{filteredSchemes.length}/{schemes.length}）· 勾选 2 个方案进行深度对比
+            </p>
+            {/* 行政区筛选 */}
+            <select
+              value={districtFilter}
+              onChange={e => setDistrictFilter(e.target.value)}
+              className="ml-auto input-sys h-5 text-[9px] px-1 text-zinc-600"
+              title="按行政区筛选方案"
+            >
+              <option value="all">全部行政区</option>
+              {schemeDistricts.map(d => (
+                <option key={d} value={d}>{d}</option>
+              ))}
+            </select>
+          </div>
           <div className="space-y-1">
-            {schemes.map(s => (
+            {filteredSchemes.map(s => (
               <div key={s.id}
                 className={`flex items-center gap-2 px-2 py-1 rounded-md transition-all ${
                   compareSchemes.includes(s.id)

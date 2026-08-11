@@ -1,6 +1,52 @@
 import express from "express";
-import { schemesDatabase, dbPool } from "../db";
+import * as turf from "@turf/turf";
+import { schemesDatabase, communitiesDatabase, dbPool } from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
+import { fetchDistrictBoundary } from "../services/districtBoundary";
+
+// 徐州行政区列表 (与覆盖分析一致)
+const XUZHOU_DISTRICTS = ["鼓楼区", "云龙区", "贾汪区", "泉山区", "铜山区"];
+
+// 兜底判定: 用本地社区面 (含 district 属性) 判定坐标所属行政区, 不依赖高德 API
+function detectDistrictByCommunities(lng: number, lat: number): string | null {
+  const pt = turf.point([lng, lat]);
+  for (const comm of communitiesDatabase.features) {
+    try {
+      if (turf.booleanPointInPolygon(pt, turf.feature(comm.geometry))) {
+        return comm.properties.district || null;
+      }
+    } catch { /* 跳过异常面 */ }
+  }
+  // 兜底: 距离最近社区的行政区
+  let best: string | null = null;
+  let bestDist = Infinity;
+  for (const comm of communitiesDatabase.features) {
+    try {
+      const center = turf.center(turf.feature(comm.geometry));
+      const dist = turf.distance(pt, center, { units: "meters" });
+      if (dist < bestDist) { bestDist = dist; best = comm.properties.district || null; }
+    } catch { /* skip */ }
+  }
+  return best;
+}
+
+// 判定坐标所属行政区 (高德真实边界优先, 配额超限时用社区面兜底)
+async function detectDistrict(lng: number, lat: number): Promise<string | null> {
+  const pt = turf.point([lng, lat]);
+  for (const d of XUZHOU_DISTRICTS) {
+    try {
+      const boundary = await fetchDistrictBoundary(d);
+      if (boundary) {
+        const poly = { type: "Feature", properties: {}, geometry: boundary };
+        if (turf.booleanPointInPolygon(pt, poly as any)) return d;
+      }
+    } catch (e: any) { console.error(`[schemes] ${d} 边界判定异常:`, e.message); }
+  }
+  // 高德不可用 (配额超限等) → 社区面兜底
+  const fallback = detectDistrictByCommunities(lng, lat);
+  if (fallback) console.error(`[schemes] 高德边界不可用, 社区面兜底判定: ${fallback}`);
+  return fallback;
+}
 
 export default function registerSchemesRoutes(app: express.Express) {
 app.post("/api/v1/schemes", requireAuth, requireRole("投资商", "管理员"), async (req, res) => {
@@ -13,11 +59,13 @@ app.post("/api/v1/schemes", requireAuth, requireRole("投资商", "管理员"), 
   const competitionScore = metrics?.competition_score ?? metrics?.competitionScore ?? 0;
   const socialBenefit = metrics?.social_benefit ?? metrics?.socialBenefit ?? 0;
   try {
+    // 判定方案所属行政区 (高德真实边界)
+    const district = await detectDistrict(parseFloat(lng), parseFloat(lat));
     // t_scheme.geom 为 NOT NULL POINT; 本环境 MySQL 的 ST_GeomFromText 校验视首坐标为纬度, 用 POINT(lat lng)
     const pointWkt = `POINT(${parseFloat(lat)} ${parseFloat(lng)})`;
     const [result]: any = await dbPool.query(
-      `INSERT INTO t_scheme (name, lng, lat, geom, radius, brand, covered_population, covered_communities, blind_spot_reduction, competition_score, social_benefit, creator) VALUES (?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name || "未命名方案", parseFloat(lng), parseFloat(lat), pointWkt, parseFloat(radius), brand || "国家电网", coveredPopulation, coveredCommunities, blindSpotReduction, competitionScore, socialBenefit, creator]
+      `INSERT INTO t_scheme (name, lng, lat, geom, radius, brand, district, covered_population, covered_communities, blind_spot_reduction, competition_score, social_benefit, creator) VALUES (?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name || "未命名方案", parseFloat(lng), parseFloat(lat), pointWkt, parseFloat(radius), brand || "国家电网", district, coveredPopulation, coveredCommunities, blindSpotReduction, competitionScore, socialBenefit, creator]
     );
     const scheme = {
       id: result.insertId,
@@ -26,6 +74,7 @@ app.post("/api/v1/schemes", requireAuth, requireRole("投资商", "管理员"), 
       lat: parseFloat(lat),
       radius: parseFloat(radius),
       brand: brand || "国家电网",
+      district,
       covered_population: coveredPopulation,
       covered_communities: coveredCommunities,
       blind_spot_reduction: blindSpotReduction,

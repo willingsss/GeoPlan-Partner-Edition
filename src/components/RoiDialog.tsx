@@ -1,233 +1,177 @@
-import { useEffect, useRef, useState } from "react";
-import { X, Loader2, Calculator } from "lucide-react";
+// RoiDialog.tsx
+// 选址决策 - ROI 投资回报估算弹窗 (成本参数可调: 回收期/年收益/盈亏平衡)
+import { useState, useEffect } from "react";
+import { X, Calculator, TrendingUp, PiggyBank, Scale } from "lucide-react";
 
-// =========================================================================
-// ROI 估算弹窗 (阶段二 任务 2.3)
-// 显示建站成本/年收益/回收周期, 参数可调实时重算 (前端本地计算, 无需重复请求)
-// =========================================================================
 interface RoiDialogProps {
   open: boolean;
   onClose: () => void;
-  // 初始参数 (来自当前选址)
-  initFastChargers: number;
-  initSlowChargers: number;
-  coveredPopulation: number;
+  initParams: { fastChargers: number; slowChargers: number; coveredPopulation: number };
 }
 
-export default function RoiDialog({ open, onClose, initFastChargers, initSlowChargers, coveredPopulation }: RoiDialogProps) {
-  // 可调参数 (默认值与后端公式一致)
-  const [fastCount, setFastCount] = useState(initFastChargers || 4);
-  const [slowCount, setSlowCount] = useState(initSlowChargers || 4);
-  const [fastUnitCost, setFastUnitCost] = useState(80000);
-  const [slowUnitCost, setSlowUnitCost] = useState(30000);
-  const [landCost, setLandCost] = useState(200000);
-  const [population, setPopulation] = useState(coveredPopulation || 0);
-  const [demandRate, setDemandRate] = useState(0.05);
-  const [unitPrice, setUnitPrice] = useState(1.5);
-  const [conversionRate, setConversionRate] = useState(0.3);
-  const [loading, setLoading] = useState(false);
-  const [serverData, setServerData] = useState<any>(null);
+export default function RoiDialog({ open, onClose, initParams }: RoiDialogProps) {
+  // ===== 可调成本参数 =====
+  const [fastCount, setFastCount] = useState(4);
+  const [fastPrice, setFastPrice] = useState(6);          // 万元/台
+  const [slowCount, setSlowCount] = useState(4);
+  const [slowPrice, setSlowPrice] = useState(1.5);        // 万元/台
+  const [constructCost, setConstructCost] = useState(20); // 建设+场地投入 (万元)
+  const [rent, setRent] = useState(3);                    // 年场地租金 (万元)
+  const [serviceFee, setServiceFee] = useState(0.6);      // 服务费 (元/度)
+  const [elecCost, setElecCost] = useState(0.5);          // 购电成本 (元/度)
+  const [fastDaily, setFastDaily] = useState(120);        // 快充单桩日均充电量 (度)
+  const [slowDaily, setSlowDaily] = useState(25);         // 慢充单桩日均充电量 (度)
+  const [maintainRate, setMaintainRate] = useState(5);    // 年运维费率 (%)
 
-  // 初次打开时调用一次后端接口获取基线数据
+  // 打开时用评估参数初始化
   useEffect(() => {
-    if (!open) return;
-    setLoading(true);
-    fetch("/api/v1/analysis/roi", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fastChargers: initFastChargers || 4,
-        slowChargers: initSlowChargers || 4,
-        coveredPopulation: coveredPopulation || 0,
-      }),
-    })
-      .then(r => r.json())
-      .then(j => { if (j.success) setServerData(j.data); })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [open, initFastChargers, initSlowChargers, coveredPopulation]);
-
-  // 前端本地实时重算 (参数变化即重算)
-  const fastCost = fastCount * fastUnitCost;
-  const slowCost = slowCount * slowUnitCost;
-  const totalCost = fastCost + slowCost + landCost;
-  const annualRevenue = Math.round(population * demandRate * unitPrice * 365 * conversionRate);
-  const paybackYears = annualRevenue > 0 ? Math.round((totalCost / annualRevenue) * 100) / 100 : -1;
+    if (open) {
+      setFastCount(initParams.fastChargers || 4);
+      setSlowCount(initParams.slowChargers || 4);
+    }
+  }, [open, initParams]);
 
   if (!open) return null;
 
+  // ===== 计算 =====
+  const totalInvest = fastCount * fastPrice + slowCount * slowPrice + constructCost; // 万元
+  const annualKwh = (fastCount * fastDaily + slowCount * slowDaily) * 365;           // 度/年
+  const annualIncome = (annualKwh * serviceFee) / 10000;                             // 万元 (服务费收入)
+  const annualElec = (annualKwh * elecCost) / 10000;                                 // 万元 (电费)
+  const annualMaintain = (totalInvest * maintainRate) / 100;                         // 万元
+  const annualNet = annualIncome - annualElec - annualMaintain - rent;               // 万元 (年净收益)
+  const paybackYears = annualNet > 0 ? totalInvest / annualNet : null;               // 年
+  // 盈亏平衡: 年净收益=0 时需要的年充电量 (度)
+  const breakEvenKwh = annualNet <= 0
+    ? ((annualMaintain + rent) * 10000) / (serviceFee - elecCost)
+    : 0;
+  const breakEvenRate = breakEvenKwh > 0 ? Math.min(100, (breakEvenKwh / annualKwh) * 100) : 0;
+  const paybackStr = paybackYears !== null
+    ? (paybackYears < 1 ? `${Math.round(paybackYears * 12)} 个月` : `${paybackYears.toFixed(1)} 年`)
+    : "—";
+
+  const numInput = (label: string, val: number, set: (v: number) => void, unit: string, step = 1) => (
+    <label className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[10px]"
+      style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
+      <span className="text-zinc-500">{label}</span>
+      <span className="flex items-center gap-1">
+        <input
+          type="number" value={val} step={step} min={0}
+          onChange={e => set(parseFloat(e.target.value) || 0)}
+          className="input-sys w-14 h-5 text-[10px] px-1 text-right font-num text-zinc-700"
+        />
+        <span className="text-zinc-400 w-7">{unit}</span>
+      </span>
+    </label>
+  );
+
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 animate-fade-in"
-      style={{ background: "rgba(9,9,11,0.5)", backdropFilter: "blur(2px)" }}
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden animate-scale-in"
-        style={{ boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* 标题栏 */}
-        <div className="px-5 py-3.5 flex items-center justify-between" style={{ borderBottom: "1px solid var(--color-muted)" }}>
-          <div className="flex items-center gap-2">
-            <Calculator className="w-4 h-4" style={{ color: "var(--color-brand-text)" }} />
-            <h3 className="text-[14px] font-semibold text-zinc-900">投资回报 ROI 估算</h3>
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+      style={{ background: "rgba(9,9,11,0.45)" }} onClick={onClose}>
+      <div className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl animate-scale-in bento-tile"
+        style={{
+          background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
+          border: "1px solid rgba(255,255,255,0.6)",
+          boxShadow: "var(--shadow-elevated)",
+        }}
+        onClick={e => e.stopPropagation()}>
+        {/* 标题 */}
+        <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid var(--color-muted)" }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(16,185,129,0.1)" }}>
+            <Calculator className="w-4 h-4" style={{ color: "#10B981" }} />
           </div>
-          <button onClick={onClose} className="w-6 h-6 rounded flex items-center justify-center hover:bg-zinc-100 text-zinc-400 hover:text-zinc-700 transition-colors" title="关闭">
+          <div>
+            <h3 className="text-[14px] font-semibold" style={{ color: "var(--color-ink-1)" }}>ROI 投资回报估算</h3>
+            <p className="text-[10px] mt-0.5" style={{ color: "var(--color-ink-4)" }}>
+              覆盖人口 {initParams.coveredPopulation.toLocaleString()} 人 · 参数可调实时计算
+            </p>
+          </div>
+          <button onClick={onClose}
+            className="ml-auto w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5 shrink-0"
+            style={{ color: "var(--color-ink-4)" }}>
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {loading ? (
-          <div className="px-5 py-12 flex items-center justify-center">
-            <Loader2 className="w-5 h-5 animate-spin text-zinc-400" />
-            <span className="ml-2 text-[12px] text-zinc-500">计算中...</span>
+        <div className="p-5 grid grid-cols-2 gap-4">
+          {/* 左: 参数 */}
+          <div>
+            <p className="text-[10px] font-semibold mb-2 flex items-center gap-1" style={{ color: "var(--color-ink-4)" }}>
+              <PiggyBank className="w-3 h-3" /> 成本参数（可调）
+            </p>
+            <div className="space-y-1.5">
+              {numInput("快充桩数量", fastCount, setFastCount, "台")}
+              {numInput("快充桩单价", fastPrice, setFastPrice, "万/台", 0.5)}
+              {numInput("慢充桩数量", slowCount, setSlowCount, "台")}
+              {numInput("慢充桩单价", slowPrice, setSlowPrice, "万/台", 0.5)}
+              {numInput("建设+场地投入", constructCost, setConstructCost, "万元", 1)}
+              {numInput("年场地租金", rent, setRent, "万/年", 0.5)}
+              <div className="pt-1 text-[9px]" style={{ color: "var(--color-ink-5)" }}>— 运营参数 —</div>
+              {numInput("充电服务费", serviceFee, setServiceFee, "元/度", 0.05)}
+              {numInput("购电成本", elecCost, setElecCost, "元/度", 0.05)}
+              {numInput("快充日均充电量", fastDaily, setFastDaily, "度/桩", 5)}
+              {numInput("慢充日均充电量", slowDaily, setSlowDaily, "度/桩", 5)}
+              {numInput("年运维费率", maintainRate, setMaintainRate, "%", 0.5)}
+            </div>
           </div>
-        ) : (
-          <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
-            {/* 参数区 - 可调 */}
-            <div>
-              <p className="text-[11px] text-zinc-500 mb-2">参数调整 (实时重算)</p>
-              <div className="grid grid-cols-2 gap-3">
-                {/* 快充桩数 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">快充桩数</span>
-                  <input type="number" min={0} max={50} value={fastCount}
-                    onChange={(e) => setFastCount(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="input-sys flex-1 px-2 py-1 text-[12px]" />
-                </label>
-                {/* 慢充桩数 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">慢充桩数</span>
-                  <input type="number" min={0} max={50} value={slowCount}
-                    onChange={(e) => setSlowCount(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="input-sys flex-1 px-2 py-1 text-[12px]" />
-                </label>
-                {/* 快充单桩成本 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">快充单桩成本</span>
-                  <input type="number" min={0} step={1000} value={fastUnitCost}
-                    onChange={(e) => setFastUnitCost(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="input-sys flex-1 px-2 py-1 text-[12px] font-num" />
-                  <span className="text-[10px] text-zinc-400">元</span>
-                </label>
-                {/* 慢充单桩成本 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">慢充单桩成本</span>
-                  <input type="number" min={0} step={1000} value={slowUnitCost}
-                    onChange={(e) => setSlowUnitCost(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="input-sys flex-1 px-2 py-1 text-[12px] font-num" />
-                  <span className="text-[10px] text-zinc-400">元</span>
-                </label>
-                {/* 土地成本 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">土地成本</span>
-                  <input type="number" min={0} step={10000} value={landCost}
-                    onChange={(e) => setLandCost(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="input-sys flex-1 px-2 py-1 text-[12px] font-num" />
-                  <span className="text-[10px] text-zinc-400">元</span>
-                </label>
-                {/* 覆盖人口 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">覆盖人口</span>
-                  <input type="number" min={0} value={population}
-                    onChange={(e) => setPopulation(Math.max(0, parseInt(e.target.value) || 0))}
-                    className="input-sys flex-1 px-2 py-1 text-[12px] font-num" />
-                  <span className="text-[10px] text-zinc-400">人</span>
-                </label>
-                {/* 需求率 (滑块) */}
-                <label className="flex items-center gap-2 text-[12px] col-span-2">
-                  <span className="text-zinc-600 w-20">需求率</span>
-                  <input type="range" min={0.01} max={0.2} step={0.01} value={demandRate}
-                    onChange={(e) => setDemandRate(parseFloat(e.target.value))}
-                    className="flex-1 accent-emerald-500 h-1" />
-                  <span className="text-[11px] text-emerald-600 font-num w-12 text-right">{(demandRate * 100).toFixed(0)}%</span>
-                </label>
-                {/* 客单价 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">客单价</span>
-                  <input type="number" min={0} step={0.1} value={unitPrice}
-                    onChange={(e) => setUnitPrice(Math.max(0, parseFloat(e.target.value) || 0))}
-                    className="input-sys flex-1 px-2 py-1 text-[12px] font-num" />
-                  <span className="text-[10px] text-zinc-400">元</span>
-                </label>
-                {/* 转化率 */}
-                <label className="flex items-center gap-2 text-[12px]">
-                  <span className="text-zinc-600 w-20">转化率</span>
-                  <input type="range" min={0.05} max={0.8} step={0.05} value={conversionRate}
-                    onChange={(e) => setConversionRate(parseFloat(e.target.value))}
-                    className="flex-1 accent-emerald-500 h-1" />
-                  <span className="text-[11px] text-emerald-600 font-num w-12 text-right">{(conversionRate * 100).toFixed(0)}%</span>
-                </label>
-              </div>
-            </div>
 
-            {/* 成本明细 */}
-            <div className="rounded-lg p-3" style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
-              <p className="text-[11px] text-zinc-500 mb-2">建站成本明细</p>
-              <div className="grid grid-cols-4 gap-2 text-center">
-                <div>
-                  <p className="text-[10px] text-zinc-500">快充</p>
-                  <p className="text-[14px] font-bold text-emerald-600 font-num">¥{fastCost.toLocaleString()}</p>
+          {/* 右: 结果 */}
+          <div>
+            <p className="text-[10px] font-semibold mb-2 flex items-center gap-1" style={{ color: "var(--color-ink-4)" }}>
+              <TrendingUp className="w-3 h-3" /> 估算结果
+            </p>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg px-3 py-2.5" style={{ background: "rgba(16,185,129,0.05)", border: "1px solid rgba(16,185,129,0.15)", borderTop: "2px solid #10B981" }}>
+                  <p className="text-[9px] text-zinc-500">总投资（一次性）</p>
+                  <p className="text-[16px] font-bold font-num text-zinc-900 mt-0.5">{totalInvest.toFixed(1)} <span className="text-[9px] font-normal text-zinc-400">万元</span></p>
                 </div>
-                <div>
-                  <p className="text-[10px] text-zinc-500">慢充</p>
-                  <p className="text-[14px] font-bold text-sky-500 font-num">¥{slowCost.toLocaleString()}</p>
+                <div className="rounded-lg px-3 py-2.5" style={{ background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.15)", borderTop: "2px solid #F59E0B" }}>
+                  <p className="text-[9px] text-zinc-500">年服务费收入</p>
+                  <p className="text-[16px] font-bold font-num text-zinc-900 mt-0.5">{annualIncome.toFixed(1)} <span className="text-[9px] font-normal text-zinc-400">万元</span></p>
                 </div>
-                <div>
-                  <p className="text-[10px] text-zinc-500">土地</p>
-                  <p className="text-[14px] font-bold text-amber-500 font-num">¥{landCost.toLocaleString()}</p>
+                <div className="rounded-lg px-3 py-2.5" style={{ background: "rgba(56,189,248,0.05)", border: "1px solid rgba(56,189,248,0.15)", borderTop: "2px solid #38BDF8" }}>
+                  <p className="text-[9px] text-zinc-500">年净收益（扣成本）</p>
+                  <p className="text-[16px] font-bold font-num mt-0.5" style={{ color: annualNet >= 0 ? "#059669" : "#EF4444" }}>
+                    {annualNet.toFixed(1)} <span className="text-[9px] font-normal text-zinc-400">万元</span>
+                  </p>
                 </div>
-                <div style={{ borderLeft: "1px solid var(--color-muted)" }}>
-                  <p className="text-[10px] text-zinc-500">合计</p>
-                  <p className="text-[15px] font-bold text-zinc-900 font-num">¥{totalCost.toLocaleString()}</p>
+                <div className="rounded-lg px-3 py-2.5" style={{ background: "rgba(168,85,247,0.05)", border: "1px solid rgba(168,85,247,0.15)", borderTop: "2px solid #A855F7" }}>
+                  <p className="text-[9px] text-zinc-500">投资回收期</p>
+                  <p className="text-[16px] font-bold font-num mt-0.5" style={{ color: paybackYears !== null && paybackYears <= 5 ? "#059669" : "#EF4444" }}>
+                    {paybackStr}
+                  </p>
                 </div>
               </div>
+              {/* 盈亏平衡 */}
+              <div className="rounded-lg px-3 py-2.5" style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
+                <p className="text-[9px] flex items-center gap-1 text-zinc-500"><Scale className="w-2.5 h-2.5" /> 盈亏平衡分析</p>
+                <div className="mt-1.5">
+                  <div className="flex justify-between text-[9px] mb-0.5">
+                    <span className="text-zinc-500">当前利用率（日均充电量 ÷ 理论满负荷）</span>
+                    <span className="font-semibold font-num text-zinc-700">{annualKwh > 0 ? "基准" : "—"}</span>
+                  </div>
+                  {breakEvenKwh > 0 ? (
+                    <>
+                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(239,68,68,0.15)" }}>
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(100, breakEvenRate)}%`, background: "#EF4444" }} />
+                      </div>
+                      <p className="text-[9px] mt-1 text-zinc-500">
+                        需年充电量 <b className="font-num text-red-500">{(breakEvenKwh / 10000).toFixed(1)} 万度</b>
+                        （利用率约 {breakEvenRate.toFixed(0)}%）才能盈亏平衡
+                        {annualNet < 0 && <span className="text-red-500"> —— 当前参数下<span className="font-bold">亏损</span>，建议上调服务费或加大充电量</span>}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-[9px] mt-0.5 text-emerald-600">✅ 当前参数下已实现盈利（年净收益为正）</p>
+                  )}
+                </div>
+              </div>
+              <p className="text-[9px] leading-relaxed" style={{ color: "var(--color-ink-5)" }}>
+                说明：年净收益 = 服务费收入 − 购电成本 − 年运维费 − 场地租金；回收期 = 总投资 ÷ 年净收益（≤5 年视为可接受）。
+              </p>
             </div>
-
-            {/* 年收益与回收周期 */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-lg p-3" style={{ background: "rgba(0,200,150,0.06)", border: "1px solid var(--color-brand-border)" }}>
-                <p className="text-[11px] text-zinc-500 mb-1">预计年收益</p>
-                <p className="text-[20px] font-bold text-emerald-600 font-num">¥{annualRevenue.toLocaleString()}</p>
-                <p className="text-[10px] text-zinc-400 mt-1">
-                  = 人口{population.toLocaleString()} × 需求{(demandRate * 100).toFixed(0)}% × 单价{unitPrice}元 × 365天 × 转化{(conversionRate * 100).toFixed(0)}%
-                </p>
-              </div>
-              <div className="rounded-lg p-3" style={{
-                background: paybackYears > 0 && paybackYears < 5 ? "rgba(16,185,129,0.08)" : "rgba(239,68,68,0.06)",
-                border: `1px solid ${paybackYears > 0 && paybackYears < 5 ? "var(--color-brand-border)" : "rgba(239,68,68,0.3)"}`
-              }}>
-                <p className="text-[11px] text-zinc-500 mb-1">回收周期</p>
-                {paybackYears > 0 ? (
-                  <>
-                    <p className="text-[20px] font-bold font-num" style={{ color: paybackYears < 5 ? "#10B981" : "#EF4444" }}>
-                      {paybackYears} 年
-                    </p>
-                    <p className="text-[10px] text-zinc-400 mt-1">
-                      {paybackYears < 5 ? "投资回报良好" : paybackYears < 10 ? "回报周期偏长" : "建议优化规模或选址"}
-                    </p>
-                  </>
-                ) : (
-                  <p className="text-[14px] text-zinc-500">收益不足, 无法回收</p>
-                )}
-              </div>
-            </div>
-
-            {/* 后端基线数据 */}
-            {serverData && (
-              <div className="text-[10px] text-zinc-400 text-center">
-                基线估算 (后端接口): 成本 ¥{serverData.cost.toLocaleString()} · 年收益 ¥{serverData.annualRevenue.toLocaleString()} · 回收 {serverData.paybackYears} 年
-              </div>
-            )}
           </div>
-        )}
-
-        {/* 底部按钮 */}
-        <div className="px-5 py-3.5 flex items-center justify-end gap-2" style={{ borderTop: "1px solid var(--color-muted)", background: "var(--color-subtle)" }}>
-          <button onClick={onClose} className="btn-brand px-4 py-1.5 rounded-md text-[13px] font-medium">
-            关闭
-          </button>
         </div>
       </div>
     </div>

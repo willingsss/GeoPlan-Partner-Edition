@@ -155,7 +155,7 @@ async function loadFeedbackFromDB(): Promise<any[]> {
 // =========================================================================
 async function loadSchemesFromDB(): Promise<any[]> {
   const [rows] = await dbPool.query(
-    `SELECT id, name, lng, lat, radius, brand,
+    `SELECT id, name, lng, lat, radius, brand, district,
             covered_population, covered_communities, blind_spot_reduction,
             competition_score, social_benefit, creator, create_time
      FROM t_scheme ORDER BY id`
@@ -167,6 +167,7 @@ async function loadSchemesFromDB(): Promise<any[]> {
     lat: Number(r.lat),
     radius: Number(r.radius),
     brand: r.brand,
+    district: r.district || null,
     covered_population: Number(r.covered_population),
     covered_communities: Number(r.covered_communities),
     blind_spot_reduction: Number(r.blind_spot_reduction),
