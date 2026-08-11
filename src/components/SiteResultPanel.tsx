@@ -302,6 +302,18 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                 <option key={d} value={d}>{d}</option>
               ))}
             </select>
+            {/* 批量导出 Excel (当前筛选结果) */}
+            {filteredSchemes.length > 0 && (
+              <button
+                onClick={() => onExportSchemes()}
+                className="shrink-0 flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded transition-colors"
+                style={{ color: "#0F766E", background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.25)" }}
+                title="导出当前筛选的全部方案为 Excel(CSV)"
+              >
+                <FileSpreadsheet className="w-3 h-3" />
+                导出 Excel
+              </button>
+            )}
           </div>
           <div className="space-y-1">
             {filteredSchemes.map(s => (
@@ -319,8 +331,48 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                   onChange={(e) => onToggleCompare(s.id, e.target.checked)}
                   className="accent-amber-500 w-3 h-3 shrink-0"
                 />
-                <span className="text-[11px] text-zinc-700 font-medium flex-1 truncate">{s.name}</span>
-                <span className="text-[9px] text-zinc-400">{s.brand}</span>
+                {editingId === s.id ? (
+                  // 内联重命名编辑
+                  <input
+                    autoFocus
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onBlur={() => commitRename(s.id)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") { e.preventDefault(); commitRename(s.id); }
+                      if (e.key === "Escape") setEditingId(null);
+                    }}
+                    className="flex-1 min-w-0 input-sys h-5 text-[11px] px-1.5 text-zinc-700"
+                    placeholder="输入新方案名"
+                  />
+                ) : (
+                  <>
+                    <span className="text-[11px] text-zinc-700 font-medium flex-1 truncate" title={s.name}>{s.name}</span>
+                    <span className="text-[9px] text-zinc-400">{s.brand}</span>
+                  </>
+                )}
+                {/* 聚焦地图按钮 */}
+                <button
+                  onClick={() => onFocusScheme(s.id)}
+                  className="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-sky-50"
+                  style={{ color: "var(--color-ink-5)" }}
+                  title="地图聚焦到该方案位置"
+                  onMouseEnter={e => { e.currentTarget.style.color = "#0284C7"; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = "var(--color-ink-5)"; }}
+                >
+                  <MapPin className="w-3 h-3" />
+                </button>
+                {/* 重命名按钮 (内联编辑) */}
+                <button
+                  onClick={() => startRename(s.id, s.name)}
+                  className="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-amber-50"
+                  style={{ color: "var(--color-ink-5)" }}
+                  title="重命名该方案"
+                  onMouseEnter={e => { e.currentTarget.style.color = "#D97706"; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = "var(--color-ink-5)"; }}
+                >
+                  <Pencil className="w-3 h-3" />
+                </button>
                 {/* 单方案深度评估按钮 (导出报告左边) */}
                 <button
                   onClick={() => onViewSchemeDetail(s.id)}
