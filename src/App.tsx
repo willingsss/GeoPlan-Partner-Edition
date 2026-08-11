@@ -30,6 +30,8 @@ function DirectionIcon({ action }: { action: any }) {
 }
 
 import { useCoverageAnalysis } from "./hooks/useCoverageAnalysis";
+import { useSiteAnalysis } from "./hooks/useSiteAnalysis";
+import SiteControlBar from "./components/SiteControlBar";
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import "ol/ol.css";
 import OlMap from "ol/Map";
@@ -373,8 +375,24 @@ export default function App() {
   const [darkTheme, setDarkTheme] = useState<boolean>(() => {
     try { return localStorage.getItem("geoplan-theme") === "dark"; } catch { return false; }
   });
-  const [siteChargeMode, setSiteChargeMode] = useState<"fast" | "slow">("fast");
-  const [siteBrand, setSiteBrand] = useState<string>("国家电网");
+  // ===== 选址决策子系统状态 (useSiteAnalysis hook) =====
+  const {
+    siteChargeMode, setSiteChargeMode,
+    siteBrand, setSiteBrand,
+    siteRadius, setSiteRadius, siteRadiusRef,
+    virtualStation, setVirtualStation,
+    siteMetrics, setSiteMetrics,
+    siteLoading, setSiteLoading,
+    schemes, setSchemes,
+    schemeName, setSchemeName,
+    compareSchemes, setCompareSchemes,
+    roiDialogOpen, setRoiDialogOpen,
+    roiInitParams, setRoiInitParams,
+    compareDialogOpen, setCompareDialogOpen,
+    competitionDialogOpen, setCompetitionDialogOpen,
+    gapDialogOpen, setGapDialogOpen,
+    schemesLoaded, setSchemesLoaded,
+  } = useSiteAnalysis();
   const [selectedStation, setSelectedStation] = useState<any>(null);
   const [aiStationDetail, setAiStationDetail] = useState<any>(null);
   const [mousePosition, setMousePosition] = useState<[number, number] | null>(null);
@@ -474,26 +492,9 @@ export default function App() {
   // 阶段四 任务 4.2: 覆盖分析历史记录 (最多 3 条, 用于并排对比)
   const [coverageHistory, setCoverageHistory] = useState<CoverageHistoryItem[]>([]);
 
-  // 选址决策
-  const [virtualStation, setVirtualStation] = useState<{ lng: number; lat: number } | null>(null);
-  const [siteRadius, setSiteRadius] = useState(800);
-  const [siteMetrics, setSiteMetrics] = useState<SiteMetrics | null>(null);
-  const [siteLoading, setSiteLoading] = useState(false);
-  const [schemes, setSchemes] = useState<SavedScheme[]>([]);
-  const [schemeName, setSchemeName] = useState("");
-  const [compareSchemes, setCompareSchemes] = useState<number[]>([]);
-
-  // 阶段二: 决策分析能力深化 - 弹窗与热力图状态
+    // 阶段二: 决策分析能力深化 - 弹窗与热力图状态
   const [showHeatmap, setShowHeatmap] = useState(false);           // 负荷热力图开关
   const [heatmapData, setHeatmapData] = useState<any[]>([]);      // 热力图数据
-  const [roiDialogOpen, setRoiDialogOpen] = useState(false);       // ROI 估算弹窗
-  const [compareDialogOpen, setCompareDialogOpen] = useState(false); // 深度对比弹窗
-  const [competitionDialogOpen, setCompetitionDialogOpen] = useState(false); // 竞争态势弹窗
-  const [gapDialogOpen, setGapDialogOpen] = useState(false);       // 缺口预测弹窗
-  // 当前选址的 ROI 初始参数
-  const [roiInitParams, setRoiInitParams] = useState<{ fastChargers: number; slowChargers: number; coveredPopulation: number }>({
-    fastChargers: 4, slowChargers: 4, coveredPopulation: 0,
-  });
 
   // 公众反馈 (全局反馈列表, 用于系统管理面板统计)
   const [feedbackList, setFeedbackList] = useState<any[]>([]);
@@ -745,7 +746,6 @@ export default function App() {
   // 用于在地图事件回调中访问最新值，避免闭包过期
   const activeTabRef = useRef<SubsystemTab>("map");
   const placeVirtualStationRef = useRef<(lng: number, lat: number) => void>(() => {});
-  const siteRadiusRef = useRef(siteRadius);
   // 覆盖分析结果 ref (供地图点击回调读取最新值, 避免闭包过期)
   const coverageResultsRef = useRef<CommunityResult[]>([]);
 
@@ -3460,105 +3460,30 @@ export default function App() {
                 {/* 选址决策 (仅选址 Tab) */}
                 {activeTab === "site" && (
                 <div className="flex-1 min-w-[420px] px-3 py-2.5 overflow-y-auto">
-                  {/* 标题栏 - Linear 风: 紧凑 + 等宽标签 */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <Target className="w-3 h-3 text-amber-500" />
-                    <span className="text-[13px] font-semibold text-zinc-900">选址决策</span>
-                    <span
-                      className="text-[10px] px-1.5 py-0.5 rounded"
-                      style={{
-                        background: "rgba(245,158,11,0.08)",
-                        color: "#D97706",
-                        border: "1px solid rgba(245,158,11,0.2)",
-                      }}
-                    >
-                      决策沙盘
-                    </span>
-                    <span className="text-[10px] text-zinc-500 ml-auto">
-                      点击地图放置 · 拖拽调整
-                    </span>
-                  </div>
-                  {/* 参数控件区 - Linear 风: 分段控件 */}
-                  <div className="flex flex-wrap items-center gap-2 text-[12px]">
-                    {/* 服务半径 - 紧凑滑块 */}
-                    <div className="flex items-center gap-1.5 min-w-[180px]">
-                      <span className="text-[10px] text-zinc-500">服务半径</span>
-                      <input type="range" min="300" max="1500" step="50" value={siteRadius}
-                        onChange={(e) => {
-                          const v = parseInt(e.target.value);
-                          setSiteRadius(v);
-                          siteRadiusRef.current = v;
-                          if (virtualStation) evaluateSite(virtualStation.lng, virtualStation.lat);
-                        }}
-                        className="flex-1 accent-amber-500 h-1" />
-                      <span className="font-num text-amber-600 text-[11px] font-semibold w-12 text-right">{siteRadius}米</span>
-                    </div>
-                    {/* 充电模式 - Linear 风分段控件 */}
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-zinc-500">充电模式</span>
-                      <div
-                        className="flex rounded p-0.5"
-                        style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
-                      >
-                        <button onClick={() => setSiteChargeMode("fast")}
-                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
-                            siteChargeMode === "fast"
-                              ? "bg-white text-amber-600 shadow-sm"
-                              : "text-zinc-500 hover:text-zinc-700"
-                          }`}>快充</button>
-                        <button onClick={() => setSiteChargeMode("slow")}
-                          className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
-                            siteChargeMode === "slow"
-                              ? "bg-white text-amber-600 shadow-sm"
-                              : "text-zinc-500 hover:text-zinc-700"
-                          }`}>慢充</button>
-                      </div>
-                    </div>
-                    {/* 拟建品牌 */}
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-zinc-500">品牌</span>
-                      <select value={siteBrand} onChange={(e) => setSiteBrand(e.target.value)}
-                        className="input-sys h-6 text-[11px] px-2 text-zinc-700">
-                        {(availableBrands.length ? availableBrands : BRANDS).map(b => (
-                          <option key={b} value={b}>{BRAND_CONFIG[b]?.label || b}</option>
-                        ))}
-                      </select>
-                    </div>
-                    {/* 保存方案 - Linear 风紧凑按钮 */}
-                    {virtualStation && (
-                      <div className="flex items-center gap-1">
-                        <input type="text" value={schemeName} onChange={(e) => setSchemeName(e.target.value)}
-                          placeholder="方案名" className="input-sys h-6 w-24 text-[11px] px-2 text-zinc-700" />
-                        <button onClick={saveScheme}
-                          className="h-6 bg-zinc-900 hover:bg-zinc-800 text-white text-[11px] px-2.5 rounded flex items-center gap-1 transition-colors">
-                          <Save className="w-3 h-3" /> 保存
-                        </button>
-                      </div>
-                    )}
-                    {/* 阶段二 任务 2.3.2: ROI 估算按钮 */}
-                    {virtualStation && siteMetrics && (
-                      <button onClick={runRoiEstimate}
-                        className="h-6 px-2.5 rounded text-[11px] font-medium flex items-center gap-1 transition-colors"
-                        style={{
-                          background: "rgba(0,200,150,0.08)",
-                          color: "var(--color-brand-text)",
-                          border: "1px solid var(--color-brand-border)",
-                        }}>
-                        <Calculator className="w-3 h-3" /> ROI 估算
-                      </button>
-                    )}
-                    {/* 阶段二 任务 2.2.2: 深度对比按钮 (需选中 2 个方案) */}
-                    <button
-                      onClick={runCompareSchemes}
-                      disabled={compareSchemes.length !== 2}
-                      className={`h-6 px-2.5 rounded text-[11px] font-medium flex items-center gap-1 transition-colors ${
-                        compareSchemes.length === 2
-                          ? "bg-amber-500 hover:bg-amber-600 text-white"
-                          : "bg-zinc-100 text-zinc-400 cursor-not-allowed"
-                      }`}>
-                      <GitCompare className="w-3 h-3" /> 深度对比 ({compareSchemes.length}/2)
-                    </button>
-                  </div>
+                  <SiteControlBar
+                    activeTab={activeTab}
+                    siteRadius={siteRadius}
+                    siteChargeMode={siteChargeMode}
+                    siteBrand={siteBrand}
+                    schemeName={schemeName}
+                    compareSchemes={compareSchemes}
+                    virtualStation={virtualStation}
+                    siteMetrics={siteMetrics}
+                    availableBrands={availableBrands}
+                    brands={BRANDS}
+                    brandConfig={BRAND_CONFIG}
+                    onRadiusChange={(v) => {
+                      setSiteRadius(v);
+                      siteRadiusRef.current = v;
+                      if (virtualStation) evaluateSite(virtualStation.lng, virtualStation.lat);
+                    }}
+                    onChargeModeChange={setSiteChargeMode}
+                    onBrandChange={setSiteBrand}
+                    onSchemeNameChange={setSchemeName}
+                    onSaveScheme={saveScheme}
+                    onRunRoi={runRoiEstimate}
+                    onRunCompare={runCompareSchemes}
+                  />
                   {/* 指标卡 4 格 - Bento 指挥甲板: 3D 磁贴 + 高光边缘 */}
                   {siteMetrics && (
                     <>
