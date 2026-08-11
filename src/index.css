@@ -464,7 +464,7 @@ body {
   will-change: transform;
 }
 .bento-tile:hover {
-  transform: perspective(800px) rotateX(-1deg) rotateY(1deg) translateY(-2px);
+  /* 移除 3D 倾斜/位移: 弹窗等容器鼠标悬停不应产生位移 (用户反馈干扰交互) */
   box-shadow: var(--shadow-elevated);
 }
 .bento-tile::before {
