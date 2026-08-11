@@ -2512,6 +2512,26 @@ export default function App() {
     }
   };
 
+  // 删除方案 (带确认, 同时清理对比勾选)
+  const deleteScheme = async (id: number) => {
+    const s = schemes.find(x => x.id === id);
+    if (!window.confirm(`确定删除方案「${s?.name || id}」？`)) return;
+    try {
+      const res = await authFetch(`/api/v1/schemes/${id}`, { method: "DELETE" });
+      const json = await res.json();
+      if (json.success) {
+        setSchemes(schemes.filter(x => x.id !== id));
+        setCompareSchemes(prev => prev.filter(x => x !== id));
+        if (schemeDetailId === id) setSchemeDetailOpen(false);
+        showToast("方案已删除", "success");
+      } else {
+        showToast(json.message || "删除失败", "error");
+      }
+    } catch (e: any) {
+      showToast("删除失败: " + e.message, "error");
+    }
+  };
+
   // =========================================================================
   // 阶段二 任务 2.1: 负荷热力图 - 调用后端接口获取数据并渲染 HeatmapLayer
   // =========================================================================
@@ -5462,6 +5482,7 @@ export default function App() {
                     placeVirtualStation(lng, lat);
                   }}
                   onViewSchemeDetail={openSchemeDetail}
+                  onDeleteScheme={deleteScheme}
                   onToggleCompare={(id, checked) =>
                     setCompareSchemes(prev =>
                       checked ? (prev.length < 2 ? [...prev, id] : [prev[1], id]) : prev.filter(x => x !== id)

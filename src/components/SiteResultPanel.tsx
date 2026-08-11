@@ -1,7 +1,7 @@
 // SiteResultPanel.tsx
 // 选址决策子系统 - 结果面板 (综合评分卡 + 指标卡 + 盲区联动 + Top3推荐 + 方案列表)
 // 拆分自 App.tsx; 纯展示组件, 状态+回调全部 props 传入
-import { Target, Radar, Sparkles, Star } from "lucide-react";
+import { Target, Radar, Sparkles, Star, Trash2 } from "lucide-react";
 import { SchemeReportButton } from "./SchemeReportPrint";
 import type { SiteMetrics, SavedScheme } from "../hooks/useSiteAnalysis";
 
@@ -17,6 +17,7 @@ interface SiteResultPanelProps {
   onToggleCompare: (id: number, checked: boolean) => void;
   onPlaceCandidate: (lng: number, lat: number) => void;
   onViewSchemeDetail: (id: number) => void;
+  onDeleteScheme: (id: number) => void;
   onNotify: (msg: string, type?: "info" | "success" | "warning" | "error") => void;
 }
 
@@ -36,7 +37,7 @@ function calcScore(m: SiteMetrics): { score: number; grade: string; gradeColor: 
 
 export default function SiteResultPanel(props: SiteResultPanelProps) {
   const { siteMetrics, siteInBlindSpot, lastCoverageSummary, schemes, compareSchemes,
-          blindSpotClusters, activeCandidate, onToggleCompare, onPlaceCandidate, onViewSchemeDetail, onNotify } = props;
+          blindSpotClusters, activeCandidate, onToggleCompare, onPlaceCandidate, onViewSchemeDetail, onDeleteScheme, onNotify } = props;
 
   // 候选点一一对应: 从覆盖分析点"在此选址"进来时只显示该候选点; 否则按盲区人口排序 Top3
   const topCandidates = activeCandidate
@@ -220,6 +221,17 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                   schemeName={s.name}
                   onNotify={onNotify}
                 />
+                {/* 删除方案按钮 */}
+                <button
+                  onClick={() => onDeleteScheme(s.id)}
+                  className="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-red-50"
+                  style={{ color: "var(--color-ink-5)" }}
+                  title="删除该方案"
+                  onMouseEnter={e => { e.currentTarget.style.color = "#EF4444"; }}
+                  onMouseLeave={e => { e.currentTarget.style.color = "var(--color-ink-5)"; }}
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
               </div>
             ))}
           </div>
