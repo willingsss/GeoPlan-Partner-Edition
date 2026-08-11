@@ -16,6 +16,7 @@ interface SiteResultPanelProps {
   activeCandidate: { clusterId: number; center: [number, number]; communityCount: number; population: number } | null;
   onToggleCompare: (id: number, checked: boolean) => void;
   onPlaceCandidate: (lng: number, lat: number) => void;
+  onViewSchemeDetail: (id: number) => void;
   onNotify: (msg: string, type?: "info" | "success" | "warning" | "error") => void;
 }
 
@@ -35,7 +36,7 @@ function calcScore(m: SiteMetrics): { score: number; grade: string; gradeColor: 
 
 export default function SiteResultPanel(props: SiteResultPanelProps) {
   const { siteMetrics, siteInBlindSpot, lastCoverageSummary, schemes, compareSchemes,
-          blindSpotClusters, activeCandidate, onToggleCompare, onPlaceCandidate, onNotify } = props;
+          blindSpotClusters, activeCandidate, onToggleCompare, onPlaceCandidate, onViewSchemeDetail, onNotify } = props;
 
   // 候选点一一对应: 从覆盖分析点"在此选址"进来时只显示该候选点; 否则按盲区人口排序 Top3
   const topCandidates = activeCandidate
@@ -204,6 +205,15 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                 />
                 <span className="text-[11px] text-zinc-700 font-medium flex-1 truncate">{s.name}</span>
                 <span className="text-[9px] text-zinc-400">{s.brand}</span>
+                {/* 单方案深度评估按钮 (导出报告左边) */}
+                <button
+                  onClick={() => onViewSchemeDetail(s.id)}
+                  className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded transition-colors"
+                  style={{ color: "var(--color-brand-text)", background: "rgba(0,200,150,0.08)", border: "1px solid rgba(0,200,150,0.2)" }}
+                  title="查看该方案的深度分析"
+                >
+                  深度评估
+                </button>
                 {/* 阶段二 任务 2.6.2: 导出报告按钮 */}
                 <SchemeReportButton
                   schemeId={s.id}

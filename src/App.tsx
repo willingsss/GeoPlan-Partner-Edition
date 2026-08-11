@@ -63,7 +63,7 @@ import {
   Sparkles, X, LogOut, User as UserIcon, ShieldCheck,
   MapPin, Navigation, LocateFixed, Route as RouteIcon,
   ChevronLeft, ChevronRight, ChevronDown, Search, Loader2, Square, RotateCcw,
-  Copy, Check, Trash2, Menu, GripVertical,
+  Copy, Check, Trash2, Menu, GripVertical, Star,
   Flame, Calculator, GitCompare, TrendingUp, FileText,
   LayoutDashboard, Moon, Sun, Keyboard,
   Download, Printer, Activity, Clock, AlertCircle, CheckCircle2,
@@ -346,6 +346,22 @@ function renderAiContent(text: string): React.ReactNode {
   return <div className="text-[10px] leading-relaxed text-slate-800">{blocks}</div>;
 }
 
+// =========================================================================
+// 单方案综合评分: 归一化加权 (与 SiteResultPanel 一致, 弹窗复用)
+// =========================================================================
+function calcSchemeScore(m: any): { score: number; grade: string; gradeColor: string } {
+  const pop = Math.min(Number(m.covered_population) / 20000, 1) * 30;      // 30%
+  const comm = Math.min(Number(m.covered_communities) / 10, 1) * 15;       // 15%
+  const comp = Math.min(Number(m.competition_score ?? 0) / 100, 1) * 20;   // 20%
+  const benefit = Math.min(Number(m.social_benefit ?? 0) / 100, 1) * 20;   // 20%
+  const blind = Math.min(Number(m.blind_spot_reduction ?? 0) / 100, 1) * 15; // 15%
+  const score = Math.round(pop + comm + comp + benefit + blind);
+  if (score >= 85) return { score, grade: "A·优", gradeColor: "#10B981" };
+  if (score >= 70) return { score, grade: "B·良", gradeColor: "#38BDF8" };
+  if (score >= 55) return { score, grade: "C·中", gradeColor: "#F59E0B" };
+  return { score, grade: "D·待优化", gradeColor: "#F43F5E" };
+}
+
 export default function App() {
   // =========================================================================
   // 状态管理
@@ -397,6 +413,21 @@ export default function App() {
   const [selectedStation, setSelectedStation] = useState<any>(null);
   // 候选点"在此选址"联动: 记录从覆盖分析点进来的候选点, 选址面板只显示对应那一个
   const [activeCandidate, setActiveCandidate] = useState<BlindSpotCluster | null>(null);
+  // 单方案深度评估弹窗: 方案详情 + 内嵌地图
+  const [schemeDetailOpen, setSchemeDetailOpen] = useState(false);
+  const [schemeDetailId, setSchemeDetailId] = useState<number | null>(null);
+  const schemeMapRef = useRef<HTMLDivElement>(null);
+  const schemeMapInstRef = useRef<OlMap | null>(null);
+  // 打开方案深度评估弹窗 (同时在地图上定位该方案)
+  const openSchemeDetail = (id: number) => {
+    setSchemeDetailId(id);
+    setSchemeDetailOpen(true);
+    const s = schemes.find(x => x.id === id);
+    if (s && mapRef.current && typeof s.lng === "number" && typeof s.lat === "number") {
+      const [gcjLng, gcjLat] = wgs84ToGcj02(s.lng, s.lat);
+      mapRef.current.getView().animate({ center: fromLonLat([gcjLng, gcjLat]), zoom: 13, duration: 600 });
+    }
+  };
   const [aiStationDetail, setAiStationDetail] = useState<any>(null);
   const [mousePosition, setMousePosition] = useState<[number, number] | null>(null);
   const [stationCount, setStationCount] = useState(0);
@@ -3062,7 +3093,51 @@ export default function App() {
       }],
     });
     return () => chart.dispose();
-  }, [compareSchemes, schemes]);
+  }, [compareSchemes, schemes, compareDialogOpen]);
+
+  // =========================================================================
+  // 单方案深度评估: 弹窗内嵌 MiniMap (高德底图 + 方案点 + 服务区圆)
+  // =========================================================================
+  useEffect(() => {
+    if (!schemeDetailOpen || !schemeMapRef.current) return;
+    const s = schemes.find(x => x.id === schemeDetailId);
+    if (!s || typeof s.lng !== "number" || typeof s.lat !== "number") return;
+    const [gcjLng, gcjLat] = wgs84ToGcj02(s.lng, s.lat);
+    const center = fromLonLat([gcjLng, gcjLat]);
+    const miniMap = new OlMap({
+      target: schemeMapRef.current,
+      layers: [
+        new TileLayer({
+          source: new XYZ({
+            url: "https://webrd0{1-4}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+            crossOrigin: "anonymous",
+            attributions: "© 高德地图 AutoNavi",
+            maxZoom: 20,
+          }),
+        }),
+      ],
+      view: new View({ center, zoom: 13 }),
+      controls: [],
+    });
+    // 方案点标记 (品牌色)
+    const pt = new Feature({ geometry: new Point(center) });
+    pt.setStyle(new Style({
+      image: new CircleStyle({ radius: 9, fill: new Fill({ color: "#00C896" }), stroke: new Stroke({ color: "#ffffff", width: 3 }) }),
+    }));
+    // 服务区范围圆 (半径米 → 3857)
+    const radius = Number(s.radius) || 800;
+    const circleFeat = new Feature({ geometry: new Circle(center, radius) });
+    circleFeat.setStyle(new Style({
+      stroke: new Stroke({ color: "rgba(0,200,150,0.7)", width: 2 }),
+      fill: new Fill({ color: "rgba(0,200,150,0.08)" }),
+    }));
+    miniMap.addLayer(new VectorLayer({ source: new VectorSource({ features: [pt, circleFeat] }) }));
+    schemeMapInstRef.current = miniMap;
+    return () => {
+      miniMap.setTarget(undefined);
+      schemeMapInstRef.current = null;
+    };
+  }, [schemeDetailOpen, schemeDetailId, schemes]);
 
   const asArray = (value: any) => Array.isArray(value) ? value : [];
   const safeText = (value: any) => String(value ?? "");
@@ -5356,30 +5431,12 @@ export default function App() {
         )}
 
 
-          {/* 方案对比雷达图 - Bento 玻璃面板 */}
-          {activeTab === "site" && compareSchemes.length >= 2 && (
-            <div
-              className="absolute bottom-3 right-3 w-72 rounded-xl p-3.5 z-20 animate-panel-enter bento-tile"
-              style={{
-                background: "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(250,250,250,0.82) 100%)",
-                backdropFilter: "blur(20px) saturate(1.4)",
-                WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-                border: "1px solid rgba(255,255,255,0.25)",
-                boxShadow: "var(--shadow-elevated)",
-              }}
-            >
-              <h4 className="text-[11px] font-semibold mb-2 flex items-center gap-1.5" style={{ color: "var(--color-ink-2)" }}>
-                <Target className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} /> 方案雷达对比
-              </h4>
-              <div ref={radarChartRef} className="w-full h-56" />
-            </div>
-          )}
         </div>
             </div>
             {/* ===== 右竖条栏: 选址卡片 (综合评分/盲区概况/推荐选址, 滚动查看) ===== */}
             {activeTab === "site" && (
               <div
-                className="w-[320px] shrink-0 border-l overflow-y-auto animate-panel-enter"
+                className="w-[480px] shrink-0 border-l overflow-y-auto animate-panel-enter"
                 style={{
                   borderColor: "rgba(255,255,255,0.08)",
                   background: "linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(250,250,250,0.88) 100%)",
@@ -5387,6 +5444,9 @@ export default function App() {
                   WebkitBackdropFilter: "blur(16px) saturate(1.2)",
                   boxShadow: "-4px 0 24px -8px rgba(0,0,0,0.06)",
                   zIndex: 10,
+                  // 顶部避开参数条 (同覆盖分析右栏), 从功能区下方开始
+                  marginTop: 112,
+                  height: "calc(100% - 112px)",
                 }}
               >
                 <SiteResultPanel
@@ -5401,6 +5461,7 @@ export default function App() {
                     setActiveTab("site");
                     placeVirtualStation(lng, lat);
                   }}
+                  onViewSchemeDetail={openSchemeDetail}
                   onToggleCompare={(id, checked) =>
                     setCompareSchemes(prev =>
                       checked ? (prev.length < 2 ? [...prev, id] : [prev[1], id]) : prev.filter(x => x !== id)
@@ -5814,6 +5875,191 @@ export default function App() {
           showToast={showToast}
         />
       )}
+
+      {/* ===== 单方案深度评估弹窗 (方案列表"深度评估"按钮触发) ===== */}
+      {schemeDetailOpen && (() => {
+        const s = schemes.find(x => x.id === schemeDetailId);
+        if (!s) return null;
+        const sc = calcSchemeScore(s);
+        const radius = Number(s.radius) || 800;
+        const timeStr = s.create_time ? String(s.create_time).replace("T", " ").slice(0, 19) : "";
+        return (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+            style={{ background: "rgba(9,9,11,0.45)" }}
+            onClick={() => setSchemeDetailOpen(false)}
+          >
+            <div
+              className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl animate-scale-in bento-tile"
+              style={{
+                background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
+                border: "1px solid rgba(255,255,255,0.6)",
+                boxShadow: "var(--shadow-elevated)",
+              }}
+              onClick={e => e.stopPropagation()}
+            >
+              {/* 标题栏 */}
+              <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid var(--color-muted)" }}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(0,200,150,0.1)" }}>
+                  <Target className="w-4 h-4" style={{ color: "var(--color-brand-text)" }} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-[14px] font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{s.name} · 深度评估</h3>
+                  <p className="text-[10px] mt-0.5" style={{ color: "var(--color-ink-4)" }}>
+                    {s.brand || "—"} · 服务半径 {radius}m · 坐标 ({Number(s.lng).toFixed(4)}, {Number(s.lat).toFixed(4)}){timeStr ? ` · 保存于 ${timeStr}` : ""}
+                  </p>
+                </div>
+                <button onClick={() => setSchemeDetailOpen(false)}
+                  className="ml-auto w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5 shrink-0"
+                  style={{ color: "var(--color-ink-4)" }}>
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                {/* 内嵌 MiniMap: 该方案在地图上的展示 */}
+                <div>
+                  <p className="text-[10px] font-semibold mb-1.5 flex items-center gap-1" style={{ color: "var(--color-ink-4)" }}>
+                    <MapPin className="w-3 h-3" /> 方案位置与覆盖范围（地图展示）
+                  </p>
+                  <div ref={schemeMapRef} className="w-full h-52 rounded-xl overflow-hidden"
+                    style={{ border: "1px solid var(--color-muted)", background: "#f5f5f5" }} />
+                </div>
+                {/* 指标网格 */}
+                <div className="grid grid-cols-5 gap-2">
+                  {[
+                    { label: "覆盖人口", val: Number(s.covered_population || 0).toLocaleString(), color: "#10B981" },
+                    { label: "覆盖社区", val: `${Number(s.covered_communities || 0)} 个`, color: "#38BDF8" },
+                    { label: "盲区消除率", val: `${Number(s.blind_spot_reduction || 0)}%`, color: "#F59E0B" },
+                    { label: "竞争避让度", val: `${Number(s.competition_score || 0)}`, color: "#A855F7" },
+                    { label: "社会效益", val: `${Number(s.social_benefit || 0)}`, color: "#F43F5E" },
+                  ].map(m => (
+                    <div key={m.label} className="rounded-lg px-2.5 py-2 text-center"
+                      style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
+                      <p className="text-[9px]" style={{ color: "var(--color-ink-4)" }}>{m.label}</p>
+                      <p className="text-[13px] font-bold font-num mt-0.5" style={{ color: m.color }}>{m.val}</p>
+                    </div>
+                  ))}
+                </div>
+                {/* 综合评分 */}
+                <div className="rounded-xl px-4 py-3 flex items-center gap-3"
+                  style={{
+                    background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.03))",
+                    border: "1px solid rgba(245,158,11,0.2)",
+                    borderTop: "2px solid #F59E0B",
+                  }}>
+                  <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0" style={{ background: "rgba(245,158,11,0.12)" }}>
+                    <Star className="w-5 h-5" style={{ color: "#F59E0B" }} />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider">综合评分</p>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-[24px] font-bold font-num" style={{ color: sc.gradeColor }}>{sc.score}</span>
+                      <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded"
+                        style={{ background: `${sc.gradeColor}1A`, color: sc.gradeColor, border: `1px solid ${sc.gradeColor}40` }}>
+                        {sc.grade}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right text-[9px] text-zinc-400 leading-relaxed">
+                    <p>人口30% · 社区15%</p>
+                    <p>竞争20% · 效益20% · 盲区15%</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ===== 方案深度对比弹窗 (勾选 2 方案后"对比"按钮触发) ===== */}
+      {compareDialogOpen && (() => {
+        const s1 = schemes.find(x => x.id === compareSchemes[0]);
+        const s2 = schemes.find(x => x.id === compareSchemes[1]);
+        if (!s1 || !s2) return null;
+        const rows = [
+          { label: "覆盖总人口（收益）", a: Number(s1.covered_population || 0), b: Number(s2.covered_population || 0), fmt: (v: number) => v.toLocaleString() },
+          { label: "覆盖社区数", a: Number(s1.covered_communities || 0), b: Number(s2.covered_communities || 0), fmt: (v: number) => `${v} 个` },
+          { label: "盲区消除率（社会效益）", a: Number(s1.blind_spot_reduction || 0), b: Number(s2.blind_spot_reduction || 0), fmt: (v: number) => `${v}%` },
+          { label: "同行红海避让度（避免恶性竞争）", a: Number(s1.competition_score || 0), b: Number(s2.competition_score || 0), fmt: (v: number) => String(v) },
+          { label: "社会效益", a: Number(s1.social_benefit || 0), b: Number(s2.social_benefit || 0), fmt: (v: number) => String(v) },
+          { label: "服务半径", a: Number(s1.radius || 0), b: Number(s2.radius || 0), fmt: (v: number) => `${v}m` },
+        ];
+        return (
+          <div
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+            style={{ background: "rgba(9,9,11,0.45)" }}
+            onClick={() => setCompareDialogOpen(false)}
+          >
+            <div
+              className="w-[860px] max-h-[88vh] overflow-y-auto rounded-2xl animate-scale-in bento-tile"
+              style={{
+                background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
+                border: "1px solid rgba(255,255,255,0.6)",
+                boxShadow: "var(--shadow-elevated)",
+              }}
+              onClick={e => e.stopPropagation()}
+            >
+              {/* 标题栏 */}
+              <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid var(--color-muted)" }}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(56,189,248,0.1)" }}>
+                  <GitCompare className="w-4 h-4" style={{ color: "#38BDF8" }} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-[14px] font-semibold" style={{ color: "var(--color-ink-1)" }}>方案深度对比</h3>
+                  <p className="text-[10px] mt-0.5" style={{ color: "var(--color-ink-4)" }}>
+                    {s1.name}（<span style={{ color: "#00C896" }}>青</span>） vs {s2.name}（<span style={{ color: "#38BDF8" }}>蓝</span>）
+                  </p>
+                </div>
+                <button onClick={() => setCompareDialogOpen(false)}
+                  className="ml-auto w-7 h-7 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5 shrink-0"
+                  style={{ color: "var(--color-ink-4)" }}>
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-5 space-y-4">
+                {/* 雷达图 (从地图浮动面板移入) */}
+                <div>
+                  <p className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--color-ink-4)" }}>
+                    多维度雷达对比（覆盖总人口 / 盲区消除率 / 同行红海避让度 / 社会效益 / 覆盖社区数）
+                  </p>
+                  <div ref={radarChartRef} className="w-full h-72 rounded-xl"
+                    style={{ border: "1px solid var(--color-muted)", background: "var(--color-subtle)" }} />
+                </div>
+                {/* 指标对比表 */}
+                <div>
+                  <p className="text-[10px] font-semibold mb-1.5" style={{ color: "var(--color-ink-4)" }}>指标对比明细</p>
+                  <table className="w-full text-[11px] rounded-lg overflow-hidden" style={{ borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-subtle)" }}>
+                        <th className="text-left px-3 py-2 font-semibold" style={{ color: "var(--color-ink-4)" }}>指标</th>
+                        <th className="text-center px-3 py-2 font-semibold" style={{ color: "#00C896" }}>{s1.name}</th>
+                        <th className="text-center px-3 py-2 font-semibold" style={{ color: "#38BDF8" }}>{s2.name}</th>
+                        <th className="text-center px-3 py-2 font-semibold" style={{ color: "var(--color-ink-4)" }}>领先方</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(r => {
+                        const win = r.a === r.b ? "—" : (r.a > r.b ? s1.name : s2.name);
+                        const winColor = r.a === r.b ? "var(--color-ink-5)" : (r.a > r.b ? "#00C896" : "#38BDF8");
+                        return (
+                          <tr key={r.label} style={{ borderTop: "1px solid var(--color-muted)" }}>
+                            <td className="px-3 py-2" style={{ color: "var(--color-ink-3)" }}>{r.label}</td>
+                            <td className={`text-center px-3 py-2 font-num font-semibold ${r.a > r.b ? "" : ""}`}
+                              style={{ color: r.a >= r.b ? "#00C896" : "var(--color-ink-3)" }}>{r.fmt(r.a)}</td>
+                            <td className="text-center px-3 py-2 font-num font-semibold"
+                              style={{ color: r.b >= r.a ? "#38BDF8" : "var(--color-ink-3)" }}>{r.fmt(r.b)}</td>
+                            <td className="text-center px-3 py-2 font-semibold" style={{ color: winColor }}>{win}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ===== 决策大屏 (阶段三 任务 3.1, 全屏覆盖) ===== */}
       <Dashboard open={showDashboard} onBack={() => setShowDashboard(false)} />
