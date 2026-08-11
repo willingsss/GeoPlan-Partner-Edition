@@ -463,10 +463,6 @@ body {
   transform-style: preserve-3d;
   will-change: transform;
 }
-.bento-tile:hover {
-  /* 移除 3D 倾斜/位移: 弹窗等容器鼠标悬停不应产生位移 (用户反馈干扰交互) */
-  box-shadow: var(--shadow-elevated);
-}
 .bento-tile::before {
   content: "";
   position: absolute;
