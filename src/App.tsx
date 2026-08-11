@@ -3491,6 +3491,11 @@ export default function App() {
                     lastCoverageSummary={lastCoverageSummary}
                     schemes={schemes}
                     compareSchemes={compareSchemes}
+                    blindSpotClusters={blindSpotClusters}
+                    onPlaceCandidate={(lng, lat) => {
+                      setActiveTab("site");
+                      placeVirtualStation(lng, lat);
+                    }}
                     onToggleCompare={(id, checked) =>
                       setCompareSchemes(prev =>
                         checked ? (prev.length < 2 ? [...prev, id] : [prev[1], id]) : prev.filter(x => x !== id)

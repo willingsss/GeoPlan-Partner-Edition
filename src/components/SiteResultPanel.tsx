@@ -1,7 +1,7 @@
 // SiteResultPanel.tsx
-// 选址决策子系统 - 结果面板 (指标卡 + 盲区联动 + 方案列表, 拆分自 App.tsx)
-// 纯展示组件: 状态+回调全部 props 传入
-import { Target, Radar } from "lucide-react";
+// 选址决策子系统 - 结果面板 (综合评分卡 + 指标卡 + 盲区联动 + Top3推荐 + 方案列表)
+// 拆分自 App.tsx; 纯展示组件, 状态+回调全部 props 传入
+import { Target, Radar, Sparkles, Star } from "lucide-react";
 import { SchemeReportButton } from "./SchemeReportPrint";
 import type { SiteMetrics, SavedScheme } from "../hooks/useSiteAnalysis";
 
@@ -11,16 +11,100 @@ interface SiteResultPanelProps {
   lastCoverageSummary: { coverageRate: number; blindSpotCommunities: number; blindSpotPopulation: number } | null;
   schemes: SavedScheme[];
   compareSchemes: number[];
+  blindSpotClusters: { clusterId: number; center: [number, number]; communityCount: number; population: number }[];
   onToggleCompare: (id: number, checked: boolean) => void;
+  onPlaceCandidate: (lng: number, lat: number) => void;
   onNotify: (msg: string, type?: "info" | "success" | "warning" | "error") => void;
 }
 
+// 综合评分: 归一化加权 (与雷达图维度一致)
+function calcScore(m: SiteMetrics): { score: number; grade: string; gradeColor: string } {
+  const pop = Math.min(m.covered_population / 20000, 1) * 30;      // 30%
+  const comm = Math.min(m.covered_communities / 10, 1) * 15;       // 15%
+  const comp = Math.min((m.competition_score ?? 0) / 100, 1) * 20; // 20%
+  const benefit = Math.min((m.social_benefit ?? 0) / 100, 1) * 20; // 20%
+  const blind = Math.min((m.blind_spot_reduction ?? 0) / 100, 1) * 15; // 15%
+  const score = Math.round(pop + comm + comp + benefit + blind);
+  if (score >= 85) return { score, grade: "A·优", gradeColor: "#10B981" };
+  if (score >= 70) return { score, grade: "B·良", gradeColor: "#38BDF8" };
+  if (score >= 55) return { score, grade: "C·中", gradeColor: "#F59E0B" };
+  return { score, grade: "D·待优化", gradeColor: "#F43F5E" };
+}
+
 export default function SiteResultPanel(props: SiteResultPanelProps) {
-  const { siteMetrics, siteInBlindSpot, lastCoverageSummary, schemes, compareSchemes, onToggleCompare, onNotify } = props;
+  const { siteMetrics, siteInBlindSpot, lastCoverageSummary, schemes, compareSchemes,
+          blindSpotClusters, onToggleCompare, onPlaceCandidate, onNotify } = props;
+
+  // Top3 推荐候选 (按盲区人口排序)
+  const topCandidates = [...blindSpotClusters].sort((a, b) => b.population - a.population).slice(0, 3);
 
   return (
     <>
-      {/* 指标卡 4 格 - Bento 指挥甲板: 3D 磁贴 + 高光边缘 */}
+      {/* 推荐选址 Top3 - 来自覆盖分析候选点 */}
+      {topCandidates.length > 0 && (
+        <div className="mt-1.5 rounded-lg px-2.5 py-2"
+          style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <Sparkles className="w-3 h-3 text-amber-500" />
+            <p className="text-[10px] text-zinc-600">推荐选址 Top{topCandidates.length}（按盲区人口）</p>
+            <span className="text-[9px] px-1 py-0 rounded ml-auto"
+              style={{ background: "rgba(245,158,11,0.08)", color: "#D97706", border: "1px solid rgba(245,158,11,0.2)" }}>
+              点击即评估
+            </span>
+          </div>
+          <div className="space-y-1">
+            {topCandidates.map((c, idx) => (
+              <button key={c.clusterId}
+                onClick={() => onPlaceCandidate(c.center[0], c.center[1])}
+                className="w-full flex items-center gap-2 px-2 py-1 rounded-md transition-all hover:bg-white"
+                style={{ border: "1px solid var(--color-muted)" }}>
+                <span className="w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0"
+                  style={{ background: idx === 0 ? "#F59E0B" : idx === 1 ? "#38BDF8" : "#A855F7" }}>
+                  {idx + 1}
+                </span>
+                <span className="text-[10px] text-zinc-600 flex-1">盲区社区 {c.communityCount} 个</span>
+                <span className="text-[10px] font-semibold font-num text-orange-500">{c.population.toLocaleString()} 人</span>
+                <Target className="w-3 h-3 text-zinc-400 shrink-0" />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* 综合评分卡 - 选址决策总览 (置于 Top3 推荐之后, 点击候选点后自然可见) */}
+      {siteMetrics && (
+        <div
+          className="mt-2 rounded-lg px-3 py-2.5 flex items-center gap-3 animate-fade-in"
+          style={{
+            background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.03))",
+            border: "1px solid rgba(245,158,11,0.2)",
+            borderTop: "2px solid #F59E0B",
+          }}
+        >
+          <div className="w-11 h-11 rounded-lg flex items-center justify-center shrink-0"
+            style={{ background: "rgba(245,158,11,0.12)" }}>
+            <Star className="w-5 h-5" style={{ color: "#F59E0B" }} />
+          </div>
+          <div className="flex-1">
+            <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider">综合评分</p>
+            <div className="flex items-baseline gap-2">
+              <span className="text-[26px] font-bold font-num" style={{ color: calcScore(siteMetrics).gradeColor }}>
+                {calcScore(siteMetrics).score}
+              </span>
+              <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded" style={{
+                background: `${calcScore(siteMetrics).gradeColor}1A`,
+                color: calcScore(siteMetrics).gradeColor,
+                border: `1px solid ${calcScore(siteMetrics).gradeColor}40`,
+              }}>
+                {calcScore(siteMetrics).grade}
+              </span>
+            </div>
+          </div>
+          <div className="text-right text-[9px] text-zinc-400 leading-relaxed">
+            <p>人口30% · 社区15%</p>
+            <p>竞争20% · 效益20% · 盲区15%</p>
+          </div>
+        </div>
+      )}
       {siteMetrics && (
         <>
           <div className="grid grid-cols-4 gap-2 mt-2">

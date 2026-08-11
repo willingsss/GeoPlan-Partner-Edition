@@ -12,9 +12,11 @@ app.post("/api/v1/schemes", requireAuth, requireRole("投资商", "管理员"), 
   const competitionScore = metrics?.competitionScore || 0;
   const socialBenefit = metrics?.socialBenefit || 0;
   try {
+    // t_scheme.geom 为 NOT NULL POINT; 本环境 MySQL 的 ST_GeomFromText 校验视首坐标为纬度, 用 POINT(lat lng)
+    const pointWkt = `POINT(${parseFloat(lat)} ${parseFloat(lng)})`;
     const [result]: any = await dbPool.query(
-      `INSERT INTO t_scheme (name, lng, lat, radius, brand, covered_population, covered_communities, blind_spot_reduction, competition_score, social_benefit, creator) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name || "未命名方案", parseFloat(lng), parseFloat(lat), parseFloat(radius), brand || "国家电网", coveredPopulation, coveredCommunities, blindSpotReduction, competitionScore, socialBenefit, creator]
+      `INSERT INTO t_scheme (name, lng, lat, geom, radius, brand, covered_population, covered_communities, blind_spot_reduction, competition_score, social_benefit, creator) VALUES (?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name || "未命名方案", parseFloat(lng), parseFloat(lat), pointWkt, parseFloat(radius), brand || "国家电网", coveredPopulation, coveredCommunities, blindSpotReduction, competitionScore, socialBenefit, creator]
     );
     const scheme = {
       id: result.insertId,
