@@ -336,7 +336,7 @@ export default function CoverageControlBar({
     )}
     {/* 阶段三 任务 3.4.1: 无分析结果时显示小提示（不再占用大卡片） */}
     {!coverageSummary && !coverageLoading && (
-    <div className="mt-1 flex items-center gap-1 text-[10px] text-zinc-500 animate-fade-in">
+    <div className="mt-1 flex items-center gap-1 text-[10px] text-zinc-500">
     <Info className="w-3 h-3 text-zinc-400" />
     <span>配置参数后点击「开始分析」</span>
     <span className="px-1 rounded" style={{ background: "var(--color-accent-subtle)", color: "#0284C7" }}>快充 800m</span>

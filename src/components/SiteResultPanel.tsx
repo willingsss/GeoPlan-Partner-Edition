@@ -115,7 +115,7 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
       {/* 综合评分卡 - 选址决策总览 (置于 Top3 推荐之后, 点击候选点后自然可见) */}
       {siteMetrics && (
         <div
-          className="mt-2 rounded-lg px-3 py-2.5 flex items-center gap-3 animate-fade-in"
+          className="mt-2 rounded-lg px-3 py-2.5 flex items-center gap-3"
           style={{
             background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(245,158,11,0.03))",
             border: "1px solid rgba(245,158,11,0.2)",
@@ -170,7 +170,7 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
           {/* 盲区联动提示 - Linear 风: 极简 */}
           {siteInBlindSpot && (
             <div
-              className="mt-1.5 rounded px-2 py-1 text-[11px] flex items-center gap-1.5 animate-fade-in"
+              className="mt-1.5 rounded px-2 py-1 text-[11px] flex items-center gap-1.5"
               style={{
                 background: "rgba(245,158,11,0.06)",
                 border: "1px solid rgba(245,158,11,0.25)",

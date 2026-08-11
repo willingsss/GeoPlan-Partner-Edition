@@ -117,7 +117,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
 
                   {/* ===== 数据概览 - 卡片网格优先 ===== */}
                   {adminTab === "overview" && (
-                    <div className="space-y-4 animate-fade-in">
+                    <div className="space-y-4">
                       {/* 统计卡片 - 大数字 + 图标芯片 + 趋势色 */}
                       <div className="grid grid-cols-5 gap-3">
                         {[
@@ -245,7 +245,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
 
                   {/* ===== 充电站管理 - 卡片堆叠 ===== */}
                   {adminTab === "stations" && (
-                    <div className="animate-fade-in">
+                    <div className="">
                       {/* 工具栏 */}
                       <div
                         className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
@@ -389,7 +389,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
 
                   {/* ===== 用户管理 - 卡片网格 ===== */}
                   {adminTab === "users" && (
-                    <div className="animate-fade-in">
+                    <div className="">
                       <div
                         className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
                         style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
@@ -483,7 +483,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
 
                   {/* ===== 反馈管理 - 卡片列表 ===== */}
                   {adminTab === "feedback" && (
-                    <div className="animate-fade-in">
+                    <div className="">
                       <div
                         className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
                         style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
@@ -590,7 +590,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
 
                   {/* ===== 方案管理 - 卡片网格 ===== */}
                   {adminTab === "schemes" && (
-                    <div className="animate-fade-in">
+                    <div className="">
                       <div
                         className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
                         style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
@@ -670,7 +670,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
 
                   {/* ===== 系统日志 - 时间线列表 ===== */}
                   {adminTab === "logs" && (
-                    <div className="animate-fade-in">
+                    <div className="">
                       <div
                         className="rounded-lg px-4 py-3 mb-3 flex items-center justify-between"
                         style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
@@ -738,14 +738,14 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
 
                   {/* ===== 统计报表中心 (阶段三 任务 3.2.2) - 交叉透视表 + 柱状图 + CSV 导出 ===== */}
                   {adminTab === "report" && (
-                    <div className="animate-fade-in">
+                    <div className="">
                       <ReportCenter showToast={showToast} />
                     </div>
                   )}
 
                   {/* ===== 阶段五 等时圈: 预计算进度监控卡片 ===== */}
                   {adminTab === "isochrone" && (
-                    <div className="animate-fade-in space-y-4">
+                    <div className="space-y-4">
                       {/* 说明卡 */}
                       <div
                         className="rounded-lg p-4"

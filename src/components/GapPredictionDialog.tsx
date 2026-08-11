@@ -38,12 +38,12 @@ export default function GapPredictionDialog({ open, onClose }: GapPredictionDial
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 animate-fade-in"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
       style={{ background: "rgba(9,9,11,0.5)", backdropFilter: "blur(2px)" }}
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden animate-scale-in"
+        className="bg-white rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden"
         style={{ boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}
         onClick={(e) => e.stopPropagation()}
       >

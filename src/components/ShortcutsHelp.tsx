@@ -58,7 +58,7 @@ export default function ShortcutsHelp({ open, onClose }: ShortcutsHelpProps) {
       onClick={onClose}
     >
       <div
-        className="rounded-xl w-[560px] max-h-[80vh] overflow-hidden animate-scale-in"
+        className="rounded-xl w-[560px] max-h-[80vh] overflow-hidden"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xl)" }}
         onClick={(e) => e.stopPropagation()}
       >

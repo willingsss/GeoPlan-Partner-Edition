@@ -173,7 +173,7 @@ export default function CoverageResultPanel({
     />
     </div>
     {expanded && (
-    <div className="mt-1 space-y-1 animate-fade-in">
+    <div className="mt-1 space-y-1">
     <div className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>
     社区数: {c.communityCount} · 人口: {c.population.toLocaleString()}
     </div>

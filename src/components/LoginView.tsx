@@ -45,7 +45,7 @@ export default function LoginView({
         }}
       />
 
-      <div className="relative w-full max-w-[440px] animate-scale-in">
+      <div className="relative w-full max-w-[440px]">
         {/* Logo + 品牌标识 - 顶部对齐, 不居中 */}
         <div className="mb-8 flex items-center gap-3">
           <div
@@ -124,7 +124,7 @@ export default function LoginView({
 
             {loginError && (
               <div
-                className="text-[12px] rounded-md px-3 py-2 flex items-start gap-2 animate-fade-in"
+                className="text-[12px] rounded-md px-3 py-2 flex items-start gap-2"
                 style={{
                   background: "#FEF2F2",
                   border: "1px solid #FECACA",

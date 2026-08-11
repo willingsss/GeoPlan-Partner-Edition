@@ -48,7 +48,7 @@ export default function CoverageHistoryCompare({
 
   return (
     <div
-      className="rounded-lg p-2 animate-fade-in"
+      className="rounded-lg p-2"
       style={{
         background: "var(--color-surface)",
         border: "1px solid var(--color-muted)",

@@ -106,7 +106,7 @@ export default function ReportCenter({ showToast }: ReportCenterProps) {
   const brands = data?.brands || [];
 
   return (
-    <div className="space-y-4 animate-fade-in">
+    <div className="space-y-4">
       {/* ===== 顶部: 筛选器 + 导出按钮 ===== */}
       <div
         className="rounded-lg p-4 flex items-center gap-3 flex-wrap"

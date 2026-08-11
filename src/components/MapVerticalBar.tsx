@@ -121,7 +121,7 @@ export default function MapVerticalBar({
                   {/* 搜索结果下拉 - Linear 风: 极轻阴影 */}
                   {showSearchDropdown && searchResults.length > 0 && (
                     <div
-                      className="absolute top-full left-0 right-0 mt-1 bg-white rounded-md z-50 max-h-60 overflow-y-auto animate-fade-in"
+                      className="absolute top-full left-0 right-0 mt-1 bg-white rounded-md z-50 max-h-60 overflow-y-auto"
                       style={{
                         border: "1px solid var(--color-muted)",
                         boxShadow: "var(--shadow-lg)",
@@ -296,7 +296,7 @@ export default function MapVerticalBar({
                   {/* 反馈热力图筛选面板 (阶段三 任务 3.3.3) */}
                   {showFeedbackHeatmap && (
                     <div
-                      className="ml-5 mr-1 mt-0.5 p-2 rounded space-y-1.5 animate-fade-in"
+                      className="ml-5 mr-1 mt-0.5 p-2 rounded space-y-1.5"
                       style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
                     >
                       <div className="flex items-center gap-1">

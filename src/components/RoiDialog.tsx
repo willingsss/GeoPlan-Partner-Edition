@@ -66,9 +66,9 @@ export default function RoiDialog({ open, onClose, initParams }: RoiDialogProps)
   );
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4"
       style={{ background: "rgba(9,9,11,0.45)" }} onClick={onClose}>
-      <div className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl animate-scale-in bento-tile"
+      <div className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
         style={{
           background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
           border: "1px solid rgba(255,255,255,0.6)",

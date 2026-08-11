@@ -86,7 +86,7 @@ export default function CoverageCommunityList({
 
   return (
     <div
-      className="w-full flex flex-col rounded-lg animate-fade-in overflow-hidden"
+      className="w-full flex flex-col rounded-lg overflow-hidden"
       style={{
         background: "rgba(255,255,255,0.95)",
         backdropFilter: "blur(8px)",

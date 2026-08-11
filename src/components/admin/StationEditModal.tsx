@@ -30,11 +30,11 @@ export default function StationEditModal({ data, onClose, onSave }: {
   });
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 animate-fade-in"
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: "rgba(9,9,11,0.4)" }}
       onClick={onClose}>
       <div
-        className="rounded-xl w-full max-w-md overflow-hidden animate-scale-in"
+        className="rounded-xl w-full max-w-md overflow-hidden"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xl)" }}
         onClick={(e) => e.stopPropagation()}>
         {/* 头部 - Linear 风: 无渐变, 紧凑 */}

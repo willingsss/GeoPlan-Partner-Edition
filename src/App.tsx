@@ -3649,7 +3649,7 @@ export default function App() {
               {/* 阶段三 任务 3.4.2: 覆盖分析中显示地图半透明遮罩 + 中央文案 */}
               {activeTab === "coverage" && coverageLoading && (
                 <div
-                  className="absolute inset-0 z-5 flex items-center justify-center animate-fade-in"
+                  className="absolute inset-0 z-5 flex items-center justify-center"
                   style={{ background: "rgba(255,255,255,0.6)" }}
                 >
                   <div
@@ -3733,12 +3733,12 @@ export default function App() {
           {/* 社区详情弹窗 (屏幕中央模态, Bento 玻璃拟态) */}
           {communityDetailOpen && communityDetail && (
             <div
-              className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+              className="fixed inset-0 z-50 flex items-center justify-center p-4"
               style={{ background: "rgba(9,9,11,0.45)" }}
               onClick={() => { setCommunityDetailOpen(false); setCommunityDetail(null); }}
             >
               <div
-                className="w-[380px] overflow-hidden animate-scale-in bento-tile"
+                className="w-[380px] overflow-hidden bento-tile"
                 style={{
                   background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
                   border: "1px solid rgba(255,255,255,0.6)",
@@ -3877,10 +3877,10 @@ export default function App() {
 
           {/* AI 站点详情模态框 (Bento 玻璃拟态) */}
           {aiStationDetail && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
               style={{ background: "rgba(9,9,11,0.45)" }}
               onClick={closeAiStationDetail}>
-              <div className="w-[340px] overflow-hidden animate-scale-in bento-tile"
+              <div className="w-[340px] overflow-hidden bento-tile"
                 style={{
                   background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
                   border: "1px solid rgba(255,255,255,0.6)",
@@ -3930,7 +3930,7 @@ export default function App() {
 
           {/* 充电站详情模态框 (屏幕中央大框, Bento 玻璃拟态) */}
           {selectedStation && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
               style={{ background: "rgba(9,9,11,0.45)" }}
               onClick={() => {
                 setSelectedStation(null);
@@ -3938,7 +3938,7 @@ export default function App() {
         hideStationInfoPopup();
                 stationLayerRef.current?.changed();
               }}>
-              <div className="w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-scale-in bento-tile"
+              <div className="w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden bento-tile"
                 style={{
                   background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
                   border: "1px solid rgba(255,255,255,0.6)",
@@ -4329,7 +4329,7 @@ export default function App() {
             )}
             {routeInfo && (
               <div
-                className="rounded-lg text-[11px] overflow-hidden w-72 max-h-[70vh] flex flex-col animate-scale-in"
+                className="rounded-lg text-[11px] overflow-hidden w-72 max-h-[70vh] flex flex-col"
                 style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-lg)" }}
               >
                 {/* 导航头部 - Linear 风: 紧凑, 无渐变 */}
@@ -4592,7 +4592,7 @@ export default function App() {
       {/* ===== 全局 Toast 通知 (底部居中, 2.5 秒自动消失) ===== */}
       {toast && (
         <div
-          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2 rounded-md text-sm animate-fade-in pointer-events-none"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[9999] px-4 py-2 rounded-md text-sm pointer-events-none"
           style={{
             background: toast.type === "success"
               ? "rgba(0,160,120,0.95)"
@@ -4625,12 +4625,12 @@ export default function App() {
         const timeStr = s.create_time ? String(s.create_time).replace("T", " ").slice(0, 19) : "";
         return (
           <div
-            className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4"
             style={{ background: "rgba(9,9,11,0.45)" }}
             onClick={() => setSchemeDetailOpen(false)}
           >
             <div
-              className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl animate-scale-in bento-tile"
+              className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
               style={{
                 background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
                 border: "1px solid rgba(255,255,255,0.6)",
@@ -4750,12 +4750,12 @@ export default function App() {
         ];
         return (
           <div
-            className="fixed inset-0 z-[70] flex items-center justify-center p-4 animate-fade-in"
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4"
             style={{ background: "rgba(9,9,11,0.45)" }}
             onClick={() => setCompareDialogOpen(false)}
           >
             <div
-              className="w-[860px] max-h-[88vh] overflow-y-auto rounded-2xl animate-scale-in bento-tile"
+              className="w-[860px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
               style={{
                 background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
                 border: "1px solid rgba(255,255,255,0.6)",

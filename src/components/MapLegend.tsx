@@ -50,7 +50,7 @@ export default function MapLegend({
   if (collapsed && collapsible) {
     return (
       <div
-      className="absolute left-3 bottom-3 z-10 rounded-xl animate-fade-in flex flex-col items-center justify-start cursor-pointer bento-tile"
+      className="absolute left-3 bottom-3 z-10 rounded-xl flex flex-col items-center justify-start cursor-pointer bento-tile"
       style={{ ...containerStyle, width: 36, padding: "10px 0" }}
       onClick={() => setCollapsed(false)}
       title="点击展开图例"

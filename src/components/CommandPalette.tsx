@@ -116,7 +116,7 @@ export default function CommandPalette({ open, onClose, onCommand }: CommandPale
       onClick={onClose}
     >
       <div
-        className="w-[640px] max-h-[60vh] rounded-xl overflow-hidden animate-scale-in flex flex-col"
+        className="w-[640px] max-h-[60vh] rounded-xl overflow-hidden flex flex-col"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xl)" }}
         onClick={(e) => e.stopPropagation()}
       >
