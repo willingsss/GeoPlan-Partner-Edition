@@ -60,7 +60,7 @@ import * as turf from "@turf/turf";
 import {
   Map as MapIcon, Radar, Target, MessageSquare, Bot, Settings,
   Zap, RefreshCw, Save, Send, Building2, Layers, Database, BarChart3,
-  Sparkles, X, Gauge, LogOut, User as UserIcon, ShieldCheck,
+  Sparkles, X, LogOut, User as UserIcon, ShieldCheck,
   MapPin, Navigation, LocateFixed, Route as RouteIcon,
   ChevronLeft, ChevronRight, ChevronDown, Search, Loader2, Square, RotateCcw,
   Copy, Check, Trash2, Menu, GripVertical,
@@ -395,6 +395,8 @@ export default function App() {
     schemesLoaded, setSchemesLoaded,
   } = useSiteAnalysis();
   const [selectedStation, setSelectedStation] = useState<any>(null);
+  // 候选点"在此选址"联动: 记录从覆盖分析点进来的候选点, 选址面板只显示对应那一个
+  const [activeCandidate, setActiveCandidate] = useState<BlindSpotCluster | null>(null);
   const [aiStationDetail, setAiStationDetail] = useState<any>(null);
   const [mousePosition, setMousePosition] = useState<[number, number] | null>(null);
   const [stationCount, setStationCount] = useState(0);
@@ -736,7 +738,6 @@ export default function App() {
   const translateRef = useRef<Translate | null>(null);
 
   const coverageChartRef = useRef<HTMLDivElement>(null);
-  const siteChartRef = useRef<HTMLDivElement>(null);
   const radarChartRef = useRef<HTMLDivElement>(null);
   // 阶段三 任务 3.3: 覆盖率分级饼图 + 充电站效率柱图容器
   const coveragePieChartRef = useRef<HTMLDivElement>(null);
@@ -1507,9 +1508,9 @@ export default function App() {
     serviceAreaLayerRef.current?.setVisible(isCov);
     // 行政区边界图层: 仅 coverage Tab 可见
     districtBoundaryLayerRef.current?.setVisible(isCov);
-    blindSpotLayerRef.current?.setVisible(isCov);
-    // 候选点 (盲区聚类) 图层: 仅 coverage Tab 可见
-    clusterLayerRef.current?.setVisible(isCov);
+    // 盲区面/候选点: coverage Tab 与 site Tab 均可见 (覆盖分析→选址联动, 选址页只展示盲区结果)
+    blindSpotLayerRef.current?.setVisible(isCov || isSite);
+    clusterLayerRef.current?.setVisible(isCov || isSite);
     // 服务区重叠图层: 仅 coverage Tab 可见 (阶段二 任务 2.3.3)
     overlapLayerRef.current?.setVisible(isCov);
     // 选址决策图层: 仅 site Tab 可见
@@ -2111,6 +2112,8 @@ export default function App() {
   // =========================================================================
   const runCoverageAnalysis = async () => {
     setCoverageLoading(true);
+    // 新分析开始: 清空选址面板的候选点联动 (数据已变化)
+    setActiveCandidate(null);
     // 清空上一次分析的地图结果 (避免行政区切换后旧结果残留)
     serviceAreaSourceRef.current?.clear();
     blindSpotSourceRef.current?.clear();
@@ -3027,26 +3030,6 @@ export default function App() {
     return () => { cancelAnimationFrame(raf); ro.disconnect(); chart.dispose(); };
   }, [stationEfficiency, stationEffCollapsed, rightPanelTab]);
 
-  // ECharts: 选址评估实时指标
-  useEffect(() => {
-    if (!siteChartRef.current || !siteMetrics) return;
-    const chart = echarts.init(siteChartRef.current);
-    chart.setOption({
-      backgroundColor: "transparent",
-      series: [{
-        type: "gauge", radius: "90%",
-        progress: { show: true, width: 12 },
-        axisLine: { lineStyle: { width: 12, color: [[0.3, "#F56C6C"], [0.7, "#E6A23C"], [1, "#00C896"]] } },
-        detail: { valueAnimation: true, formatter: "{value}", color: "#1F2937", fontSize: 20 },
-        title: { color: "#6B7280", fontSize: 11 },
-        data: [
-          { value: siteMetrics.social_benefit, name: "社会效益评分" },
-        ],
-      }],
-    });
-    return () => chart.dispose();
-  }, [siteMetrics]);
-
   // ECharts: 方案雷达图对比
   useEffect(() => {
     if (!radarChartRef.current || compareSchemes.length < 2) return;
@@ -3439,16 +3422,19 @@ export default function App() {
           />
         )}
 
-          {/* ===== 主列: 水平分析栏 + 地图 ===== */}
-          <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+          {/* ===== 主列: 左列(水平分析栏 + 地图) + 右竖条栏(选址卡片) ===== */}
+          <div className="flex-1 flex min-w-0 overflow-hidden">
+            {/* 左列: 水平分析栏 + 地图 */}
+            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
             {/* ===== 水平分析栏 (Bento 指挥甲板: 玻璃拟态 + 动态高度) ===== */}
             {(activeTab === "site" || activeTab === "coverage") && (
               <div
                 className="shrink-0 flex gap-0 overflow-x-auto animate-panel-enter transition-all"
                 style={{
                   // 覆盖分析：窄条（44px 参数 + 84px 指标卡 + 可选历史对比），避免占据地图空间
+                  // 选址决策: 仅参数条 (SiteResultPanel 已移至右竖条栏)
                   height: activeTab === "site"
-                    ? (siteMetrics ? (schemes.length > 0 ? 270 : 200) : 80)
+                    ? 112
                     : (coverageSummary ? 198 : (coverageLoading ? 80 : 140)),
                   borderBottom: "1px solid rgba(255,255,255,0.08)",
                   background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)",
@@ -3458,9 +3444,9 @@ export default function App() {
                   zIndex: 10,
                 }}
               >
-                {/* 选址决策 (仅选址 Tab) */}
+                {/* 选址决策 (仅选址 Tab) - 参数条 */}
                 {activeTab === "site" && (
-                <div className="flex-1 min-w-[420px] px-3 py-2.5 overflow-y-auto">
+                <div className="flex-1 min-w-[420px] px-3 py-2.5">
                   <SiteControlBar
                     activeTab={activeTab}
                     siteRadius={siteRadius}
@@ -3484,24 +3470,6 @@ export default function App() {
                     onSaveScheme={saveScheme}
                     onRunRoi={runRoiEstimate}
                     onRunCompare={runCompareSchemes}
-                  />
-                  <SiteResultPanel
-                    siteMetrics={siteMetrics}
-                    siteInBlindSpot={siteInBlindSpot}
-                    lastCoverageSummary={lastCoverageSummary}
-                    schemes={schemes}
-                    compareSchemes={compareSchemes}
-                    blindSpotClusters={blindSpotClusters}
-                    onPlaceCandidate={(lng, lat) => {
-                      setActiveTab("site");
-                      placeVirtualStation(lng, lat);
-                    }}
-                    onToggleCompare={(id, checked) =>
-                      setCompareSchemes(prev =>
-                        checked ? (prev.length < 2 ? [...prev, id] : [prev[1], id]) : prev.filter(x => x !== id)
-                      )
-                    }
-                    onNotify={showToast}
                   />
                 </div>
                 )}
@@ -3639,6 +3607,7 @@ export default function App() {
                     </div>
                     <button
                       onClick={() => {
+                        setActiveCandidate(selectedCluster);
                         setActiveTab("site");
                         placeVirtualStation(selectedCluster.center[0], selectedCluster.center[1]);
                         setSelectedCluster(null);
@@ -5377,36 +5346,15 @@ export default function App() {
               }
             }}
             onSelectSiteAt={(lng, lat) => {
+              // 候选点一一对应: 按坐标匹配到具体候选点, 选址面板只显示它
+              const c = blindSpotClusters.find(b => Math.abs(b.center[0] - lng) < 1e-4 && Math.abs(b.center[1] - lat) < 1e-4);
+              if (c) setActiveCandidate(c);
               setActiveTab("site");
               placeVirtualStation(lng, lat);
             }}
           />
         )}
 
-
-          {/* 选址评估仪表盘 - Bento 玻璃面板 */}
-          {activeTab === "site" && siteMetrics && (
-            <div
-              className="absolute top-16 right-3 w-72 rounded-xl p-3.5 z-20 animate-panel-enter bento-tile"
-              style={{
-                background: "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(250,250,250,0.82) 100%)",
-                backdropFilter: "blur(20px) saturate(1.4)",
-                WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-                border: "1px solid rgba(255,255,255,0.25)",
-                boxShadow: "var(--shadow-elevated)",
-              }}
-            >
-              <h4 className="text-[11px] font-semibold mb-2 flex items-center gap-1.5" style={{ color: "var(--color-ink-2)" }}>
-                <Gauge className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} /> 选址评估
-              </h4>
-              <div ref={siteChartRef} className="w-full h-40" />
-              {virtualStation && (
-                <div className="mt-2 text-[10px] text-center font-mono" style={{ color: "var(--color-ink-5)" }}>
-                  {virtualStation.lng.toFixed(4)}, {virtualStation.lat.toFixed(4)}
-                </div>
-              )}
-            </div>
-          )}
 
           {/* 方案对比雷达图 - Bento 玻璃面板 */}
           {activeTab === "site" && compareSchemes.length >= 2 && (
@@ -5427,6 +5375,41 @@ export default function App() {
             </div>
           )}
         </div>
+            </div>
+            {/* ===== 右竖条栏: 选址卡片 (综合评分/盲区概况/推荐选址, 滚动查看) ===== */}
+            {activeTab === "site" && (
+              <div
+                className="w-[320px] shrink-0 border-l overflow-y-auto animate-panel-enter"
+                style={{
+                  borderColor: "rgba(255,255,255,0.08)",
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(250,250,250,0.88) 100%)",
+                  backdropFilter: "blur(16px) saturate(1.2)",
+                  WebkitBackdropFilter: "blur(16px) saturate(1.2)",
+                  boxShadow: "-4px 0 24px -8px rgba(0,0,0,0.06)",
+                  zIndex: 10,
+                }}
+              >
+                <SiteResultPanel
+                  siteMetrics={siteMetrics}
+                  siteInBlindSpot={siteInBlindSpot}
+                  lastCoverageSummary={lastCoverageSummary}
+                  schemes={schemes}
+                  compareSchemes={compareSchemes}
+                  blindSpotClusters={blindSpotClusters}
+                  activeCandidate={activeCandidate}
+                  onPlaceCandidate={(lng, lat) => {
+                    setActiveTab("site");
+                    placeVirtualStation(lng, lat);
+                  }}
+                  onToggleCompare={(id, checked) =>
+                    setCompareSchemes(prev =>
+                      checked ? (prev.length < 2 ? [...prev, id] : [prev[1], id]) : prev.filter(x => x !== id)
+                    )
+                  }
+                  onNotify={showToast}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

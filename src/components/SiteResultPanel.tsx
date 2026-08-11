@@ -12,6 +12,8 @@ interface SiteResultPanelProps {
   schemes: SavedScheme[];
   compareSchemes: number[];
   blindSpotClusters: { clusterId: number; center: [number, number]; communityCount: number; population: number }[];
+  // 覆盖分析点"在此选址"联动: 只展示该候选点 (一一对应), 为空则显示 Top3 推荐
+  activeCandidate: { clusterId: number; center: [number, number]; communityCount: number; population: number } | null;
   onToggleCompare: (id: number, checked: boolean) => void;
   onPlaceCandidate: (lng: number, lat: number) => void;
   onNotify: (msg: string, type?: "info" | "success" | "warning" | "error") => void;
@@ -33,10 +35,12 @@ function calcScore(m: SiteMetrics): { score: number; grade: string; gradeColor: 
 
 export default function SiteResultPanel(props: SiteResultPanelProps) {
   const { siteMetrics, siteInBlindSpot, lastCoverageSummary, schemes, compareSchemes,
-          blindSpotClusters, onToggleCompare, onPlaceCandidate, onNotify } = props;
+          blindSpotClusters, activeCandidate, onToggleCompare, onPlaceCandidate, onNotify } = props;
 
-  // Top3 推荐候选 (按盲区人口排序)
-  const topCandidates = [...blindSpotClusters].sort((a, b) => b.population - a.population).slice(0, 3);
+  // 候选点一一对应: 从覆盖分析点"在此选址"进来时只显示该候选点; 否则按盲区人口排序 Top3
+  const topCandidates = activeCandidate
+    ? [activeCandidate]
+    : [...blindSpotClusters].sort((a, b) => b.population - a.population).slice(0, 3);
 
   return (
     <>
@@ -46,7 +50,9 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
           style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}>
           <div className="flex items-center gap-1.5 mb-1.5">
             <Sparkles className="w-3 h-3 text-amber-500" />
-            <p className="text-[10px] text-zinc-600">推荐选址 Top{topCandidates.length}（按盲区人口）</p>
+            <p className="text-[10px] text-zinc-600">
+              {activeCandidate ? "当前选址点（来自覆盖分析）" : `推荐选址 Top${topCandidates.length}（按盲区人口）`}
+            </p>
             <span className="text-[9px] px-1 py-0 rounded ml-auto"
               style={{ background: "rgba(245,158,11,0.08)", color: "#D97706", border: "1px solid rgba(245,158,11,0.2)" }}>
               点击即评估
