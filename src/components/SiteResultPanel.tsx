@@ -2,7 +2,7 @@
 // 选址决策子系统 - 结果面板 (综合评分卡 + 指标卡 + 盲区联动 + Top3推荐 + 方案列表)
 // 拆分自 App.tsx; 纯展示组件, 状态+回调全部 props 传入
 import { useState } from "react";
-import { Target, Radar, Sparkles, Star, Trash2, AlertTriangle } from "lucide-react";
+import { Target, Radar, Sparkles, Star, Trash2, AlertTriangle, Pencil, MapPin, FileSpreadsheet } from "lucide-react";
 import { SchemeReportButton } from "./SchemeReportPrint";
 import type { SiteMetrics, SavedScheme } from "../hooks/useSiteAnalysis";
 
@@ -25,6 +25,10 @@ interface SiteResultPanelProps {
   onPlaceCandidate: (lng: number, lat: number) => void;
   onViewSchemeDetail: (id: number) => void;
   onDeleteScheme: (id: number) => void;
+  // 方案管理操作: 内联重命名 / 聚焦地图 / 批量导出 Excel
+  onRenameScheme: (id: number, newName: string) => Promise<boolean> | boolean;
+  onFocusScheme: (id: number) => void;
+  onExportSchemes: (ids?: number[]) => void;
   onNotify: (msg: string, type?: "info" | "success" | "warning" | "error") => void;
 }
 
@@ -46,7 +50,8 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
   const { siteMetrics, siteInBlindSpot, lastCoverageSummary, schemes, compareSchemes,
           blindSpotClusters, activeCandidate, coveredCommunities, onViewCommunity,
           nearbyStations, siteBrand,
-          onToggleCompare, onPlaceCandidate, onViewSchemeDetail, onDeleteScheme, onNotify } = props;
+          onToggleCompare, onPlaceCandidate, onViewSchemeDetail, onDeleteScheme, onNotify,
+          onRenameScheme, onFocusScheme, onExportSchemes } = props;
 
   // 候选点一一对应: 从覆盖分析点"在此选址"进来时只显示该候选点; 否则按盲区人口排序 Top3
   const topCandidates = activeCandidate
@@ -59,6 +64,19 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
   const filteredSchemes = districtFilter === "all"
     ? schemes
     : schemes.filter(s => s.district === districtFilter);
+
+  // 内联重命名编辑: editingId = 正在编辑的方案 id, editName = 输入框内容
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const startRename = (id: number, currentName: string) => {
+    setEditingId(id);
+    setEditName(currentName);
+  };
+  const commitRename = async (id: number) => {
+    const ok = await onRenameScheme(id, editName);
+    setEditingId(null);
+    if (ok) setEditName("");
+  };
 
   return (
     <>

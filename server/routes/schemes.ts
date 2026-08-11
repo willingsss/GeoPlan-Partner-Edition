@@ -107,4 +107,22 @@ app.delete("/api/v1/schemes/:id", requireAuth, requireRole("投资商", "管理�
     res.status(500).json({ success: false, message: e.message });
   }
 });
+
+// 重命名方案 (方案管理操作: 内联改名)
+app.patch("/api/v1/schemes/:id", requireAuth, requireRole("投资商", "管理员"), async (req, res) => {
+  const id = parseInt(req.params.id);
+  const name = String(req.body?.name || "").trim();
+  if (!name) {
+    res.status(400).json({ success: false, message: "方案名不能为空" });
+    return;
+  }
+  try {
+    await dbPool.query("UPDATE t_scheme SET name=? WHERE id=?", [name, id]);
+    const scheme = schemesDatabase.find(s => s.id === id);
+    if (scheme) scheme.name = name;
+    res.json({ success: true, data: scheme || { id, name }, message: "方案已重命名" });
+  } catch (e: any) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
 }
