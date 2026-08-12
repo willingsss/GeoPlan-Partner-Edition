@@ -3309,6 +3309,8 @@ export default function App() {
           onToolChange={handleToolChange}
           onClearMeasurements={handleClearMeasurements}
           compact={isOwner}
+          onLogout={handleLogout}
+          username={currentUser?.username}
         />
 
         {/* 内容区域 (垂直功能栏 + 水平分析栏 + 地图) - 主背景改 Zinc-50 */}

@@ -1,5 +1,5 @@
 import React from "react";
-import { Menu, ChevronRight, MapPin, Sun, Moon, Keyboard, Search, LocateFixed } from "lucide-react";
+import { Menu, ChevronRight, MapPin, Sun, Moon, Keyboard, Search, LocateFixed, LogOut } from "lucide-react";
 import type { SubsystemTab } from "../types";
 import MapToolbar, { type MapTool } from "./MapToolbar";
 import type { Map as OlMap } from "ol";
@@ -21,6 +21,9 @@ interface TopBarProps {
   onClearMeasurements: () => void;
   // 精简模式 (普通用户/车主): 隐藏菜单/面包屑/状态标签/地图工具栏
   compact?: boolean;
+  // 退出登录 (精简模式需要, 原退出按钮在侧边栏底部)
+  onLogout?: () => void;
+  username?: string;
 }
 
 /**
@@ -42,6 +45,8 @@ export default function TopBar({
   onToolChange,
   onClearMeasurements,
   compact = false,
+  onLogout,
+  username,
 }: TopBarProps) {
   return (
     <header
@@ -144,7 +149,8 @@ export default function TopBar({
         >
           {darkTheme ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
         </button>
-        {/* 快捷键帮助按钮 */}
+        {/* 快捷键帮助按钮 (精简模式隐藏) */}
+        {!compact && (
         <button
           onClick={onOpenShortcutsHelp}
           title="快捷键帮助 (Ctrl+/)"
@@ -155,7 +161,9 @@ export default function TopBar({
         >
           <Keyboard className="w-3.5 h-3.5" />
         </button>
-        {/* 命令面板按钮 */}
+        )}
+        {/* 命令面板按钮 (精简模式隐藏) */}
+        {!compact && (
         <button
           onClick={onOpenCommandPalette}
           title="命令面板 (Ctrl+K)"
@@ -166,6 +174,26 @@ export default function TopBar({
         >
           <Search className="w-3.5 h-3.5" />
         </button>
+        )}
+        {/* 用户信息 + 退出登录 (精简模式必需, 原退出在侧边栏底部) */}
+        {compact && (
+          <>
+            <span className="flex items-center gap-1.5 px-2 py-1 rounded-md" style={{ background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.04)" }}>
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: "var(--color-brand)" }} />
+              <span className="text-[11px] text-zinc-600 font-medium">{username}</span>
+            </span>
+            <button
+              onClick={onLogout}
+              title="退出登录"
+              className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-red-50 text-zinc-500 hover:text-red-500 transition-all"
+              style={{ border: "1px solid transparent" }}
+              onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(239,68,68,0.2)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = "transparent"; }}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+            </button>
+          </>
+        )}
       </div>
     </header>
   );
