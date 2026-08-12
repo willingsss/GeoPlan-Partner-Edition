@@ -90,14 +90,24 @@ app.post("/api/v1/schemes", requireAuth, requireRole("投资商", "管理员"), 
   }
 });
 
-// 获取所有方案
-app.get("/api/v1/schemes", (req, res) => {
-  res.json({ success: true, data: schemesDatabase });
+// 获取方案列表 (按用户隔离: 投资商只看自己的, 管理员看全部)
+app.get("/api/v1/schemes", requireAuth, (req, res) => {
+  const user = (req as any).currentUser;
+  const isAdmin = user?.role === "管理员";
+  const list = isAdmin ? schemesDatabase : schemesDatabase.filter((s: any) => s.creator === user?.username);
+  res.json({ success: true, data: list });
 });
 
-// 删除方案
+// 删除方案 (仅本人或管理员)
 app.delete("/api/v1/schemes/:id", requireAuth, requireRole("投资商", "管理员"), async (req, res) => {
   const id = parseInt(req.params.id);
+  const user = (req as any).currentUser;
+  const scheme = schemesDatabase.find(s => s.id === id);
+  if (!scheme) { res.status(404).json({ success: false, message: "方案不存在" }); return; }
+  if (user?.role !== "管理员" && scheme.creator !== user?.username) {
+    res.status(403).json({ success: false, message: "只能删除自己创建的方案" });
+    return;
+  }
   try {
     await dbPool.query("DELETE FROM t_scheme WHERE id=?", [id]);
     const idx = schemesDatabase.findIndex(s => s.id === id);
@@ -108,9 +118,16 @@ app.delete("/api/v1/schemes/:id", requireAuth, requireRole("投资商", "管理�
   }
 });
 
-// 重命名方案 (方案管理操作: 内联改名)
+// 重命名方案 (方案管理操作: 内联改名, 仅本人或管理员)
 app.patch("/api/v1/schemes/:id", requireAuth, requireRole("投资商", "管理员"), async (req, res) => {
   const id = parseInt(req.params.id);
+  const user = (req as any).currentUser;
+  const scheme = schemesDatabase.find(s => s.id === id);
+  if (!scheme) { res.status(404).json({ success: false, message: "方案不存在" }); return; }
+  if (user?.role !== "管理员" && scheme.creator !== user?.username) {
+    res.status(403).json({ success: false, message: "只能修改自己创建的方案" });
+    return;
+  }
   const name = String(req.body?.name || "").trim();
   if (!name) {
     res.status(400).json({ success: false, message: "方案名不能为空" });
@@ -118,8 +135,7 @@ app.patch("/api/v1/schemes/:id", requireAuth, requireRole("投资商", "管理�
   }
   try {
     await dbPool.query("UPDATE t_scheme SET name=? WHERE id=?", [name, id]);
-    const scheme = schemesDatabase.find(s => s.id === id);
-    if (scheme) scheme.name = name;
+    scheme.name = name;
     res.json({ success: true, data: scheme || { id, name }, message: "方案已重命名" });
   } catch (e: any) {
     res.status(500).json({ success: false, message: e.message });
