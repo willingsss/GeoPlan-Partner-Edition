@@ -1973,12 +1973,13 @@ export default function App() {
       });
   }, [currentUser]);
 
-  // 加载方案列表
+  // 加载方案列表 (登录后带 token; 按用户隔离: 投资商只看自己的)
   useEffect(() => {
-    fetch("/api/v1/schemes").then(r => r.json()).then(json => {
+    if (!authToken || !currentUser) return;
+    authFetch("/api/v1/schemes").then(r => r.json()).then(json => {
       if (json.success) setSchemes(json.data);
     });
-  }, []);
+  }, [authToken, currentUser]);
 
   // 加载区域统计
   useEffect(() => {
