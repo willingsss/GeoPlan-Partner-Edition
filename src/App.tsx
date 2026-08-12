@@ -255,6 +255,8 @@ export default function App() {
   // =========================================================================
   // 认证状态
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  // 普通用户(新能源车主): 极简地图模式 — 无侧边栏/无功能区/无大屏入口
+  const isOwner = currentUser?.role === "新能源车主";
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [loginForm, setLoginForm] = useState({ username: "", password: "" });
   const [loginError, setLoginError] = useState("");
@@ -3271,7 +3273,8 @@ export default function App() {
           />
         </div>
       )}
-      {/* ===== 侧边栏 (GIS 指挥甲板) ===== */}
+      {/* ===== 侧边栏 (GIS 指挥甲板) - 普通用户(车主)不显示, 极简地图模式 ===== */}
+      {!isOwner && (
       <Sidebar
         sidebarCollapsed={sidebarCollapsed}
         toggleSidebar={toggleSidebar}
@@ -3285,6 +3288,7 @@ export default function App() {
         currentUser={currentUser}
         onLogout={handleLogout}
       />
+      )}
 
       {/* ===== 右侧主区域 ===== */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -3304,6 +3308,7 @@ export default function App() {
           activeTool={activeTool}
           onToolChange={handleToolChange}
           onClearMeasurements={handleClearMeasurements}
+          compact={isOwner}
         />
 
         {/* 内容区域 (垂直功能栏 + 水平分析栏 + 地图) - 主背景改 Zinc-50 */}
@@ -3350,6 +3355,7 @@ export default function App() {
             feedbackHeatmapRating={feedbackHeatmapRating}
             setFeedbackHeatmapRating={setFeedbackHeatmapRating}
             regionStats={regionStats}
+            compact={isOwner}
           />
         )}
 
@@ -4707,7 +4713,8 @@ export default function App() {
       {/* ===== 选址决策大屏 ===== */}
       <SchemeDashboard open={showSchemeDashboard} onBack={() => setShowSchemeDashboard(false)} />
 
-      {/* ===== 命令面板 (阶段四 任务 4.2, Ctrl+K 唤起) ===== */}
+      {/* ===== 命令面板 (阶段四 任务 4.2, Ctrl+K 唤起) - 普通用户不显示 ===== */}
+      {!isOwner && (
       <CommandPalette
         open={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
@@ -4716,6 +4723,7 @@ export default function App() {
           setCommandPaletteOpen(false);
         }}
       />
+      )}
 
       {/* ===== 快捷键帮助弹窗 (阶段四 任务 4.1.2, Ctrl+/ 唤起) ===== */}
       <ShortcutsHelp

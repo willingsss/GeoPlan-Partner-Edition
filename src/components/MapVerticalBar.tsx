@@ -45,6 +45,8 @@ export interface MapVerticalBarProps {
   feedbackHeatmapRating: number;
   setFeedbackHeatmapRating: (v: number) => void;
   regionStats: any[];
+  // 精简模式(普通用户): 只显示搜索, 隐藏专业图层控制
+  compact?: boolean;
 }
 
 /**
@@ -60,6 +62,7 @@ export default function MapVerticalBar({
   showHeatmap, setShowHeatmap, heatmapData, showFeedbackHeatmap, setShowFeedbackHeatmap,
   feedbackHeatmapType, setFeedbackHeatmapType, feedbackHeatmapRating, setFeedbackHeatmapRating,
   regionStats,
+  compact = false,
 }: MapVerticalBarProps) {
   const dragLayerIdRef = React.useRef<string | null>(null);
   return (
@@ -146,6 +149,9 @@ export default function MapVerticalBar({
                   )}
                 </div>
 
+        {/* 精简模式(车主): 只保留搜索, 隐藏图层管理/服务区/品牌/叠加/区域统计 */}
+        {!compact && (
+        <>
                 {/* 图层管理 - 透明度滑块 + 拖拽排序 */}
                 <div className="space-y-1">
                   <div className="flex items-center justify-between mb-1.5">
@@ -349,6 +355,8 @@ export default function MapVerticalBar({
                     ))}
                   </div>
                 </div>
+        </>
+        )}
               </div>
         </aside>
   );

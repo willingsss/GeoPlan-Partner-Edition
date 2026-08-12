@@ -19,6 +19,8 @@ interface TopBarProps {
   activeTool: MapTool | null;
   onToolChange: (tool: MapTool | null) => void;
   onClearMeasurements: () => void;
+  // 精简模式 (普通用户/车主): 隐藏菜单/面包屑/状态标签/地图工具栏
+  compact?: boolean;
 }
 
 /**
@@ -39,6 +41,7 @@ export default function TopBar({
   activeTool,
   onToolChange,
   onClearMeasurements,
+  compact = false,
 }: TopBarProps) {
   return (
     <header
@@ -51,6 +54,14 @@ export default function TopBar({
       }}
     >
       <div className="flex items-center gap-3">
+        {/* 精简模式: 显示平台名, 隐藏菜单/面包屑/状态标签/工具栏 */}
+        {compact ? (
+          <div className="flex items-center gap-2 text-[12px]">
+            <span className="w-6 h-6 rounded-lg flex items-center justify-center text-white text-[11px] font-bold" style={{ background: "var(--color-brand)" }}>G</span>
+            <span className="text-zinc-900 font-semibold">GeoPlan 充电地图</span>
+          </div>
+        ) : (
+          <>
         <button
           onClick={() => {
             toggleSidebar();
@@ -96,6 +107,8 @@ export default function TopBar({
             onToolChange={onToolChange}
             onClearMeasurements={onClearMeasurements}
           />
+        )}
+          </>
         )}
       </div>
 
