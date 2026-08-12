@@ -357,6 +357,7 @@ export default function App() {
     selectedCoverageLevels, setSelectedCoverageLevels,
     showServiceArea, setShowServiceArea,
     showOverlapArea, setShowOverlapArea,
+    modeComparison, runModeComparison,
   } = useCoverageAnalysis();
 
   // 服务区图层显示切换 (图例点击): 关闭时服务区多边形不渲染
@@ -4311,6 +4312,13 @@ export default function App() {
               setActiveTab("site");
               placeVirtualStation(lng, lat);
             }}
+            modeComparison={modeComparison}
+            onRunModeComparison={() => runModeComparison({
+              chargeMode,
+              radius: coverageRadius || undefined,
+              district: coverageDistrict,
+            })}
+            currentServiceAreaMode={serviceAreaMode}
           />
         )}
 

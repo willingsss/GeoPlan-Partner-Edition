@@ -61,6 +61,42 @@ export function useCoverageAnalysis() {
   const [coveragePieCollapsed, setCoveragePieCollapsed] = useState(false);
   const [stationEffCollapsed, setStationEffCollapsed] = useState(false);
 
+  // ===== 等时圈模式对比: buffer/isochrone/hybrid 三种服务区模式覆盖率对比 =====
+  const [modeComparison, setModeComparison] = useState<{
+    loading: boolean;
+    results: { mode: string; label: string; coverageRate: number; populationCoverageRate: number; blindCount: number }[] | null;
+  }>({ loading: false, results: null });
+
+  const runModeComparison = async (params: { chargeMode: string; radius?: number; district: string }) => {
+    setModeComparison({ loading: true, results: null });
+    try {
+      const modes = [
+        { mode: "buffer", label: "缓冲区" },
+        { mode: "isochrone", label: "等时圈" },
+        { mode: "hybrid", label: "混合" },
+      ];
+      const results = await Promise.all(modes.map(async m => {
+        const res = await fetch("/api/v1/analysis/coverage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...params, serviceAreaMode: m.mode }),
+        });
+        const j = await res.json();
+        const s = j.success ? j.data?.summary : null;
+        return {
+          mode: m.mode,
+          label: m.label,
+          coverageRate: s?.coverageRate ?? 0,
+          populationCoverageRate: s?.populationCoverageRate ?? 0,
+          blindCount: s?.blindSpotCommunities ?? 0,
+        };
+      }));
+      setModeComparison({ loading: false, results });
+    } catch {
+      setModeComparison({ loading: false, results: null });
+    }
+  };
+
   return {
     coverageRadius, setCoverageRadius,
     coverageDistrict, setCoverageDistrict,
@@ -90,5 +126,6 @@ export function useCoverageAnalysis() {
     coverageChartCollapsed, setCoverageChartCollapsed,
     coveragePieCollapsed, setCoveragePieCollapsed,
     stationEffCollapsed, setStationEffCollapsed,
+    modeComparison, runModeComparison,
   };
 }

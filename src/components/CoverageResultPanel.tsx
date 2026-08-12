@@ -21,6 +21,10 @@ export interface CoverageResultPanelProps {
   stationEffChartRef: React.MutableRefObject<any>;
   onLocateCommunity: (comm: any) => void;
   onSelectSiteAt: (lng: number, lat: number) => void;
+  // 等时圈模式对比 (buffer/isochrone/hybrid)
+  modeComparison: { loading: boolean; results: { mode: string; label: string; coverageRate: number; populationCoverageRate: number; blindCount: number }[] | null };
+  onRunModeComparison: () => void;
+  currentServiceAreaMode: string;
 }
 
 /**
@@ -34,6 +38,7 @@ export default function CoverageResultPanel({
   rightPanelTab, setRightPanelTab,
   coverageChartRef, coveragePieChartRef, stationEffChartRef,
   onLocateCommunity, onSelectSiteAt,
+  modeComparison, onRunModeComparison, currentServiceAreaMode,
 }: CoverageResultPanelProps) {
   return (
     <div
@@ -84,6 +89,45 @@ export default function CoverageResultPanel({
     {/* 图表 Tab */}
     {rightPanelTab === "charts" && (
     <div key="charts-tab" className="animate-slide-in-right flex flex-col gap-2 h-full">
+    {/* 等时圈模式对比: buffer/isochrone/hybrid */}
+    <div className="bento-tile rounded-xl p-2 shrink-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
+    <div className="flex items-center gap-1.5 mb-1.5">
+    <Target className="w-3.5 h-3.5" style={{ color: "var(--color-brand)" }} />
+    <span className="text-[11px] font-semibold flex-1">服务区模式对比</span>
+    <button
+    onClick={onRunModeComparison}
+    disabled={modeComparison.loading}
+    className="text-[9px] px-1.5 py-0.5 rounded font-medium transition-colors disabled:opacity-50"
+    style={{ background: "var(--color-brand-subtle)", color: "var(--color-brand-text)" }}
+    >
+    {modeComparison.loading ? "对比中…" : "对比"}
+    </button>
+    </div>
+    {modeComparison.results ? (
+    <>
+    <div className="grid grid-cols-3 gap-1 mb-1">
+    {modeComparison.results.map(r => (
+    <div key={r.mode} className="rounded p-1 text-center transition-colors"
+    style={{
+    background: r.mode === currentServiceAreaMode ? "var(--color-brand-subtle)" : "var(--color-subtle)",
+    border: r.mode === currentServiceAreaMode ? "1px solid var(--color-brand-border)" : "1px solid transparent",
+    }}>
+    <p className="text-[9px] font-medium" style={{ color: "var(--color-ink-4)" }}>{r.label}</p>
+    <p className="text-[13px] font-bold font-num" style={{ color: r.mode === currentServiceAreaMode ? "var(--color-brand-text)" : "var(--color-ink-1)" }}>
+    {r.coverageRate.toFixed(1)}%
+    </p>
+    <p className="text-[8px] font-num" style={{ color: "var(--color-ink-5)" }}>盲区 {r.blindCount}</p>
+    </div>
+    ))}
+    </div>
+    <p className="text-[8px]" style={{ color: "var(--color-ink-5)" }}>
+    覆盖率: 缓冲区 {modeComparison.results[0]?.coverageRate.toFixed(1)}% / 等时圈 {modeComparison.results[1]?.coverageRate.toFixed(1)}% / 混合 {modeComparison.results[2]?.coverageRate.toFixed(1)}%
+    </p>
+    </>
+    ) : (
+    <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>点击「对比」查看 缓冲区 / 路网等时圈 / 混合 三种服务区模式的覆盖率差异</p>
+    )}
+    </div>
     {/* 堆叠柱图: 各行政区覆盖率 */}
     <div className="bento-tile rounded-xl p-2 flex-1 flex flex-col min-h-0" style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)", border: "1px solid rgba(255,255,255,0.3)", boxShadow: "var(--shadow-float)" }}>
     <div className="w-full flex items-center gap-1.5 mb-1 shrink-0" style={{ color: "var(--color-ink-2)" }}>
