@@ -373,6 +373,16 @@ app.get("/api/v1/stats/blindspot-dashboard", async (req, res) => {
 // =========================================================================
 // 选址决策大屏 (决策大屏平级)
 // =========================================================================
+// 综合评分: 与前端 calcSchemeScore 一致 (人口30% + 社区15% + 竞争20% + 效益20% + 盲区15%)
+function calcSchemeScore(s: any): number {
+  const pop = Math.min(Number(s.covered_population || 0) / 20000, 1) * 30;
+  const comm = Math.min(Number(s.covered_communities || 0) / 10, 1) * 15;
+  const comp = Math.min(Number(s.competition_score ?? 0) / 100, 1) * 20;
+  const benefit = Math.min(Number(s.social_benefit ?? 0) / 100, 1) * 20;
+  const blind = Math.min(Number(s.blind_spot_reduction ?? 0) / 100, 1) * 15;
+  return Math.round(pop + comm + comp + benefit + blind);
+}
+
 app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
   try {
     const schemes = (schemesDatabase || []).filter((s: any) => s.id);
@@ -380,9 +390,9 @@ app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
     // KPI
     const totalSchemes = schemes.length;
     const avgScore = totalSchemes > 0
-      ? Math.round(schemes.reduce((sum, s: any) => sum + (s.scheme_score || 0), 0) / totalSchemes)
+      ? Math.round(schemes.reduce((sum, s: any) => sum + calcSchemeScore(s), 0) / totalSchemes)
       : 0;
-    const maxScore = totalSchemes > 0 ? Math.max(...schemes.map((s: any) => s.scheme_score || 0)) : 0;
+    const maxScore = totalSchemes > 0 ? Math.max(...schemes.map((s: any) => calcSchemeScore(s))) : 0;
     const totalCoveredPop = schemes.reduce((sum, s: any) => sum + (s.covered_population || 0), 0);
 
     // 方案排行 (按综合评分降序)
@@ -391,7 +401,7 @@ app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
         id: s.id,
         name: s.name,
         brand: s.brand,
-        score: s.scheme_score || 0,
+        score: calcSchemeScore(s),
         coveredPopulation: s.covered_population || 0,
         coveredCommunities: s.covered_communities || 0,
         blindReduction: s.blind_spot_reduction || 0,
@@ -418,7 +428,7 @@ app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
       { label: "90以上", min: 90, max: 100, count: 0 },
     ];
     schemes.forEach((s: any) => {
-      const sc = s.scheme_score || 0;
+      const sc = calcSchemeScore(s);
       const bin = scoreBins.find(b => sc >= b.min && sc <= b.max);
       if (bin) bin.count++;
     });
@@ -431,7 +441,7 @@ app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
         geometry: { type: "Point", coordinates: [s.lng, s.lat] },
         properties: {
           id: s.id, name: s.name, brand: s.brand,
-          score: s.scheme_score || 0,
+          score: calcSchemeScore(s),
           coveredPopulation: s.covered_population || 0,
         },
       })),
