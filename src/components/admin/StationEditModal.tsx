@@ -28,6 +28,25 @@ export default function StationEditModal({ data, onClose, onSave }: {
     password: data.password && data.password !== "******" ? data.password : "",
     role: data.role || "新能源车主",
   });
+  // 表单校验: 必填项 + 数值合法性
+  const [formError, setFormError] = useState("");
+  const validate = (): boolean => {
+    if (isUser) {
+      if (!form.username?.trim()) { setFormError("请输入用户名"); return false; }
+      if (!isEdit && !form.password) { setFormError("请输入密码"); return false; }
+    } else {
+      if (!form.name?.trim()) { setFormError("请输入站点名称"); return false; }
+      const lng = Number(form.lng), lat = Number(form.lat);
+      if (form.lng === "" || form.lat === "" || isNaN(lng) || isNaN(lat)) { setFormError("请输入有效的经纬度（数字）"); return false; }
+      if (lng < 73 || lng > 135 || lat < 18 || lat > 54) { setFormError("经纬度超出中国范围（经度73-135，纬度18-54）"); return false; }
+    }
+    setFormError("");
+    return true;
+  };
+  const handleSave = () => {
+    if (!validate()) return;
+    onSave(form);
+  };
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
@@ -166,6 +185,12 @@ export default function StationEditModal({ data, onClose, onSave }: {
               </div>
             </>
           )}
+          {/* 校验错误提示 */}
+          {formError && (
+            <div className="px-5 pb-0 -mt-1">
+              <p className="text-[11px] font-medium" style={{ color: "#EF4444" }}>⚠ {formError}</p>
+            </div>
+          )}
         </div>
         {/* 底部操作 - Linear 风: 单色, 无渐变 */}
         <div
@@ -182,7 +207,7 @@ export default function StationEditModal({ data, onClose, onSave }: {
             取消
           </button>
           <button
-            onClick={() => onSave(form)}
+            onClick={handleSave}
             className="btn-brand text-xs px-4 py-2 rounded-md font-medium"
           >
             保存

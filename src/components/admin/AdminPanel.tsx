@@ -1,6 +1,8 @@
 // AdminPanel.tsx
 // 系统管理子系统 - 容器组件 (Tab 导航 + 数据概览/站点/用户/反馈/方案/日志/等时圈)
 // 拆分自 App.tsx; 状态封装在 useAdminPanel hook, 展示组件纯 props 化
+import { useState, useEffect, useRef } from "react";
+import * as echarts from "echarts";
 import {
   Settings, RefreshCw, Zap, User as UserIcon, MessageSquare, Target, Database,
   FileText, Activity, CheckCircle2, Clock, AlertCircle, RotateCcw, Plus, Edit, Search, ShieldCheck, Trash2, BarChart3,
@@ -9,6 +11,7 @@ import { BRAND_CONFIG, BRANDS, ROLE_CONFIG, UserRole } from "../../types";
 import useAdminPanel from "../../hooks/useAdminPanel";
 import StationEditModal from "./StationEditModal";
 import ReportCenter from "../ReportCenter";
+import ConfirmDialog from "../ConfirmDialog";
 
 interface AdminPanelProps {
   authFetch: (url: string, init?: any) => Promise<Response>;
@@ -31,6 +34,83 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
   } = useAdminPanel({ authFetch, showToast, asArray, normalizeStations, activeTab });
 
   const safeText = (value: any) => String(value ?? "");
+  // 站点列表分页
+  const [stationPage, setStationPage] = useState(1);
+  const STATION_PAGE_SIZE = 15;
+  // 用户角色筛选
+  const [userRoleFilter, setUserRoleFilter] = useState("all");
+  // 用户状态快速切换 (正常<->禁用)
+  const toggleUserStatus = async (u: any) => {
+    const next = u.status === "正常" ? "禁用" : "正常";
+    try {
+      const r = await authFetch(`/api/v1/users/${u.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: next }),
+      });
+      const j = await r.json();
+      if (j.success) { loadAdminData(); showToast(`用户「${u.username}」已${next === "正常" ? "启用" : "禁用"}`, "success"); }
+      else showToast(j.message, "error");
+    } catch (e: any) { showToast("操作失败: " + e.message, "error"); }
+  };
+  // ===== 概览页 ECharts: 品牌饼图 + 行政区柱状图 =====
+  const brandChartRef = useRef<HTMLDivElement>(null);
+  const districtChartRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (adminTab !== "overview") return;
+    let brandChart: echarts.ECharts | null = null;
+    let districtChart: echarts.ECharts | null = null;
+    const renderCharts = () => {
+      if (!brandChartRef.current || !districtChartRef.current) return;
+      // 品牌分布 (饼图)
+      const brandCount = adminStations.reduce((acc: any, s: any) => { acc[s.brand] = (acc[s.brand] || 0) + 1; return acc; }, {});
+      const brandData = Object.entries(brandCount)
+        .map(([name, value]) => ({ name, value }))
+        .sort((a: any, b: any) => b.value - a.value);
+      if (brandChart) brandChart.dispose();
+      brandChart = echarts.init(brandChartRef.current);
+      brandChart.setOption({
+        tooltip: { trigger: "item", formatter: "{b}: {c} 站 ({d}%)" },
+        legend: { bottom: 0, textStyle: { fontSize: 10, color: "#71717a" }, itemWidth: 10, itemHeight: 10 },
+        series: [{
+          type: "pie", radius: ["38%", "62%"], center: ["50%", "42%"],
+          avoidLabelOverlap: true,
+          itemStyle: { borderColor: "#fff", borderWidth: 1 },
+          label: { fontSize: 10, formatter: "{b}\n{c}站" },
+          data: brandData.map(d => ({ ...d, itemStyle: { color: BRAND_CONFIG[d.name]?.color || "#a1a1aa" } })),
+        }],
+      });
+      // 行政区分布 (柱状图)
+      const districtCount = adminStations.reduce((acc: any, s: any) => { acc[s.district] = (acc[s.district] || 0) + 1; return acc; }, {});
+      const districtData = Object.entries(districtCount)
+        .sort((a: any, b: any) => b[1] - a[1]);
+      if (districtChart) districtChart.dispose();
+      districtChart = echarts.init(districtChartRef.current);
+      districtChart.setOption({
+        tooltip: { trigger: "axis", formatter: "{b}: {c} 站" },
+        grid: { left: 40, right: 12, top: 12, bottom: 24 },
+        xAxis: { type: "category", data: districtData.map(d => d[0]), axisLabel: { fontSize: 10, color: "#71717a" } },
+        yAxis: { type: "value", minInterval: 1, axisLabel: { fontSize: 10, color: "#71717a" } },
+        series: [{
+          type: "bar", data: districtData.map(d => d[1]),
+          barWidth: "45%",
+          itemStyle: { color: "#38BDF8", borderRadius: [4, 4, 0, 0] },
+        }],
+      });
+    };
+    renderCharts();
+    const onResize = () => { brandChart?.resize(); districtChart?.resize(); };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      brandChart?.dispose();
+      districtChart?.dispose();
+    };
+  }, [adminTab, adminStations]);
+  // 统一确认弹窗状态 (替代原生 confirm)
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; danger?: boolean; onConfirm: () => void } | null>(null);
+  const askConfirm = (title: string, message: string, onConfirm: () => void, danger: boolean = true) =>
+    setConfirmState({ title, message, onConfirm, danger });
 
   return (
     <>
@@ -150,59 +230,21 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                         })}
                       </div>
 
-                      {/* 充电站品牌分布 + 行政区分布 - 卡片网格 */}
+                      {/* 充电站品牌分布 (ECharts 饼图) + 行政区分布 (ECharts 柱状图) */}
                       <div className="grid grid-cols-2 gap-3">
                         <div className="rounded-lg p-4" style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}>
-                          <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center justify-between mb-1">
                             <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>充电站品牌分布</h4>
                             <span className="text-[10px] font-mono" style={{ color: "var(--color-ink-5)" }}>{adminStations.length} 总数</span>
                           </div>
-                          <div className="space-y-2">
-                            {Object.entries(
-                              adminStations.reduce((acc: any, s: any) => {
-                                acc[s.brand] = (acc[s.brand] || 0) + 1;
-                                return acc;
-                              }, {})
-                            ).sort((a: any, b: any) => b[1] - a[1]).map(([brand, count]: any) => {
-                              const pct = adminStations.length ? (count / adminStations.length) * 100 : 0;
-                              return (
-                                <div key={brand} className="flex items-center gap-2.5">
-                                  <span className="text-[11px] w-20 truncate" style={{ color: "var(--color-ink-3)" }}>{brand}</span>
-                                  <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--color-subtle)" }}>
-                                    <div className="h-full rounded-full transition-all"
-                                      style={{ width: `${pct}%`, background: BRAND_CONFIG[brand]?.color || "var(--color-ink-5)" }} />
-                                  </div>
-                                  <span className="text-[11px] font-num font-semibold w-6 text-right" style={{ color: "var(--color-ink-2)" }}>{count}</span>
-                                </div>
-                              );
-                            })}
-                          </div>
+                          <div ref={brandChartRef} className="w-full h-52" />
                         </div>
                         <div className="rounded-lg p-4" style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}>
-                          <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center justify-between mb-1">
                             <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>行政区充电站分布</h4>
                             <span className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>按数量排序</span>
                           </div>
-                          <div className="space-y-2">
-                            {Object.entries(
-                              adminStations.reduce((acc: any, s: any) => {
-                                acc[s.district] = (acc[s.district] || 0) + 1;
-                                return acc;
-                              }, {})
-                            ).sort((a: any, b: any) => b[1] - a[1]).map(([district, count]: any) => {
-                              const pct = adminStations.length ? (count / adminStations.length) * 100 : 0;
-                              return (
-                                <div key={district} className="flex items-center gap-2.5">
-                                  <span className="text-[11px] w-16 truncate" style={{ color: "var(--color-ink-3)" }}>{district}</span>
-                                  <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "var(--color-subtle)" }}>
-                                    <div className="h-full rounded-full transition-all"
-                                      style={{ width: `${pct}%`, background: "var(--color-accent)" }} />
-                                  </div>
-                                  <span className="text-[11px] font-num font-semibold w-6 text-right" style={{ color: "var(--color-ink-2)" }}>{count}</span>
-                                </div>
-                              );
-                            })}
-                          </div>
+                          <div ref={districtChartRef} className="w-full h-52" />
                         </div>
                       </div>
 
@@ -281,109 +323,138 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                         </div>
                       </div>
 
-                      {/* 卡片网格 */}
-                      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
-                        {adminStations.filter((s: any) => {
+                      {/* 列表视图 + 分页 */}
+                      {(() => {
+                        const filtered = adminStations.filter((s: any) => {
                           if (!adminSearch) return true;
                           const q = adminSearch.toLowerCase();
                           return safeText(s.name).toLowerCase().includes(q) || safeText(s.brand).toLowerCase().includes(q) || safeText(s.district).includes(adminSearch);
-                        }).map((s: any) => {
-                          const isActive = s.status === "运营中";
-                          return (
-                            <div
-                              key={s.id}
-                              className="rounded-lg p-3 transition-shadow hover:shadow-md group"
-                              style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}
-                            >
-                              {/* 顶部: 名称 + 状态 */}
-                              <div className="flex items-start justify-between gap-2 mb-2">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-1.5 mb-0.5">
-                                    <span className="text-[10px] font-mono shrink-0" style={{ color: "var(--color-ink-5)" }}>#{s.id}</span>
-                                    {isActive && <span className="w-1.5 h-1.5 rounded-full animate-status-pulse" style={{ background: "var(--color-success)" }} />}
-                                  </div>
-                                  <h5 className="text-[13px] font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{s.name}</h5>
+                        });
+                        const totalPages = Math.max(1, Math.ceil(filtered.length / STATION_PAGE_SIZE));
+                        const curPage = Math.min(stationPage, totalPages);
+                        const paged = filtered.slice((curPage - 1) * STATION_PAGE_SIZE, curPage * STATION_PAGE_SIZE);
+                        return (
+                          <>
+                            <div className="rounded-lg overflow-hidden" style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-xs)" }}>
+                              <table className="w-full text-[12px]" style={{ borderCollapse: "collapse" }}>
+                                <thead>
+                                  <tr style={{ background: "var(--color-subtle)", borderBottom: "1px solid var(--color-muted)" }}>
+                                    <th className="px-3 py-2 text-left font-medium" style={{ color: "var(--color-ink-4)" }}>站点名称</th>
+                                    <th className="px-3 py-2 text-left font-medium" style={{ color: "var(--color-ink-4)" }}>品牌</th>
+                                    <th className="px-3 py-2 text-left font-medium" style={{ color: "var(--color-ink-4)" }}>行政区</th>
+                                    <th className="px-3 py-2 text-left font-medium" style={{ color: "var(--color-ink-4)" }}>坐标 (经, 纬)</th>
+                                    <th className="px-3 py-2 text-center font-medium" style={{ color: "var(--color-ink-4)" }}>快充/慢充</th>
+                                    <th className="px-3 py-2 text-center font-medium" style={{ color: "var(--color-ink-4)" }}>状态</th>
+                                    <th className="px-3 py-2 text-right font-medium" style={{ color: "var(--color-ink-4)" }}>操作</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {paged.map((s: any) => (
+                                    <tr key={s.id} className="transition-colors hover:bg-white"
+                                      style={{ borderBottom: "1px solid var(--color-subtle)" }}>
+                                      <td className="px-3 py-2">
+                                        <span className="flex items-center gap-1.5 font-medium" style={{ color: "var(--color-ink-1)" }}>
+                                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: BRAND_CONFIG[s.brand]?.color || "#3b82f6" }} />
+                                          {s.name}
+                                        </span>
+                                      </td>
+                                      <td className="px-3 py-2" style={{ color: "var(--color-ink-3)" }}>{s.brand}</td>
+                                      <td className="px-3 py-2" style={{ color: "var(--color-ink-3)" }}>{s.district}</td>
+                                      <td className="px-3 py-2 font-num text-[11px]" style={{ color: "var(--color-ink-5)" }}>
+                                        {Number(s.lng).toFixed(4)}, {Number(s.lat).toFixed(4)}
+                                      </td>
+                                      <td className="px-3 py-2 text-center font-num" style={{ color: "var(--color-ink-3)" }}>
+                                        {s.fastChargers ?? s.fast_chargers ?? 0}/{s.slowChargers ?? s.slow_chargers ?? 0}
+                                      </td>
+                                      <td className="px-3 py-2 text-center">
+                                        <span className="px-1.5 py-0 rounded text-[10px] font-medium"
+                                          style={{
+                                            background: s.status === "运营中" ? "rgba(16,185,129,0.1)" : "rgba(239,68,68,0.08)",
+                                            color: s.status === "运营中" ? "#059669" : "#EF4444",
+                                          }}>
+                                          {s.status || "未知"}
+                                        </span>
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        <div className="flex justify-end gap-1.5">
+                                          <button
+                                            onClick={() => setAdminEditing(s)}
+                                            className="px-2 py-0.5 rounded text-[10px] font-medium transition-colors"
+                                            style={{ background: "var(--color-subtle)", color: "var(--color-ink-3)" }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-brand-subtle)"; e.currentTarget.style.color = "var(--color-brand-text)"; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-3)"; }}
+                                          >
+                                            编辑
+                                          </button>
+                                          <button
+                                            onClick={() => askConfirm("删除充电站", <>确定删除充电站「<b>{s.name}</b>」（{s.brand}）？该操作不可恢复。</>, async () => {
+                                              const r = await authFetch(`/api/v1/stations/${s.id}`, { method: "DELETE" });
+                                              const j = await r.json();
+                                              if (j.success) { loadAdminData(); showToast("已删除", "success"); }
+                                              else showToast(j.message, "error");
+                                            })}
+                                            className="px-2 py-0.5 rounded text-[10px] font-medium transition-colors"
+                                            style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)" }}
+                                            onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.12)"; }}
+                                            onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.06)"; }}
+                                          >
+                                            删除
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              {/* 分页 */}
+                              <div className="flex items-center justify-between px-3 py-2"
+                                style={{ borderTop: "1px solid var(--color-muted)", background: "var(--color-subtle)" }}>
+                                <span className="text-[11px]" style={{ color: "var(--color-ink-5)" }}>
+                                  共 {filtered.length} 站 · 第 {curPage}/{totalPages} 页 · 每页 {STATION_PAGE_SIZE} 条
+                                </span>
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={() => setStationPage(Math.max(1, curPage - 1))}
+                                    disabled={curPage <= 1}
+                                    className="px-2 py-0.5 rounded text-[11px] font-medium disabled:opacity-40"
+                                    style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", color: "var(--color-ink-3)" }}
+                                  >
+                                    ‹ 上一页
+                                  </button>
+                                  {Array.from({ length: totalPages }, (_, i) => i + 1).slice(Math.max(0, curPage - 3), curPage + 2).map(p => (
+                                    <button
+                                      key={p}
+                                      onClick={() => setStationPage(p)}
+                                      className="w-6 h-6 rounded text-[11px] font-num font-medium transition-colors"
+                                      style={{
+                                        background: p === curPage ? "var(--color-brand)" : "var(--color-surface)",
+                                        color: p === curPage ? "#fff" : "var(--color-ink-3)",
+                                        border: p === curPage ? "none" : "1px solid var(--color-muted)",
+                                      }}
+                                    >
+                                      {p}
+                                    </button>
+                                  ))}
+                                  <button
+                                    onClick={() => setStationPage(Math.min(totalPages, curPage + 1))}
+                                    disabled={curPage >= totalPages}
+                                    className="px-2 py-0.5 rounded text-[11px] font-medium disabled:opacity-40"
+                                    style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", color: "var(--color-ink-3)" }}
+                                  >
+                                    下一页 ›
+                                  </button>
                                 </div>
-                                <span
-                                  className="text-[10px] px-1.5 py-0 rounded font-medium shrink-0 font-mono"
-                                  style={{
-                                    background: isActive ? "var(--color-brand-subtle)" : "rgba(245,158,11,0.08)",
-                                    color: isActive ? "var(--color-brand-text)" : "var(--color-warning)",
-                                    border: "1px solid " + (isActive ? "var(--color-brand-border)" : "rgba(245,158,11,0.25)"),
-                                  }}
-                                >
-                                  {s.status}
-                                </span>
-                              </div>
-                              {/* 中部: 品牌 + 行政区 */}
-                              <div className="flex items-center gap-1.5 mb-2.5 flex-wrap">
-                                <span
-                                  className="text-[10px] px-1.5 py-0 rounded font-medium"
-                                  style={{ background: (BRAND_CONFIG[s.brand]?.color || "#909399") + "15", color: BRAND_CONFIG[s.brand]?.color || "#909399" }}
-                                >
-                                  {s.brand}
-                                </span>
-                                <span className="text-[10px]" style={{ color: "var(--color-ink-4)" }}>· {s.district}</span>
-                              </div>
-                              {/* 底部: 充电桩数 + 坐标 */}
-                              <div className="flex items-center justify-between pt-2" style={{ borderTop: "1px solid var(--color-subtle)" }}>
-                                <div className="flex items-center gap-3 text-[11px]">
-                                  <span className="flex items-center gap-1">
-                                    <Zap className="w-3 h-3" style={{ color: "var(--color-brand)" }} />
-                                    <span className="font-num font-semibold" style={{ color: "var(--color-ink-2)" }}>{s.fastChargers}</span>
-                                    <span style={{ color: "var(--color-ink-5)" }}>快</span>
-                                  </span>
-                                  <span className="flex items-center gap-1">
-                                    <span className="w-3 h-3 rounded-full inline-block" style={{ border: "1.5px solid var(--color-accent)" }} />
-                                    <span className="font-num font-semibold" style={{ color: "var(--color-ink-2)" }}>{s.slowChargers}</span>
-                                    <span style={{ color: "var(--color-ink-5)" }}>慢</span>
-                                  </span>
-                                </div>
-                                <span className="text-[9px] font-num" style={{ color: "var(--color-ink-5)" }}>
-                                  {Number(s.lng).toFixed(4)}, {Number(s.lat).toFixed(4)}
-                                </span>
-                              </div>
-                              {/* 操作按钮 - hover 显示 */}
-                              <div className="flex gap-1 mt-2 pt-2 opacity-0 group-hover:opacity-100 transition-opacity" style={{ borderTop: "1px solid var(--color-subtle)" }}>
-                                <button
-                                  onClick={() => setAdminEditing(s)}
-                                  className="flex-1 text-[11px] py-1 rounded font-medium transition-colors flex items-center justify-center gap-1"
-                                  style={{ background: "var(--color-subtle)", color: "var(--color-ink-3)" }}
-                                  onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-brand-subtle)"; e.currentTarget.style.color = "var(--color-brand-text)"; }}
-                                  onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-3)"; }}
-                                >
-                                  编辑
-                                </button>
-                                <button
-                                  onClick={async () => {
-                                    if (!confirm(`确定删除充电站「${s.name}」?`)) return;
-                                    const r = await authFetch(`/api/v1/stations/${s.id}`, { method: "DELETE" });
-                                    const j = await r.json();
-                                    if (j.success) { loadAdminData(); alert("已删除"); }
-                                    else alert(j.message);
-                                  }}
-                                  className="flex-1 text-[11px] py-1 rounded font-medium transition-colors flex items-center justify-center gap-1"
-                                  style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}
-                                  onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.08)"; e.currentTarget.style.color = "var(--color-danger)"; }}
-                                  onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-subtle)"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
-                                >
-                                  删除
-                                </button>
                               </div>
                             </div>
-                          );
-                        })}
-                        {adminStations.filter((s: any) => {
-                          if (!adminSearch) return true;
-                          const q = adminSearch.toLowerCase();
-                          return safeText(s.name).toLowerCase().includes(q) || safeText(s.brand).toLowerCase().includes(q) || safeText(s.district).includes(adminSearch);
-                        }).length === 0 && (
-                          <div className="col-span-full py-12 text-center">
-                            <Zap className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--color-ink-6)" }} />
-                            <p className="text-[12px]" style={{ color: "var(--color-ink-5)" }}>未找到匹配的充电站</p>
-                          </div>
-                        )}
-                      </div>
+                            {filtered.length === 0 && (
+                              <div className="py-12 text-center">
+                                <Zap className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--color-ink-6)" }} />
+                                <p className="text-[12px]" style={{ color: "var(--color-ink-5)" }}>没有匹配的充电站</p>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
                   )}
 
@@ -396,17 +467,29 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                       >
                         <div className="flex items-center gap-3">
                           <h4 className="text-[13px] font-semibold" style={{ color: "var(--color-ink-1)" }}>用户</h4>
-                          <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>{users.length}</span>
+                          <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>
+                            {users.filter(u => userRoleFilter === "all" || u.role === userRoleFilter).length}
+                          </span>
                         </div>
-                        <button
-                          onClick={() => setAdminEditing({ _type: "user" })}
-                          className="btn-brand text-xs px-3 py-1.5 rounded-md flex items-center gap-1 font-medium"
-                        >
-                          <span className="text-sm leading-none">+</span> 新增用户
-                        </button>
+                        <div className="flex items-center gap-2">
+                          {/* 角色筛选 */}
+                          <select value={userRoleFilter} onChange={e => setUserRoleFilter(e.target.value)}
+                            className="input-sys h-7 text-[11px] px-2 text-zinc-600" title="按角色筛选用户">
+                            <option value="all">全部角色</option>
+                            <option value="新能源车主">新能源车主</option>
+                            <option value="投资商">投资商</option>
+                            <option value="管理员">管理员</option>
+                          </select>
+                          <button
+                            onClick={() => setAdminEditing({ _type: "user" })}
+                            className="btn-brand text-xs px-3 py-1.5 rounded-md flex items-center gap-1"
+                          >
+                            <span className="text-sm leading-none">+</span> 新增用户
+                          </button>
+                        </div>
                       </div>
                       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
-                        {users.map(u => {
+                        {users.filter(u => userRoleFilter === "all" || u.role === userRoleFilter).map(u => {
                           const isNormal = u.status === "正常";
                           const roleColor = ROLE_CONFIG[u.role as UserRole]?.color || "var(--color-ink-5)";
                           const isAdmin = u.username === "admin";
@@ -455,15 +538,24 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                                   >
                                     编辑
                                   </button>
+                                  {/* 状态快速切换 (admin 本人不禁用) */}
                                   {!isAdmin && (
                                     <button
-                                      onClick={async () => {
-                                        if (!confirm(`确定删除用户「${u.username}」?`)) return;
+                                      onClick={() => toggleUserStatus(u)}
+                                      className="text-[10px] px-2 py-0.5 rounded font-medium transition-colors"
+                                      style={{ background: isNormal ? "rgba(239,68,68,0.06)" : "rgba(16,185,129,0.08)", color: isNormal ? "var(--color-danger)" : "#059669" }}
+                                    >
+                                      {isNormal ? "禁用" : "启用"}
+                                    </button>
+                                  )}
+                                  {!isAdmin && (
+                                    <button
+                                      onClick={() => askConfirm("删除用户", <>确定删除用户「<b>{u.username}</b>」（{u.role}）？该操作不可恢复。</>, async () => {
                                         const r = await authFetch(`/api/v1/users/${u.id}`, { method: "DELETE" });
                                         const j = await r.json();
-                                        if (j.success) { loadAdminData(); alert("已删除"); }
-                                        else alert(j.message);
-                                      }}
+                                        if (j.success) { loadAdminData(); showToast("已删除", "success"); }
+                                        else showToast(j.message, "error");
+                                      })}
                                       className="text-[10px] px-2 py-0.5 rounded font-medium transition-colors"
                                       style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}
                                       onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.08)"; e.currentTarget.style.color = "var(--color-danger)"; }}
@@ -493,13 +585,12 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                           <span className="text-[11px] font-num px-1.5 py-0 rounded" style={{ background: "var(--color-subtle)", color: "var(--color-ink-4)" }}>{adminFeedback.length}</span>
                         </div>
                         <button
-                          onClick={async () => {
-                            if (!confirm("确定清空所有违禁驳回的反馈?")) return;
+                          onClick={() => askConfirm("清空驳回反馈", "确定清空所有违禁驳回的反馈？该操作不可恢复。", async () => {
                             const r = await authFetch("/api/v1/feedback/rejected/clear", { method: "DELETE" });
                             const j = await r.json();
-                            if (j.success) { loadAdminData(); alert(j.message); }
-                            else alert(j.message);
-                          }}
+                            if (j.success) { loadAdminData(); showToast(j.message || "已清空", "success"); }
+                            else showToast(j.message, "error");
+                          })}
                           className="text-xs px-3 py-1.5 rounded-md flex items-center gap-1 font-medium transition-colors"
                           style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)", border: "1px solid rgba(239,68,68,0.2)" }}
                           onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.1)"; }}
@@ -511,6 +602,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                       <div className="space-y-2 max-h-[calc(100vh-220px)] overflow-y-auto pr-1">
                         {adminFeedback.map(f => {
                           const isApproved = f.status === "approved";
+                          const isPending = !f.status || f.status === "pending";
                           const isEvaluation = f.type === "evaluation";
                           return (
                             <div
@@ -545,11 +637,11 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                                     <span
                                       className="text-[10px] px-1.5 py-0 rounded font-medium ml-auto"
                                       style={{
-                                        background: isApproved ? "var(--color-brand-subtle)" : "rgba(239,68,68,0.08)",
-                                        color: isApproved ? "var(--color-brand-text)" : "var(--color-danger)",
+                                        background: isApproved ? "var(--color-brand-subtle)" : isPending ? "rgba(245,158,11,0.1)" : "rgba(239,68,68,0.08)",
+                                        color: isApproved ? "var(--color-brand-text)" : isPending ? "#D97706" : "var(--color-danger)",
                                       }}
                                     >
-                                      {isApproved ? "已通过" : "违禁驳回"}
+                                      {isApproved ? "已通过" : isPending ? "待审核" : "已驳回"}
                                     </span>
                                   </div>
                                   <p className="text-[12px] mb-1.5 leading-relaxed" style={{ color: "var(--color-ink-2)" }}>{f.description}</p>
@@ -559,14 +651,48 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                                       <span>·</span>
                                       <span className="font-num">{f.create_time}</span>
                                     </div>
+                                    {/* 待审核: 快速通过/驳回 */}
+                                    {isPending && (
+                                      <>
+                                        <button
+                                          onClick={async () => {
+                                            const r = await authFetch(`/api/v1/feedback/${f.id}/review`, {
+                                              method: "POST", headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify({ status: "approved" }),
+                                            });
+                                            const j = await r.json();
+                                            if (j.success) { loadAdminData(); showToast("反馈已通过", "success"); }
+                                            else showToast(j.message, "error");
+                                          }}
+                                          className="px-1.5 py-0.5 rounded font-medium"
+                                          style={{ background: "rgba(16,185,129,0.08)", color: "#059669" }}
+                                        >
+                                          通过
+                                        </button>
+                                        <button
+                                          onClick={async () => {
+                                            const r = await authFetch(`/api/v1/feedback/${f.id}/review`, {
+                                              method: "POST", headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify({ status: "rejected" }),
+                                            });
+                                            const j = await r.json();
+                                            if (j.success) { loadAdminData(); showToast("反馈已驳回", "warning"); }
+                                            else showToast(j.message, "error");
+                                          }}
+                                          className="px-1.5 py-0.5 rounded font-medium"
+                                          style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)" }}
+                                        >
+                                          驳回
+                                        </button>
+                                      </>
+                                    )}
                                     <button
-                                      onClick={async () => {
-                                        if (!confirm("确定删除该反馈?")) return;
+                                      onClick={() => askConfirm("删除反馈", <>确定删除提交者「<b>{f.submitter}</b>」的反馈？该操作不可恢复。</>, async () => {
                                         const r = await authFetch(`/api/v1/feedback/${f.id}`, { method: "DELETE" });
                                         const j = await r.json();
-                                        if (j.success) { loadAdminData(); alert("已删除"); }
-                                        else alert(j.message);
-                                      }}
+                                        if (j.success) { loadAdminData(); showToast("已删除", "success"); }
+                                        else showToast(j.message, "error");
+                                      })}
                                       className="opacity-0 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded font-medium"
                                       style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)" }}
                                     >
@@ -643,13 +769,12 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                             <div className="flex items-center justify-between">
                               <span className="text-[10px] font-num" style={{ color: "var(--color-ink-5)" }}>{s.create_time}</span>
                               <button
-                                onClick={async () => {
-                                  if (!confirm(`确定删除方案「${s.name}」?`)) return;
+                                onClick={() => askConfirm("删除方案", <>确定删除方案「<b>{s.name}</b>」？该操作不可恢复。</>, async () => {
                                   const r = await authFetch(`/api/v1/schemes/${s.id}`, { method: "DELETE" });
                                   const j = await r.json();
-                                  if (j.success) { loadAdminData(); alert("已删除"); }
-                                  else alert(j.message);
-                                }}
+                                  if (j.success) { loadAdminData(); showToast("已删除", "success"); }
+                                  else showToast(j.message, "error");
+                                })}
                                 className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2 py-0.5 rounded font-medium"
                                 style={{ background: "rgba(239,68,68,0.06)", color: "var(--color-danger)" }}
                               >
@@ -883,11 +1008,7 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                               : <><Activity className="w-3.5 h-3.5" /> 增量预计算</>}
                           </button>
                           <button
-                            onClick={() => {
-                              if (confirm("全量重算将覆盖所有现有等时圈数据，确认继续？")) {
-                                triggerIsochronePrecompute(true);
-                              }
-                            }}
+                            onClick={() => askConfirm("全量重算等时圈", "全量重算将覆盖所有现有等时圈数据，耗时长。确认继续？", () => triggerIsochronePrecompute(true), false)}
                             disabled={isochroneProgress?.running}
                             className={`text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 font-medium transition-all ${
                               isochroneProgress?.running
@@ -980,8 +1101,8 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                             body: JSON.stringify({ username: formData.username, password: formData.password, role: formData.role, status: formData.status }),
                           });
                           const j = await r.json();
-                          if (j.success) { loadAdminData(); setAdminEditing(null); alert(j.message); }
-                          else alert(j.message);
+                          if (j.success) { loadAdminData(); setAdminEditing(null); showToast(j.message || "保存成功", "success"); }
+                          else showToast(j.message, "error");
                         } else {
                           // 充电站保存
                           const isEdit = formData.id;
@@ -995,15 +1116,25 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                             }),
                           });
                           const j = await r.json();
-                          if (j.success) { loadAdminData(); setAdminEditing(null); alert(j.message); }
-                          else alert(j.message);
+                          if (j.success) { loadAdminData(); setAdminEditing(null); showToast(j.message || "保存成功", "success"); }
+                          else showToast(j.message, "error");
                         }
                       } catch (e: any) {
-                        alert("保存失败: " + e.message);
+                        showToast("保存失败: " + e.message, "error");
                       }
                     }}
                   />
                 )}
+
+                {/* 统一确认弹窗 (替代原生 confirm) */}
+                <ConfirmDialog
+                  open={confirmState !== null}
+                  title={confirmState?.title || ""}
+                  message={confirmState?.message || ""}
+                  danger={confirmState?.danger ?? true}
+                  onCancel={() => setConfirmState(null)}
+                  onConfirm={() => { const c = confirmState; setConfirmState(null); c?.onConfirm(); }}
+                />
               </div>
           )}
     </>
