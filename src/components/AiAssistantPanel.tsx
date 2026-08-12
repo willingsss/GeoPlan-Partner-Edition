@@ -159,6 +159,7 @@ interface AiAssistantPanelProps {
   regenerateAi: () => void;
   clearAi: () => void;
   copyAi: (text: string, index: number) => void;
+  sendAiText: (text: string) => void;
   userLocation: { lng: number; lat: number; accuracy?: number } | null;
   locateUser: () => void;
   visualizeGisAnalysis: (params: { stations: number[]; communities: number[]; center: [number, number]; radius: number }) => void;
@@ -171,6 +172,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     aiBotBounce, setAiBotBounce, aiDragRef, aiMessages, aiStreaming,
     aiInput, setAiInput, copiedIndex, aiInputRef, aiMessagesEndRef,
     sendAiMessage, stopAi, regenerateAi, clearAi, copyAi,
+    sendAiText,
     userLocation, locateUser, visualizeGisAnalysis, flyToStationById,
   } = props;
 
@@ -514,6 +516,21 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           </div>
 
           {/* AI 站点详情已移至地图 Overlay */}
+
+          {/* 快捷指令 - 一键触发常见问题 */}
+          <div className="shrink-0 px-3 pt-2 pb-0 bg-white flex gap-1.5 flex-wrap"
+            style={{ borderTop: aiMessages.length > 0 ? "none" : "1px solid var(--color-muted)" }}>
+            {["推荐附近站点", "分析盲区缺口", "选址建议", "站点评价"].map(q => (
+              <button key={q}
+                onClick={() => sendAiText(q)}
+                disabled={aiStreaming}
+                className="text-[10px] px-2 py-0.5 rounded-full font-medium transition-colors disabled:opacity-40"
+                style={{ background: "var(--color-brand-subtle)", color: "var(--color-brand-text)", border: "1px solid var(--color-brand-border)" }}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
 
           {/* 输入区域 - Linear 风: 紧凑, 黑底白字发送 */}
           <div

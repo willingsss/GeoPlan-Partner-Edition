@@ -35,6 +35,8 @@ import SiteControlBar from "./components/SiteControlBar";
 import SiteResultPanel from "./components/SiteResultPanel";
 import AdminPanel from "./components/admin/AdminPanel";
 import AiAssistantPanel from "./components/AiAssistantPanel";
+import useAdminPanel from "./hooks/useAdminPanel";
+import useAiAssistant from "./hooks/useAiAssistant";
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import "ol/ol.css";
 import OlMap from "ol/Map";
@@ -430,42 +432,6 @@ export default function App() {
   const [feedbackFilter, setFeedbackFilter] = useState<"all" | "approved" | "rejected">("all");
   const [feedbackSort, setFeedbackSort] = useState<"newest" | "highest">("newest");
 
-  interface AiGisStation {
-    id: number;
-    name: string;
-    brand: string;
-    lng: number;
-    lat: number;
-    address: string;
-    district: string;
-    fastChargers: number;
-    slowChargers: number;
-    distanceKm?: number;
-  }
-  interface AiGisResult {
-    type: string;
-    radius: number;
-    center: [number, number];
-    count: number;
-    coveredPopulation: number;
-    coveredCommunities: number;
-    district?: string;
-    brand?: string;
-    stations: AiGisStation[];
-  }
-  const [aiMessages, setAiMessages] = useState<{ role: "user" | "assistant"; content: string; gisResult?: AiGisResult }[]>([]);
-  const [aiInput, setAiInput] = useState("");
-  const [aiStreaming, setAiStreaming] = useState(false);
-  const [aiPanelOpen, setAiPanelOpen] = useState(false);
-  const [aiDragging, setAiDragging] = useState(false);
-  const [aiBotBounce, setAiBotBounce] = useState(false);
-  // AI 浮球位置 (右下角为锚点, 用 bottom/right 表示, null = 默认位置)
-  const [aiBallPos, setAiBallPos] = useState<{ bottom: number; right: number } | null>(null);
-  const aiDragRef = useRef<{ startX: number; startY: number; startBottom: number; startRight: number; moved: boolean }>({ startX: 0, startY: 0, startBottom: 0, startRight: 0, moved: false });
-  const aiAbortRef = useRef<AbortController | null>(null);
-  const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
-  const aiInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   // 系统管理
   const [regionStats, setRegionStats] = useState<any[]>([]);
@@ -583,6 +549,16 @@ export default function App() {
 
   // 用户定位与导航
   const [userLocation, setUserLocation] = useState<{ lng: number; lat: number; accuracy?: number } | null>(null);
+  // ===== AI 智能助手 (useAiAssistant hook: 对话状态 + SSE 流式, 多轮上下文截断) =====
+  const {
+    aiMessages, aiInput, setAiInput, aiStreaming, aiPanelOpen, setAiPanelOpen,
+    aiDragging, setAiDragging, aiBotBounce, setAiBotBounce, aiBallPos, setAiBallPos,
+    copiedIndex, aiDragRef, aiMessagesEndRef, aiInputRef, gisResultRef,
+    sendAiMessage, sendAiText, stopAi, regenerateAi, clearAi, copyAi,
+  } = useAiAssistant({
+    userLocation,
+    onGisResult: undefined,
+  });
   const [locating, setLocating] = useState(false);
   const [locateError, setLocateError] = useState<string | null>(null);
   const [routeInfo, setRouteInfo] = useState<{
@@ -663,7 +639,6 @@ export default function App() {
   const coverageResultsRef = useRef<CommunityResult[]>([]);
 
   // GIS 分析结果缓存
-  const gisResultRef = useRef<{ stations: number[]; communities: number[]; center?: [number, number]; radius?: number } | null>(null);
   const gisBufferSourceRef = useRef<VectorSource | null>(null);
   const aiHighlightSourceRef = useRef<VectorSource | null>(null);
   const aiOverlayRef = useRef<Overlay | null>(null);
@@ -2692,168 +2667,6 @@ export default function App() {
   };
 
   // =========================================================================
-  // AI 对话 (SSE 流式，支持多轮上下文、停止、重新生成、复制、清空)
-  // =========================================================================
-  const aiStoppedRef = useRef(false);
-
-  const scrollAiToBottom = () => {
-    aiMessagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  };
-
-  const resizeAiInput = () => {
-    const el = aiInputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-  };
-
-  useEffect(() => {
-    resizeAiInput();
-  }, [aiInput]);
-
-  useEffect(() => {
-    scrollAiToBottom();
-  }, [aiMessages, aiStreaming]);
-
-  const doAiChat = async (baseMessages: { role: "user" | "assistant"; content: string }[], userText: string) => {
-    setAiStreaming(true);
-    setAiMessages([...baseMessages, { role: "assistant", content: "" }]);
-
-    try {
-      const context = userLocation
-        ? `用户当前位置 (WGS84): 经度 ${userLocation.lng.toFixed(6)}, 纬度 ${userLocation.lat.toFixed(6)}`
-        : undefined;
-      const controller = new AbortController();
-      aiAbortRef.current = controller;
-      const timeoutId = setTimeout(() => controller.abort(), 30000);
-      const history = baseMessages.map(m => ({ role: m.role, content: m.content }));
-      const res = await fetch("/api/v1/ai/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: userText,
-          context,
-          history,
-          userLocation: userLocation ? { lng: userLocation.lng, lat: userLocation.lat } : undefined,
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (reader) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.gisResult) {
-                setAiMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    ...updated[updated.length - 1],
-                    gisResult: data.gisResult,
-                  };
-                  return updated;
-                });
-                gisResultRef.current = {
-                  stations: data.gisResult.stations.map((s: any) => s.id),
-                  communities: [],
-                  center: data.gisResult.center,
-                  radius: data.gisResult.radius,
-                };
-              }
-              if (data.content) {
-                setAiMessages(prev => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = {
-                    ...updated[updated.length - 1],
-                    role: "assistant",
-                    content: updated[updated.length - 1].content + data.content,
-                  };
-                  return updated;
-                });
-              }
-            } catch {}
-          }
-        }
-      }
-    } catch (e: any) {
-      if (e.name === "AbortError") {
-        if (aiStoppedRef.current) {
-          aiStoppedRef.current = false;
-          setAiStreaming(false);
-          return;
-        }
-        setAiMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: "assistant", content: "⚠️ 请求超时，AI 服务响应较慢，请稍后再试。" };
-          return updated;
-        });
-      } else {
-        console.error(e);
-        setAiMessages(prev => {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: "assistant", content: "⚠️ AI 服务暂时不可用，请稍后重试。(" + (e?.message || "连接异常") + ")" };
-          return updated;
-        });
-      }
-    }
-    setAiStreaming(false);
-    aiAbortRef.current = null;
-  };
-
-  const sendAiMessage = async () => {
-    const text = aiInput.trim();
-    if (!text || aiStreaming) return;
-    setAiInput("");
-    if (aiInputRef.current) aiInputRef.current.style.height = "auto";
-    const baseMessages = [...aiMessages, { role: "user" as const, content: text }];
-    await doAiChat(baseMessages, text);
-  };
-
-  const stopAi = () => {
-    if (aiAbortRef.current) {
-      aiStoppedRef.current = true;
-      aiAbortRef.current.abort();
-    }
-  };
-
-  const regenerateAi = async () => {
-    if (aiStreaming) return;
-    const lastUserIndex = aiMessages
-      .map((m, i) => (m.role === "user" ? i : -1))
-      .filter(i => i >= 0)
-      .pop();
-    if (lastUserIndex === undefined) return;
-    const text = aiMessages[lastUserIndex].content;
-    const baseMessages = aiMessages.slice(0, lastUserIndex + 1);
-    await doAiChat(baseMessages, text);
-  };
-
-  const clearAi = () => {
-    setAiMessages([]);
-    setAiInput("");
-    if (aiInputRef.current) aiInputRef.current.style.height = "auto";
-  };
-
-  const copyAi = async (text: string, index: number) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex(null), 2000);
-    } catch {
-      // ignore
-    }
-  };
-
-  // =========================================================================
   // 用户定位与导航
   // =========================================================================
   // 在地图上标记用户位置并飞行
@@ -4584,6 +4397,7 @@ export default function App() {
         regenerateAi={regenerateAi}
         clearAi={clearAi}
         copyAi={copyAi}
+        sendAiText={sendAiText}
         userLocation={userLocation}
         locateUser={locateUser}
         visualizeGisAnalysis={visualizeGisAnalysis}
