@@ -1,8 +1,8 @@
 // AiAssistantPanel.tsx
 // AI 智能助手 - 悬浮球 + 浮动对话面板 (拆分自 App.tsx)
 // 纯展示组件: AI 状态/函数通过 props 注入, renderAiContent 本地渲染
-import React from "react";
-import { Bot, Check, Copy, LocateFixed, MapPin, RotateCcw, Send, Sparkles, Square, Trash, X } from "lucide-react";
+import React, { useState } from "react";
+import { Bot, Check, Copy, LocateFixed, MapPin, RotateCcw, Send, Sparkles, Square, Trash, X, Target } from "lucide-react";
 // ===================================================================
 // AI 回复内容渲染（简易 Markdown 美化）— 自 App.tsx 迁移
 // ===================================================================
@@ -10,7 +10,8 @@ import { Bot, Check, Copy, LocateFixed, MapPin, RotateCcw, Send, Sparkles, Squar
 // =========================================================================
 function renderInline(text: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
-  const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+  // 支持 **加粗** *斜体* `代码` [链接](url)
+  const regex = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g;
   let lastIndex = 0;
   let m: RegExpExecArray | null;
   let k = 0;
@@ -19,6 +20,17 @@ function renderInline(text: string): React.ReactNode {
     const raw = m[0];
     if (raw.startsWith("**")) parts.push(<strong key={k++} className="font-semibold text-slate-900">{raw.slice(2, -2)}</strong>);
     else if (raw.startsWith("`")) parts.push(<code key={k++} className="bg-slate-200 text-purple-700 px-0.5 rounded text-[9px] font-mono">{raw.slice(1, -1)}</code>);
+    else if (raw.startsWith("[")) {
+      const linkMatch = raw.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkMatch) {
+        parts.push(
+          <a key={k++} href={linkMatch[2]} target="_blank" rel="noreferrer"
+            className="text-sky-600 underline decoration-dotted underline-offset-2 hover:text-sky-700">
+            {linkMatch[1]}
+          </a>
+        );
+      } else parts.push(<span key={k++}>{raw}</span>);
+    }
     else parts.push(<em key={k++} className="italic text-slate-700">{raw.slice(1, -1)}</em>);
     lastIndex = regex.lastIndex;
   }
@@ -109,6 +121,43 @@ function renderAiContent(text: string): React.ReactNode {
       continue;
     }
 
+    // 表格: | 分隔, 第二行 --- 分隔表头
+    if (trimmed.startsWith("|") && trimmed.includes("|")) {
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim().startsWith("|") && lines[i].trim().includes("|")) {
+        const cells = lines[i].trim().split("|").slice(1, -1).map(c => c.trim());
+        rows.push(cells);
+        i++;
+      }
+      // 去掉分隔行 (|---|---|)
+      const header = rows[0] || [];
+      const bodyRows = rows.slice(1).filter(r => !r.every(c => /^[-:]+$/.test(c)));
+      blocks.push(
+        <table key={`tbl-${key++}`} className="w-full text-[9px] my-1 rounded overflow-hidden"
+          style={{ borderCollapse: "collapse", border: "1px solid var(--color-muted)" }}>
+          <thead>
+            <tr style={{ background: "var(--color-subtle)" }}>
+              {header.map((h, idx) => (
+                <th key={idx} className="px-1.5 py-1 font-semibold text-left" style={{ color: "var(--color-ink-3)", borderBottom: "1px solid var(--color-muted)" }}>
+                  {renderInline(h)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bodyRows.map((row, ri) => (
+              <tr key={ri} style={{ borderBottom: ri < bodyRows.length - 1 ? "1px solid var(--color-subtle)" : "none" }}>
+                {row.map((cell, ci) => (
+                  <td key={ci} className="px-1.5 py-0.5" style={{ color: "var(--color-ink-3)" }}>{renderInline(cell)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+      continue;
+    }
+
     // 普通段落（合并连续行）
     const paras: string[] = [raw];
     i++;
@@ -160,6 +209,8 @@ interface AiAssistantPanelProps {
   clearAi: () => void;
   copyAi: (text: string, index: number) => void;
   sendAiText: (text: string) => void;
+  // AI 推荐一键转选址方案: center/radius 为推荐选址位置
+  onAiSaveScheme: (center: [number, number], radius: number) => void;
   userLocation: { lng: number; lat: number; accuracy?: number } | null;
   locateUser: () => void;
   visualizeGisAnalysis: (params: { stations: number[]; communities: number[]; center: [number, number]; radius: number }) => void;
@@ -173,8 +224,11 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
     aiInput, setAiInput, copiedIndex, aiInputRef, aiMessagesEndRef,
     sendAiMessage, stopAi, regenerateAi, clearAi, copyAi,
     sendAiText,
+    onAiSaveScheme,
     userLocation, locateUser, visualizeGisAnalysis, flyToStationById,
   } = props;
+  // GIS 结果卡: 站点排序 (默认按距离, 可切名称)
+  const [stationSort, setStationSort] = useState<"distance" | "name">("distance");
 
   return (
     <>
@@ -437,7 +491,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                       center: msg.gisResult.center,
                                       radius: msg.gisResult.radius,
                                     })}
-                                    className="w-full text-[11px] py-1 rounded flex items-center justify-center gap-1 transition-colors font-medium"
+                                    className="flex-1 text-[11px] py-1 rounded flex items-center justify-center gap-1 transition-colors font-medium"
                                     style={{
                                       background: "var(--color-brand-subtle)",
                                       border: "1px solid var(--color-brand-border)",
@@ -446,12 +500,49 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                   >
                                     <MapPin className="w-3 h-3" /> 在地图上查看
                                   </button>
+                                  {/* AI 推荐一键转选址方案 */}
+                                  {msg.gisResult.center && (
+                                    <button
+                                      onClick={() => onAiSaveScheme(msg.gisResult!.center, msg.gisResult!.radius || 800)}
+                                      className="flex-1 text-[11px] py-1 rounded flex items-center justify-center gap-1 transition-colors font-medium"
+                                      style={{
+                                        background: "rgba(168,85,247,0.08)",
+                                        border: "1px solid rgba(168,85,247,0.2)",
+                                        color: "#7C3AED",
+                                      }}
+                                    >
+                                      <Target className="w-3 h-3" /> 保存为选址方案
+                                    </button>
+                                  )}
                                 </div>
 
                                 {msg.gisResult.stations.length > 0 && (
                                   <div className="space-y-1">
-                                    <p className="text-[10px] text-zinc-500">点击可跳转至地图</p>
-                                    {msg.gisResult.stations.map((station) => (
+                                    <div className="flex items-center justify-between">
+                                      <p className="text-[10px] text-zinc-500">点击可跳转至地图</p>
+                                      {/* 站点排序 */}
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          onClick={() => setStationSort("distance")}
+                                          className={`text-[9px] px-1 py-0 rounded transition-colors ${stationSort === "distance" ? "font-semibold" : "opacity-60"}`}
+                                          style={{ color: stationSort === "distance" ? "var(--color-brand-text)" : "var(--color-ink-5)", background: stationSort === "distance" ? "var(--color-brand-subtle)" : "transparent" }}
+                                        >
+                                          按距离
+                                        </button>
+                                        <button
+                                          onClick={() => setStationSort("name")}
+                                          className={`text-[9px] px-1 py-0 rounded transition-colors ${stationSort === "name" ? "font-semibold" : "opacity-60"}`}
+                                          style={{ color: stationSort === "name" ? "var(--color-brand-text)" : "var(--color-ink-5)", background: stationSort === "name" ? "var(--color-brand-subtle)" : "transparent" }}
+                                        >
+                                          按名称
+                                        </button>
+                                      </div>
+                                    </div>
+                                    {[...msg.gisResult.stations]
+                                      .sort((a, b) => stationSort === "distance"
+                                        ? (a.distanceKm ?? 9999) - (b.distanceKm ?? 9999)
+                                        : a.name.localeCompare(b.name, "zh"))
+                                      .map((station) => (
                                       <button
                                         key={station.id}
                                         onClick={() => flyToStationById(station.id)}
@@ -520,7 +611,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           {/* 快捷指令 - 一键触发常见问题 */}
           <div className="shrink-0 px-3 pt-2 pb-0 bg-white flex gap-1.5 flex-wrap"
             style={{ borderTop: aiMessages.length > 0 ? "none" : "1px solid var(--color-muted)" }}>
-            {["推荐附近站点", "分析盲区缺口", "选址建议", "站点评价"].map(q => (
+            {["推荐附近站点", "分析盲区缺口", "选址建议", "站点评价", "全市充电分布", "推荐选址区域"].map(q => (
               <button key={q}
                 onClick={() => sendAiText(q)}
                 disabled={aiStreaming}

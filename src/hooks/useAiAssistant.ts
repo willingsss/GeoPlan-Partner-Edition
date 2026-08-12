@@ -35,9 +35,23 @@ interface UseAiAssistantOptions {
 }
 
 const HISTORY_LIMIT = 8; // 多轮上下文: 最近 8 条
+const STORAGE_KEY = "geoplan_ai_messages"; // 会话持久化
 
 export default function useAiAssistant({ userLocation, onGisResult }: UseAiAssistantOptions) {
-  const [aiMessages, setAiMessages] = useState<{ role: "user" | "assistant"; content: string; gisResult?: AiGisResult }[]>([]);
+  // 会话持久化: 刷新后恢复历史对话
+  const [aiMessages, setAiMessages] = useState<{ role: "user" | "assistant"; content: string; gisResult?: AiGisResult }[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch { /* 忽略损坏数据 */ }
+    return [];
+  });
+  useEffect(() => {
+    try {
+      // 只保留最近 30 条, 避免 localStorage 膨胀
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(aiMessages.slice(-30)));
+    } catch { /* 超出配额时忽略 */ }
+  }, [aiMessages]);
   const [aiInput, setAiInput] = useState("");
   const [aiStreaming, setAiStreaming] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);

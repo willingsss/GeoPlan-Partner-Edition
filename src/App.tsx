@@ -4398,6 +4398,14 @@ export default function App() {
         clearAi={clearAi}
         copyAi={copyAi}
         sendAiText={sendAiText}
+        onAiSaveScheme={(center, radius) => {
+          // AI 推荐一键转选址方案: 在推荐位置放置虚拟站点
+          if (center && Array.isArray(center) && center.length === 2) {
+            placeVirtualStation(center[0], center[1]);
+            showToast(`已按 AI 推荐位置放置虚拟站点（半径 ${radius || 800}m），可在选址页查看并保存方案`, "success");
+            setActiveTab("site");
+          }
+        }}
         userLocation={userLocation}
         locateUser={locateUser}
         visualizeGisAnalysis={visualizeGisAnalysis}
