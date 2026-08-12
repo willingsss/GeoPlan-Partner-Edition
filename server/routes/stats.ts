@@ -1,7 +1,52 @@
 import express from "express";
 import * as turf from "@turf/turf";
-import { chargingStations, communitiesDatabase, feedbackDatabase, schemesDatabase, systemLogs } from "../db";
+import { dbPool, chargingStations, communitiesDatabase, feedbackDatabase, schemesDatabase, systemLogs } from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
+
+
+// =========================================================================
+// 社区覆盖判定工具 (纯 JS, 避免 MySQL 4326 空间函数限制)
+// 覆盖判定: 社区质心到最近运营站距离 <= 800m (快充服务半径)
+// =========================================================================
+function communityCoverageHelper() {
+  // 站点点列表
+  const stationPts = (chargingStations || [])
+    .filter((s: any) => s.status === "运营中")
+    .map((s: any) => [Number(s.lng), Number(s.lat)]);
+  // haversine 距离 (米)
+  const haversineM = (a: [number, number], b: [number, number]) => {
+    const R = 6371000;
+    const dLat = ((b[1] - a[1]) * Math.PI) / 180;
+    const dLng = ((b[0] - a[0]) * Math.PI) / 180;
+    const la1 = (a[1] * Math.PI) / 180, la2 = (b[1] * Math.PI) / 180;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  };
+  // 社区质心 (Polygon: 外环平均; MultiPolygon: 第一面外环)
+  const centroid = (geom: any): [number, number] => {
+    let ring: any = null;
+    if (geom?.type === "Polygon") ring = geom.coordinates?.[0];
+    else if (geom?.type === "MultiPolygon") ring = geom.coordinates?.[0]?.[0];
+    if (!ring || !ring.length) return [117.2, 34.26];
+    let sx = 0, sy = 0;
+    for (const p of ring) { sx += p[0]; sy += p[1]; }
+    return [sx / ring.length, sy / ring.length];
+  };
+  // 每个社区最近站距离 (社区 id 在 feature 级 c.id)
+  const distMap = new Map<number, number>();
+  (communitiesDatabase?.features || []).forEach((c: any) => {
+    const center = centroid(c.geometry);
+    let min = 9999999;
+    for (const p of stationPts) {
+      const d = haversineM(center, p as [number, number]);
+      if (d < min) min = d;
+    }
+    distMap.set(c.id ?? c.properties?.id, min);
+  });
+  const isBlind = (c: any) => (distMap.get(c.id ?? c.properties?.id) ?? 9999999) > 800;
+  const nearestOf = (c: any) => Math.round((distMap.get(c.id ?? c.properties?.id) ?? 9999999) / 100) / 10;
+  return { isBlind, nearestOf, distMap };
+}
 
 export default function registerStatsRoutes(app: express.Express) {
 app.get("/api/v1/stats/regions", (req, res) => {
@@ -50,9 +95,10 @@ app.get("/api/v1/stats/dashboard", async (req, res) => {
     const totalSlow = chargingStations.reduce((s, x) => s + (x.slowChargers || 0), 0);
     const totalPorts = totalFast + totalSlow;
 
-    // 覆盖率 = 已覆盖社区数 / 总社区数
+    // 覆盖率 = 已覆盖社区数 / 总社区数 (覆盖判定: 距最近运营站 <= 800m 快充服务半径)
+    const covHelper = communityCoverageHelper();
     const totalCommunities = communitiesDatabase.features.length || 0;
-    const coveredCommunities = communitiesDatabase.features.filter((c: any) => c.properties.coverageRatio > 0).length;
+    const coveredCommunities = communitiesDatabase.features.filter((c: any) => !covHelper.isBlind(c)).length;
     const blindSpotCommunities = totalCommunities - coveredCommunities;
     const coverageRate = totalCommunities > 0 ? Math.round((coveredCommunities / totalCommunities) * 1000) / 10 : 0;
 
@@ -229,6 +275,177 @@ app.get("/api/v1/stats/report", (req, res) => {
         brandSummary,
         districtSummary,
         filter: { district: district || "all", brand: brand || "all", chargeMode: chargeMode || "all", status: status || "all" },
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+// =========================================================================
+// 盲区攻坚大屏 (决策大屏平级)
+// =========================================================================
+app.get("/api/v1/stats/blindspot-dashboard", async (req, res) => {
+  try {
+    // 覆盖判定: 距最近运营站 <= 800m (快充服务半径, 纯 JS haversine)
+    const covHelper = communityCoverageHelper();
+    const isBlind = (c: any) => covHelper.isBlind(c);
+
+    const totalCommunities = communitiesDatabase.features.length || 0;
+    const coveredCommunities = communitiesDatabase.features.filter((c: any) => !isBlind(c)).length;
+    const blindSpotCommunities = totalCommunities - coveredCommunities;
+    const coverageRate = totalCommunities > 0 ? Math.round((coveredCommunities / totalCommunities) * 1000) / 10 : 0;
+    const blindPop = communitiesDatabase.features
+      .filter((c: any) => isBlind(c))
+      .reduce((s, c: any) => s + Number(c.properties.population_total || 0), 0);
+    const totalPop = communitiesDatabase.features
+      .reduce((s, c: any) => s + Number(c.properties.population_total || 0), 0);
+
+    // Top10 盲区社区 (按人口降序, 带最近站距离)
+    const topBlindSpots = communitiesDatabase.features
+      .filter((c: any) => isBlind(c))
+      .map((c: any) => ({
+        id: c.properties.id,
+        name: c.properties.name,
+        district: c.properties.district,
+        population: Number(c.properties.population_total || 0),
+        nearestDistance: covHelper.nearestOf(c),
+      }))
+      .sort((a: any, b: any) => b.population - a.population)
+      .slice(0, 10);
+
+    // 各区盲区排行
+    const districtBlindRank: Record<string, { district: string; total: number; blind: number; blindPop: number; rate: number }> = {};
+    communitiesDatabase.features.forEach((c: any) => {
+      const d = c.properties.district || "未知";
+      if (!districtBlindRank[d]) districtBlindRank[d] = { district: d, total: 0, blind: 0, blindPop: 0, rate: 0 };
+      districtBlindRank[d].total++;
+      if (isBlind(c)) {
+        districtBlindRank[d].blind++;
+        districtBlindRank[d].blindPop += Number(c.properties.population_total || 0);
+      }
+    });
+    const districtBlindList = Object.values(districtBlindRank)
+      .map(r => ({ ...r, rate: r.total > 0 ? Math.round((r.blind / r.total) * 1000) / 10 : 0 }))
+      .sort((a, b) => b.blindPop - a.blindPop);
+
+    // 盲区面 GeoJSON (距最近站 > 800m 的社区面, 地图红面显示)
+    const blindAreas = {
+      type: "FeatureCollection",
+      features: communitiesDatabase.features
+        .filter((c: any) => isBlind(c))
+        .map((c: any) => ({
+          type: "Feature",
+          geometry: c.geometry,
+          properties: {
+            id: c.properties.id,
+            name: c.properties.name,
+            district: c.properties.district,
+            population: Number(c.properties.population_total || 0),
+            nearestDistance: covHelper.nearestOf(c),
+          },
+        })),
+    };
+
+    res.json({
+      success: true,
+      data: {
+        kpi: {
+          totalCommunities, coveredCommunities, blindSpotCommunities, coverageRate,
+          blindPopulation: blindPop, totalPopulation: totalPop,
+          blindPopRate: totalPop > 0 ? Math.round((blindPop / totalPop) * 1000) / 10 : 0,
+          totalStations: chargingStations.length,
+        },
+        topBlindSpots,
+        districtBlindList,
+        blindAreas,
+        // 全量站点 (地图绿点)
+        allStations: chargingStations.map((s: any) => ({
+          id: s.id, name: s.name, lng: s.lng, lat: s.lat,
+        })),
+        updateTime: new Date().toLocaleString("zh-CN", { hour12: false }),
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// =========================================================================
+// 选址决策大屏 (决策大屏平级)
+// =========================================================================
+app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
+  try {
+    const schemes = (schemesDatabase || []).filter((s: any) => s.id);
+
+    // KPI
+    const totalSchemes = schemes.length;
+    const avgScore = totalSchemes > 0
+      ? Math.round(schemes.reduce((sum, s: any) => sum + (s.scheme_score || 0), 0) / totalSchemes)
+      : 0;
+    const maxScore = totalSchemes > 0 ? Math.max(...schemes.map((s: any) => s.scheme_score || 0)) : 0;
+    const totalCoveredPop = schemes.reduce((sum, s: any) => sum + (s.covered_population || 0), 0);
+
+    // 方案排行 (按综合评分降序)
+    const schemeRank = [...schemes]
+      .map((s: any) => ({
+        id: s.id,
+        name: s.name,
+        brand: s.brand,
+        score: s.scheme_score || 0,
+        coveredPopulation: s.covered_population || 0,
+        coveredCommunities: s.covered_communities || 0,
+        blindReduction: s.blind_spot_reduction || 0,
+        competition: s.competition_score || 0,
+        socialBenefit: s.social_benefit || 0,
+        radius: s.radius || 800,
+        createTime: s.create_time || "",
+      }))
+      .sort((a, b) => b.score - a.score);
+
+    // 各品牌方案数
+    const brandMap: Record<string, number> = {};
+    schemes.forEach((s: any) => { brandMap[s.brand] = (brandMap[s.brand] || 0) + 1; });
+    const brandSchemeDist = Object.entries(brandMap)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value);
+
+    // 评分分布 (0-59 / 60-69 / 70-79 / 80-89 / 90-100)
+    const scoreBins = [
+      { label: "60以下", min: 0, max: 59, count: 0 },
+      { label: "60-69", min: 60, max: 69, count: 0 },
+      { label: "70-79", min: 70, max: 79, count: 0 },
+      { label: "80-89", min: 80, max: 89, count: 0 },
+      { label: "90以上", min: 90, max: 100, count: 0 },
+    ];
+    schemes.forEach((s: any) => {
+      const sc = s.scheme_score || 0;
+      const bin = scoreBins.find(b => sc >= b.min && sc <= b.max);
+      if (bin) bin.count++;
+    });
+
+    // 方案位置 GeoJSON (点, 大屏地图显示)
+    const schemePositions = {
+      type: "FeatureCollection",
+      features: schemes.map((s: any) => ({
+        type: "Feature",
+        geometry: { type: "Point", coordinates: [s.lng, s.lat] },
+        properties: {
+          id: s.id, name: s.name, brand: s.brand,
+          score: s.scheme_score || 0,
+          coveredPopulation: s.covered_population || 0,
+        },
+      })),
+    };
+
+    res.json({
+      success: true,
+      data: {
+        kpi: { totalSchemes, avgScore, maxScore, totalCoveredPop },
+        schemeRank,
+        brandSchemeDist,
+        scoreBins,
+        schemePositions,
+        updateTime: new Date().toLocaleString("zh-CN", { hour12: false }),
       },
     });
   } catch (e: any) {

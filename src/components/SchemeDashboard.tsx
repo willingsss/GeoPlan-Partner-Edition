@@ -1,0 +1,273 @@
+// SchemeDashboard.tsx
+// 选址决策大屏 - 全屏覆盖 (与决策大屏平级, 金色决策主题)
+// 数据: /api/v1/stats/scheme-dashboard
+import React, { useEffect, useRef, useState } from "react";
+import * as echarts from "echarts";
+import { X, RefreshCw, Loader2, Target, Trophy, Users, Gauge, Activity, BarChart3, Zap } from "lucide-react";
+import "ol/ol.css";
+import OlMap from "ol/Map";
+import View from "ol/View";
+import TileLayer from "ol/layer/Tile";
+import VectorLayer from "ol/layer/Vector";
+import VectorSource from "ol/source/Vector";
+import XYZ from "ol/source/XYZ";
+import GeoJSON from "ol/format/GeoJSON";
+import { fromLonLat } from "ol/proj";
+import { Style, Fill, Stroke, Circle as CircleStyle, Text as OlText } from "ol/style";
+
+interface SchemeDashboardProps {
+  open: boolean;
+  onBack: () => void;
+}
+
+export default function SchemeDashboard({ open, onBack }: SchemeDashboardProps) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [now, setNow] = useState(new Date());
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<OlMap | null>(null);
+  const schemeLayerRef = useRef<VectorLayer | null>(null);
+  const scoreChartRef = useRef<HTMLDivElement>(null);
+  const scoreChartInstRef = useRef<echarts.ECharts | null>(null);
+  const brandChartRef = useRef<HTMLDivElement>(null);
+  const brandChartInstRef = useRef<echarts.ECharts | null>(null);
+
+  const loadData = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/v1/stats/scheme-dashboard");
+      const j = await res.json();
+      if (j.success) setData(j.data);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    loadData();
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, [open]);
+
+  // 地图
+  useEffect(() => {
+    if (!open || !mapRef.current || mapInstanceRef.current) return;
+    const map = new OlMap({
+      target: mapRef.current,
+      view: new View({ center: fromLonLat([117.2, 34.26]), zoom: 10.5 }),
+      layers: [
+        new TileLayer({
+          source: new XYZ({ url: "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", crossOrigin: "anonymous" }),
+        }),
+      ],
+      controls: [],
+    });
+    mapInstanceRef.current = map;
+    return () => { map.setTarget(undefined); mapInstanceRef.current = null; };
+  }, [open]);
+
+  // 方案点图层 (按评分大小/颜色)
+  useEffect(() => {
+    if (!open || !mapInstanceRef.current || !data) return;
+    const map = mapInstanceRef.current;
+    if (schemeLayerRef.current) { map.removeLayer(schemeLayerRef.current); schemeLayerRef.current = null; }
+    const features = data.schemePositions?.features || [];
+    if (!features.length) return;
+    const src = new VectorSource({ features: new GeoJSON().readFeatures(data.schemePositions, { featureProjection: "EPSG:3857" }) });
+    const layer = new VectorLayer({
+      source: src,
+      style: (f) => {
+        const score = Number(f.get("score") || 0);
+        const color = score >= 85 ? "#00C896" : score >= 70 ? "#FFD460" : "#FF6B35";
+        return new Style({
+          image: new CircleStyle({
+            radius: 5 + Math.min(5, score / 20),
+            fill: new Fill({ color }),
+            stroke: new Stroke({ color: "#0A0E27", width: 2 }),
+          }),
+          text: new OlText({
+            text: f.get("name") ? String(f.get("name")).slice(0, 4) : "",
+            font: "9px sans-serif",
+            fill: new Fill({ color: "#E4E4E7" }),
+            offsetY: -10,
+          }),
+        });
+      },
+    });
+    map.addLayer(layer);
+    schemeLayerRef.current = layer;
+  }, [open, data]);
+
+  // 评分分布柱图
+  useEffect(() => {
+    if (!open || !data || !scoreChartRef.current) return;
+    if (scoreChartInstRef.current) scoreChartInstRef.current.dispose();
+    const chart = echarts.init(scoreChartRef.current);
+    const bins = data.scoreBins || [];
+    chart.setOption({
+      tooltip: { trigger: "axis" },
+      grid: { left: 32, right: 10, top: 14, bottom: 24 },
+      xAxis: { type: "category", data: bins.map((b: any) => b.label), axisLabel: { color: "#A1A1AA", fontSize: 9 }, axisLine: { lineStyle: { color: "#3F3F46" } } },
+      yAxis: { type: "value", minInterval: 1, axisLabel: { color: "#A1A1AA", fontSize: 9 }, splitLine: { lineStyle: { color: "#27272A" } } },
+      series: [{ type: "bar", data: bins.map((b: any) => b.count), barWidth: "50%", itemStyle: { color: "#FFD460", borderRadius: [3, 3, 0, 0] } }],
+    });
+    scoreChartInstRef.current = chart;
+  }, [open, data]);
+
+  // 品牌方案分布环图
+  useEffect(() => {
+    if (!open || !data || !brandChartRef.current) return;
+    if (brandChartInstRef.current) brandChartInstRef.current.dispose();
+    const chart = echarts.init(brandChartRef.current);
+    const dist = data.brandSchemeDist || [];
+    chart.setOption({
+      tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
+      legend: { orient: "vertical", right: 2, top: "middle", itemWidth: 8, itemHeight: 8, itemGap: 6, textStyle: { color: "#A1A1AA", fontSize: 9 } },
+      series: [{
+        type: "pie", radius: ["38%", "56%"], center: ["36%", "50%"],
+        label: { show: false }, labelLine: { show: false },
+        data: dist.map((d: any) => ({ name: d.name, value: d.value, itemStyle: { color: ["#00C896", "#FFD460", "#38BDF8", "#A855F7", "#FF6B35"][dist.indexOf(d) % 5] } })),
+      }],
+    });
+    brandChartInstRef.current = chart;
+  }, [open, data]);
+
+  useEffect(() => {
+    if (!open) return;
+    return () => {
+      scoreChartInstRef.current?.dispose(); scoreChartInstRef.current = null;
+      brandChartInstRef.current?.dispose(); brandChartInstRef.current = null;
+    };
+  }, [open]);
+
+  if (!open) return null;
+  const kpi = data?.kpi || {};
+  const schemeRank = data?.schemeRank || [];
+
+  const kpiCards = [
+    { label: "已保存方案", value: kpi.totalSchemes ?? 0, unit: "个", icon: Target, color: "#FFD460" },
+    { label: "方案平均分", value: kpi.avgScore ?? 0, unit: "分", icon: Gauge, color: "#00C896" },
+    { label: "最高分方案", value: kpi.maxScore ?? 0, unit: "分", icon: Trophy, color: "#38BDF8" },
+    { label: "覆盖总人口", value: kpi.totalCoveredPop ?? 0, unit: "人", icon: Users, color: "#A855F7" },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-[100] flex flex-col overflow-hidden" style={{ background: "#0A0E27", color: "#E4E4E7", fontFamily: "var(--font-sans)" }}>
+      <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.03) 1px, transparent 1px)", backgroundSize: "32px 32px" }} />
+
+      <header className="shrink-0 flex items-center justify-between px-6 relative" style={{ height: 64, background: "rgba(16,22,50,0.7)", backdropFilter: "blur(16px)", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "rgba(255,212,96,0.12)", border: "1px solid rgba(255,212,96,0.25)" }}>
+            <Zap className="w-5 h-5" style={{ color: "#FFD460" }} />
+          </div>
+          <div>
+            <h1 className="text-[18px] font-semibold tracking-wide" style={{ color: "#FAFAFA" }}>徐州新能源充电选址决策大屏</h1>
+            <p className="text-[10.5px] text-zinc-500 tracking-wider">SITE SELECTION DECISION DASHBOARD · XUZHOU</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-4 text-[11.5px]">
+          <div className="flex items-center gap-1.5">
+            <Activity className="w-3.5 h-3.5 text-yellow-400 animate-pulse" />
+            <span className="text-zinc-300 font-num">{now.toLocaleString("zh-CN", { hour12: false })}</span>
+          </div>
+          <span className="text-zinc-700">|</span>
+          <span className="text-zinc-500">数据更新: <span className="text-yellow-300 font-num">{data?.updateTime || "加载中..."}</span></span>
+          <button onClick={loadData} className="ml-2 w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white/5 transition-colors" title="刷新数据">
+            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-yellow-400" /> : <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />}
+          </button>
+          <button onClick={onBack} className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium hover:bg-white/5 transition-colors" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#D4D4D8" }}>
+            <X className="w-3.5 h-3.5" /> 返回
+          </button>
+        </div>
+      </header>
+
+      <div className="flex-1 flex gap-3 p-3 min-h-0 relative">
+        {/* 左侧 KPI */}
+        <aside className="w-[220px] shrink-0 flex flex-col gap-3">
+          {kpiCards.map((card, i) => {
+            const Icon = card.icon;
+            return (
+              <div key={i} className="rounded-xl p-3.5 flex-1 flex flex-col justify-between relative overflow-hidden bento-tile" style={{ background: "rgba(16,22,50,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-zinc-500">{card.label}</span>
+                  <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: `${card.color}15`, border: `1px solid ${card.color}25` }}>
+                    <Icon className="w-3.5 h-3.5" style={{ color: card.color }} />
+                  </div>
+                </div>
+                <div className="flex items-baseline gap-1">
+                  <span className="text-[30px] font-bold font-num leading-none" style={{ color: card.color }}>{card.value.toLocaleString()}</span>
+                  <span className="text-[11px] text-zinc-600">{card.unit}</span>
+                </div>
+                <div className="absolute bottom-0 left-0 right-0 h-[2px] rounded-b-xl" style={{ background: `linear-gradient(90deg, transparent, ${card.color}40, transparent)` }} />
+              </div>
+            );
+          })}
+          <div className="rounded-xl p-3 bento-tile" style={{ background: "rgba(255,212,96,0.05)", border: "1px solid rgba(255,212,96,0.12)" }}>
+            <p className="text-[10px] leading-relaxed" style={{ color: "#A1A1AA" }}>
+              <span style={{ color: "#FFD460" }}>决策逻辑：</span>地图点按综合评分着色（绿≥85 / 黄70-84 / 橙&lt;70），点击右侧排行可定位。评分=人口收益+社会效益+竞争避让+盲区消除。
+            </p>
+          </div>
+        </aside>
+
+        {/* 中央地图 */}
+        <main className="flex-1 flex flex-col gap-3 min-w-0">
+          <div className="flex-1 rounded-xl overflow-hidden relative bento-tile" style={{ background: "rgba(10,14,39,0.8)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <div ref={mapRef} className="w-full h-full" />
+            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: "rgba(10,14,39,0.7)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.08)" }}>
+              <Target className="w-3 h-3 text-yellow-400" />
+              <span className="text-[11px] text-yellow-300">选址方案分布（按评分着色）</span>
+            </div>
+            <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3 px-3 py-1.5 rounded-lg text-[10px]" style={{ background: "rgba(10,14,39,0.7)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.08)" }}>
+              <span className="flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-full" style={{ background: "#00C896" }} />≥85 优</span>
+              <span className="flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-full" style={{ background: "#FFD460" }} />70-84 良</span>
+              <span className="flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-full" style={{ background: "#FF6B35" }} />&lt;70 待优化</span>
+            </div>
+          </div>
+        </main>
+
+        {/* 右侧图表列 */}
+        <aside className="w-[300px] shrink-0 flex flex-col gap-3">
+          {/* 方案评分排行 */}
+          <div className="rounded-xl p-3 flex-1 flex flex-col min-h-0 bento-tile" style={{ background: "rgba(16,22,50,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)", height: 230 }}>
+            <div className="flex items-center gap-1.5 mb-2">
+              <Trophy className="w-3 h-3" style={{ color: "#FFD460" }} />
+              <h3 className="text-[11.5px] font-medium text-zinc-300">方案评分排行</h3>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-1.5">
+              {schemeRank.length === 0 ? (
+                <p className="text-[10.5px] text-zinc-600 text-center py-4">暂无已保存方案</p>
+              ) : schemeRank.slice(0, 8).map((s: any, i: number) => (
+                <div key={s.id} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: "rgba(0,200,150,0.04)", border: "1px solid rgba(0,200,150,0.08)" }}>
+                  <span className="w-4 h-4 rounded text-[9px] flex items-center justify-center font-bold" style={{ background: i < 3 ? "rgba(255,212,96,0.2)" : "rgba(63,63,70,0.5)", color: i < 3 ? "#FFD460" : "#71717A" }}>{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[11px] text-zinc-300 truncate">{s.name} <span className="text-zinc-600">· {s.brand}</span></p>
+                    <p className="text-[9px] text-zinc-600">覆盖 {s.coveredPopulation.toLocaleString()} 人 · {s.coveredCommunities} 社区 · 盲区消除 {s.blindReduction}%</p>
+                  </div>
+                  <span className="text-[13px] font-bold font-num" style={{ color: s.score >= 85 ? "#00C896" : s.score >= 70 ? "#FFD460" : "#FF6B35" }}>{s.score}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 评分分布 */}
+          <div className="rounded-xl p-3 flex flex-col bento-tile" style={{ background: "rgba(16,22,50,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)", height: 170 }}>
+            <div className="flex items-center gap-1.5 mb-1">
+              <BarChart3 className="w-3 h-3 text-yellow-400" />
+              <h3 className="text-[11.5px] font-medium text-zinc-300">方案评分分布</h3>
+            </div>
+            <div ref={scoreChartRef} className="flex-1" />
+          </div>
+
+          {/* 品牌方案分布 */}
+          <div className="rounded-xl p-3 flex flex-col bento-tile" style={{ background: "rgba(16,22,50,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)", height: 170 }}>
+            <div className="flex items-center gap-1.5 mb-1">
+              <Zap className="w-3 h-3 text-emerald-400" />
+              <h3 className="text-[11.5px] font-medium text-zinc-300">各品牌方案数</h3>
+            </div>
+            <div ref={brandChartRef} className="flex-1" />
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}

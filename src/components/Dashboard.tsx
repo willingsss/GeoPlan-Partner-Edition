@@ -167,10 +167,19 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
       const chart = echarts.init(brandChartRef.current);
       chart.setOption({
         tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
-        legend: { bottom: 0, textStyle: { color: "#A1A1AA", fontSize: 10 } },
+        legend: {
+          orient: "vertical",
+          right: 2,
+          top: "middle",
+          itemWidth: 8,
+          itemHeight: 8,
+          itemGap: 6,
+          textStyle: { color: "#A1A1AA", fontSize: 9 },
+        },
         series: [{
           type: "pie",
-          radius: ["42%", "70%"],
+          radius: ["40%", "58%"],
+          center: ["36%", "50%"],
           avoidLabelOverlap: false,
           label: { show: false },
           labelLine: { show: false },

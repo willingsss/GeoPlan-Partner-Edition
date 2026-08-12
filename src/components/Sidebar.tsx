@@ -1,5 +1,5 @@
 import React from "react";
-import { Zap, ChevronLeft, LayoutDashboard, LogOut } from "lucide-react";
+import { Zap, ChevronLeft, LayoutDashboard, LogOut, Target, Trophy } from "lucide-react";
 import { ROLE_CONFIG, type SubsystemTab, type User } from "../types";
 
 export interface SidebarTab {
@@ -16,6 +16,8 @@ interface SidebarProps {
   activeTab: SubsystemTab;
   onTabChange: (tab: SubsystemTab) => void;
   onOpenDashboard: () => void;
+  onOpenBlindSpotDashboard: () => void;
+  onOpenSchemeDashboard: () => void;
   currentUser: User;
   onLogout: () => void;
 }
@@ -31,6 +33,8 @@ export default function Sidebar({
   activeTab,
   onTabChange,
   onOpenDashboard,
+  onOpenBlindSpotDashboard,
+  onOpenSchemeDashboard,
   currentUser,
   onLogout,
 }: SidebarProps) {
@@ -174,6 +178,44 @@ export default function Sidebar({
         >
           <LayoutDashboard className="w-4 h-4 shrink-0 text-emerald-500/70 group-hover:text-emerald-400 transition-colors" />
           {!sidebarCollapsed && <span className="truncate">决策大屏</span>}
+        </button>
+        {/* 盲区攻坚大屏 */}
+        <button
+          onClick={onOpenBlindSpotDashboard}
+          title={sidebarCollapsed ? "盲区攻坚大屏" : undefined}
+          className={`group w-full flex items-center ${
+            sidebarCollapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+          } py-2 rounded-lg text-[12.5px] font-medium text-zinc-500 hover:text-zinc-300 transition-all`}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(255,107,53,0.06)";
+            e.currentTarget.style.transform = "translateX(3px) scale(1.01)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+            e.currentTarget.style.transform = "translateX(0) scale(1)";
+          }}
+        >
+          <Target className="w-4 h-4 shrink-0 text-orange-500/70 group-hover:text-orange-400 transition-colors" />
+          {!sidebarCollapsed && <span className="truncate">盲区攻坚大屏</span>}
+        </button>
+        {/* 选址决策大屏 */}
+        <button
+          onClick={onOpenSchemeDashboard}
+          title={sidebarCollapsed ? "选址决策大屏" : undefined}
+          className={`group w-full flex items-center ${
+            sidebarCollapsed ? "justify-center px-0" : "gap-2.5 px-2.5"
+          } py-2 rounded-lg text-[12.5px] font-medium text-zinc-500 hover:text-zinc-300 transition-all`}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(255,212,96,0.06)";
+            e.currentTarget.style.transform = "translateX(3px) scale(1.01)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "transparent";
+            e.currentTarget.style.transform = "translateX(0) scale(1)";
+          }}
+        >
+          <Trophy className="w-4 h-4 shrink-0 text-yellow-500/70 group-hover:text-yellow-400 transition-colors" />
+          {!sidebarCollapsed && <span className="truncate">选址决策大屏</span>}
         </button>
       </nav>
 

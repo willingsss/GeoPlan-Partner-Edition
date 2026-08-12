@@ -89,6 +89,8 @@ import CompetitionReport from "./components/CompetitionReport";
 import GapPredictionDialog from "./components/GapPredictionDialog";
 import { SchemeReportButton } from "./components/SchemeReportPrint";
 import Dashboard from "./components/Dashboard";
+import BlindSpotDashboard from "./components/BlindSpotDashboard";
+import SchemeDashboard from "./components/SchemeDashboard";
 import { ToastProvider, useToast } from "./components/Toast";
 import Skeleton from "./components/Skeleton";
 import EmptyState from "./components/EmptyState";
@@ -266,6 +268,9 @@ export default function App() {
   // ===== 阶段三/四新增状态 =====
   // 决策大屏全屏开关 (Task 3.1.8)
   const [showDashboard, setShowDashboard] = useState(false);
+  // 盲区攻坚大屏 / 选址决策大屏 (与决策大屏平级)
+  const [showBlindSpotDashboard, setShowBlindSpotDashboard] = useState(false);
+  const [showSchemeDashboard, setShowSchemeDashboard] = useState(false);
   // 反馈热力图开关 + 筛选 (Task 3.3)
   const [showFeedbackHeatmap, setShowFeedbackHeatmap] = useState(false);
   const [feedbackHeatmapType, setFeedbackHeatmapType] = useState<"all" | "demand" | "evaluation">("all");
@@ -3274,6 +3279,8 @@ export default function App() {
         activeTab={activeTab}
         onTabChange={setActiveTab}
         onOpenDashboard={() => setShowDashboard(true)}
+        onOpenBlindSpotDashboard={() => setShowBlindSpotDashboard(true)}
+        onOpenSchemeDashboard={() => setShowSchemeDashboard(true)}
         currentUser={currentUser}
         onLogout={handleLogout}
       />
@@ -4694,6 +4701,10 @@ export default function App() {
 
       {/* ===== 决策大屏 (阶段三 任务 3.1, 全屏覆盖) ===== */}
       <Dashboard open={showDashboard} onBack={() => setShowDashboard(false)} />
+      {/* ===== 盲区攻坚大屏 ===== */}
+      <BlindSpotDashboard open={showBlindSpotDashboard} onBack={() => setShowBlindSpotDashboard(false)} />
+      {/* ===== 选址决策大屏 ===== */}
+      <SchemeDashboard open={showSchemeDashboard} onBack={() => setShowSchemeDashboard(false)} />
 
       {/* ===== 命令面板 (阶段四 任务 4.2, Ctrl+K 唤起) ===== */}
       <CommandPalette
