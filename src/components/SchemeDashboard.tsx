@@ -12,7 +12,9 @@ import VectorLayer from "ol/layer/Vector";
 import VectorSource from "ol/source/Vector";
 import XYZ from "ol/source/XYZ";
 import GeoJSON from "ol/format/GeoJSON";
+import { Feature } from "ol";
 import { fromLonLat } from "ol/proj";
+import { Point, Circle } from "ol/geom";
 import { Style, Fill, Stroke, Circle as CircleStyle, Text as OlText } from "ol/style";
 
 interface SchemeDashboardProps {
@@ -27,6 +29,8 @@ export default function SchemeDashboard({ open, onBack }: SchemeDashboardProps) 
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<OlMap | null>(null);
   const schemeLayerRef = useRef<VectorLayer | null>(null);
+  const stationLayerRef = useRef<VectorLayer | null>(null);
+  const circleLayerRef = useRef<VectorLayer | null>(null);
   const scoreChartRef = useRef<HTMLDivElement>(null);
   const scoreChartInstRef = useRef<echarts.ECharts | null>(null);
   const brandChartRef = useRef<HTMLDivElement>(null);
@@ -35,7 +39,10 @@ export default function SchemeDashboard({ open, onBack }: SchemeDashboardProps) 
   const loadData = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/v1/stats/scheme-dashboard");
+      const token = localStorage.getItem("geoplan_token") || "";
+      const res = await fetch("/api/v1/stats/scheme-dashboard", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
       const j = await res.json();
       if (j.success) setData(j.data);
     } catch (e) { console.error(e); }
@@ -70,6 +77,51 @@ export default function SchemeDashboard({ open, onBack }: SchemeDashboardProps) 
   useEffect(() => {
     if (!open || !mapInstanceRef.current || !data) return;
     const map = mapInstanceRef.current;
+
+    // 现有充电站背景点 (浅色小点)
+    if (stationLayerRef.current) { map.removeLayer(stationLayerRef.current); stationLayerRef.current = null; }
+    const allStations = data.allStations || [];
+    if (allStations.length) {
+      const src = new VectorSource({
+        features: allStations.map((s: any) => new Feature({
+          geometry: new Point(fromLonLat([s.lng, s.lat])),
+          name: s.name,
+        })),
+      });
+      const layer = new VectorLayer({
+        source: src,
+        style: new Style({
+          image: new CircleStyle({ radius: 2.5, fill: new Fill({ color: "rgba(161,161,170,0.45)" }) }),
+        }),
+      });
+      map.addLayer(layer);
+      stationLayerRef.current = layer;
+    }
+
+    // 方案服务区圆 (radius 米, 3857 近似)
+    if (circleLayerRef.current) { map.removeLayer(circleLayerRef.current); circleLayerRef.current = null; }
+    const schemeFeatures = data.schemePositions?.features || [];
+    if (schemeFeatures.length) {
+      const circleSrc = new VectorSource({
+        features: schemeFeatures.map((f: any) => {
+          const [lng, lat] = f.geometry.coordinates;
+          return new Feature({
+            geometry: new Circle(fromLonLat([lng, lat]), Number(f.properties?.radius || 800)),
+          });
+        }),
+      });
+      const layer = new VectorLayer({
+        source: circleSrc,
+        style: new Style({
+          fill: new Fill({ color: "rgba(0,200,150,0.12)" }),
+          stroke: new Stroke({ color: "rgba(0,200,150,0.5)", width: 1 }),
+        }),
+      });
+      map.addLayer(layer);
+      circleLayerRef.current = layer;
+    }
+
+    // 方案点
     if (schemeLayerRef.current) { map.removeLayer(schemeLayerRef.current); schemeLayerRef.current = null; }
     const features = data.schemePositions?.features || [];
     if (!features.length) return;
@@ -149,6 +201,8 @@ export default function SchemeDashboard({ open, onBack }: SchemeDashboardProps) 
     { label: "方案平均分", value: kpi.avgScore ?? 0, unit: "分", icon: Gauge, color: "#00C896" },
     { label: "最高分方案", value: kpi.maxScore ?? 0, unit: "分", icon: Trophy, color: "#38BDF8" },
     { label: "覆盖总人口", value: kpi.totalCoveredPop ?? 0, unit: "人", icon: Users, color: "#A855F7" },
+    { label: "平均覆盖人口", value: kpi.avgCoveredPop ?? 0, unit: "人/方案", icon: Users, color: "#F472B6" },
+    { label: "盲区消除均值", value: kpi.avgBlindReduction ?? 0, unit: "%", icon: Activity, color: "#FF6B35" },
   ];
 
   return (
@@ -221,6 +275,34 @@ export default function SchemeDashboard({ open, onBack }: SchemeDashboardProps) 
               <span className="flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-full" style={{ background: "#00C896" }} />≥85 优</span>
               <span className="flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-full" style={{ background: "#FFD460" }} />70-84 良</span>
               <span className="flex items-center gap-1 text-zinc-400"><span className="w-2 h-2 rounded-full" style={{ background: "#FF6B35" }} />&lt;70 待优化</span>
+            </div>
+          </div>
+
+          {/* ===== 底部动态条: 最近方案/反馈 ===== */}
+          <div className="shrink-0 rounded-xl overflow-hidden" style={{ height: 44, background: "rgba(16,22,50,0.6)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.06)" }}>
+            <div className="flex items-center h-full">
+              <div className="shrink-0 px-3 h-full flex items-center gap-1.5 text-[11px] font-medium text-yellow-300" style={{ background: "rgba(255,212,96,0.08)", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+                <Activity className="w-3 h-3" />
+                实时动态
+              </div>
+              <div className="flex-1 overflow-hidden relative">
+                {(data?.ticker || []).length > 0 ? (
+                  <div className="flex items-center whitespace-nowrap animate-marquee" style={{ animationDuration: `${Math.max(18, (data.ticker || []).length * 3.5)}s` }}>
+                    {[...(data.ticker || []), ...(data.ticker || [])].map((item: any, idx: number) => (
+                      <span key={idx} className="inline-flex items-center gap-2 px-6 text-[11.5px] text-zinc-400">
+                        <span className="px-1.5 py-0.5 rounded text-[9px]" style={{ background: item.type === "方案" ? "rgba(0,200,150,0.12)" : item.type === "评价" ? "rgba(168,85,247,0.12)" : "rgba(255,212,96,0.12)", color: item.type === "方案" ? "#34D399" : item.type === "评价" ? "#C084FC" : "#FFD460" }}>
+                          {item.type}
+                        </span>
+                        <span className="text-zinc-400">{item.content}</span>
+                        <span className="text-zinc-600 text-[10px]">— {item.submitter} · {item.time}</span>
+                        <span className="text-zinc-700 mx-2">◆</span>
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center h-full px-6 text-[11px] text-zinc-600">暂无动态</div>
+                )}
+              </div>
             </div>
           </div>
         </main>

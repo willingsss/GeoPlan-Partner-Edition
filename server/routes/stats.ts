@@ -383,9 +383,14 @@ function calcSchemeScore(s: any): number {
   return Math.round(pop + comm + comp + benefit + blind);
 }
 
-app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
+app.get("/api/v1/stats/scheme-dashboard", requireAuth, async (req, res) => {
   try {
-    const schemes = (schemesDatabase || []).filter((s: any) => s.id);
+    const user = (req as any).currentUser;
+    const isAdmin = user?.role === "管理员";
+    // 按用户隔离: 管理员看全部, 投资商只看自己的方案
+    const schemes = (schemesDatabase || [])
+      .filter((s: any) => s.id)
+      .filter((s: any) => isAdmin || s.creator === user?.username);
 
     // KPI
     const totalSchemes = schemes.length;
@@ -450,11 +455,35 @@ app.get("/api/v1/stats/scheme-dashboard", async (req, res) => {
     res.json({
       success: true,
       data: {
-        kpi: { totalSchemes, avgScore, maxScore, totalCoveredPop },
+        kpi: {
+          totalSchemes, avgScore, maxScore, totalCoveredPop,
+          // 扩展: 平均覆盖人口 / 盲区消除率均值 / 覆盖社区总数
+          avgCoveredPop: totalSchemes > 0 ? Math.round(totalCoveredPop / totalSchemes) : 0,
+          avgBlindReduction: totalSchemes > 0
+            ? Math.round(schemes.reduce((sum, s: any) => sum + (s.blind_spot_reduction || 0), 0) / totalSchemes * 10) / 10
+            : 0,
+          totalCoveredCommunities: schemes.reduce((sum, s: any) => sum + (s.covered_communities || 0), 0),
+        },
         schemeRank,
         brandSchemeDist,
         scoreBins,
         schemePositions,
+        // 现有充电站背景点 (地图衬托: 方案 vs 现状)
+        allStations: chargingStations.map((s: any) => ({
+          id: s.id, name: s.name, lng: s.lng, lat: s.lat,
+        })),
+        // 底部动态条: 最近方案操作 + 反馈
+        ticker: [
+          ...schemes.slice(-6).reverse().map((s: any) => ({
+            type: "方案", content: `「${s.name}」已保存`, submitter: s.creator || "匿名", time: s.create_time || "",
+          })),
+          ...feedbackDatabase.slice(-6).reverse().map((f: any) => ({
+            type: f.type === "evaluation" ? "评价" : "需求",
+            content: (f.description || "").slice(0, 50),
+            submitter: f.submitter || "匿名",
+            time: f.create_time || "",
+          })),
+        ].slice(0, 12),
         updateTime: new Date().toLocaleString("zh-CN", { hour12: false }),
       },
     });
