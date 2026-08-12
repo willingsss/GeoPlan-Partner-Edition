@@ -80,6 +80,17 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
 
   return (
     <>
+      {/* 未选点引导卡: 右栏初始不空白, 提示用户点击地图选点 */}
+      {!siteMetrics && topCandidates.length === 0 && (
+        <div className="mt-1.5 rounded-lg px-3 py-5 text-center"
+          style={{ background: "var(--color-brand-subtle)", border: "1px dashed var(--color-brand-border)" }}>
+          <MapPin className="w-6 h-6 mx-auto mb-2" style={{ color: "var(--color-brand)" }} />
+          <p className="text-[12px] font-semibold" style={{ color: "var(--color-ink-2)" }}>点击地图选择选址位置</p>
+          <p className="text-[10px] mt-1 leading-relaxed" style={{ color: "var(--color-ink-5)" }}>
+            选点后自动评估覆盖人口、竞争环境、社会效益，并给出综合评分
+          </p>
+        </div>
+      )}
       {/* 推荐选址 Top3 - 来自覆盖分析候选点 */}
       {topCandidates.length > 0 && (
         <div className="mt-1.5 rounded-lg px-2.5 py-2"
@@ -283,25 +294,26 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
           )}
         </>
       )}
-      {/* 已保存方案 - Linear 风: 标签按钮 */}
-      {schemes.length > 0 && (
-        <div className="mt-2">
-          <div className="flex items-center gap-1.5 mb-1">
-            <p className="text-[10px] text-zinc-500">
-              已保存方案（{filteredSchemes.length}/{schemes.length}）· 勾选 2 个方案进行深度对比
-            </p>
-            {/* 行政区筛选 */}
-            <select
-              value={districtFilter}
-              onChange={e => setDistrictFilter(e.target.value)}
-              className="ml-auto input-sys h-5 text-[9px] px-1 text-zinc-600"
-              title="按行政区筛选方案"
-            >
+      {/* 已保存方案 - Linear 风: 标签按钮 (始终显示, 空态提示) */}
+      <div className="mt-2">
+        <div className="flex items-center gap-1.5 mb-1">
+          <p className="text-[10px] text-zinc-500">
+            已保存方案（{filteredSchemes.length}/{schemes.length}）· 勾选 2 个方案进行深度对比
+          </p>
+          {/* 行政区筛选 */}
+          {schemeDistricts.length > 0 && (
+          <select
+            value={districtFilter}
+            onChange={e => setDistrictFilter(e.target.value)}
+            className="ml-auto input-sys h-5 text-[9px] px-1 text-zinc-600"
+            title="按行政区筛选方案"
+          >
               <option value="all">全部行政区</option>
               {schemeDistricts.map(d => (
                 <option key={d} value={d}>{d}</option>
               ))}
             </select>
+            )}
             {/* 批量导出 Excel (当前筛选结果) */}
             {filteredSchemes.length > 0 && (
               <button
@@ -401,9 +413,15 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                 </button>
               </div>
             ))}
+            {filteredSchemes.length === 0 && (
+              <div className="rounded-md px-3 py-4 text-center" style={{ background: "var(--color-subtle)", border: "1px dashed var(--color-muted)" }}>
+                <p className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>
+                  暂无已保存方案 · 点击地图选点后点「保存方案」即可创建
+                </p>
+              </div>
+            )}
           </div>
         </div>
-      )}
     </>
   );
 }
