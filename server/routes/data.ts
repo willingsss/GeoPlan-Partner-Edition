@@ -106,9 +106,10 @@ app.post("/api/v1/feedback", async (req, res) => {
     const lngNum = parseFloat(lng);
     const latVal = parseFloat(lat);
     const geomWkt = `POINT(${latVal} ${lngNum})`;
+    const stationIdVal = stationId ? parseInt(stationId as any) : null;
     const [result] = await dbPool.query(
-      `INSERT INTO t_feedback (type, description, rating, lng, lat, geom, submitter, contact, status) VALUES (?, ?, ?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?)`,
-      [type || "demand", description || "", rating || null, lngNum, latVal, geomWkt, submitter || "匿名用户", contact || null, status]
+      `INSERT INTO t_feedback (type, description, rating, lng, lat, geom, submitter, contact, station_id, status) VALUES (?, ?, ?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?, ?)`,
+      [type || "demand", description || "", rating || null, lngNum, latVal, geomWkt, submitter || "匿名用户", contact || null, stationIdVal, status]
     );
     const newFeedback = {
       id: (result as any).insertId,
@@ -117,7 +118,7 @@ app.post("/api/v1/feedback", async (req, res) => {
       rating: rating || null,
       lng: parseFloat(lng),
       lat: parseFloat(lat),
-      stationId: stationId ? parseInt(stationId as any) : undefined,
+      stationId: stationIdVal ?? undefined,
       submitter: submitter || "匿名用户",
       contact: contact || null,
       status,

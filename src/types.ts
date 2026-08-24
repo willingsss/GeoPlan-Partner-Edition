@@ -121,7 +121,10 @@ export interface FeedbackItem {
   description: string;
   rating?: number;
   submitter: string;
+  contact?: string | null;
+  stationId?: number;
   timestamp: string;
+  create_time?: string;
   status: string;
 }
 

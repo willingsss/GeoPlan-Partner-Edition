@@ -134,7 +134,7 @@ async function loadStationsFromDB(): Promise<ChargingStation[]> {
 // =========================================================================
 async function loadFeedbackFromDB(): Promise<any[]> {
   const [rows] = await dbPool.query(
-    `SELECT id, type, description, rating, lng, lat, submitter, status, create_time
+    `SELECT id, type, description, rating, lng, lat, submitter, contact, station_id, status, create_time
      FROM t_feedback ORDER BY id`
   );
   return (rows as any[]).map((r) => ({
@@ -145,6 +145,8 @@ async function loadFeedbackFromDB(): Promise<any[]> {
     description: r.description || "",
     rating: r.rating != null ? Number(r.rating) : undefined,
     submitter: r.submitter || "",
+    contact: r.contact || null,
+    stationId: r.station_id != null ? Number(r.station_id) : undefined,
     create_time: r.create_time ? new Date(r.create_time).toLocaleString("zh-CN") : "",
     status: r.status,
   }));
