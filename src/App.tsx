@@ -437,7 +437,7 @@ export default function App() {
   const [stationFeedbackLoading, setStationFeedbackLoading] = useState(false);
   const [stationFeedbackForm, setStationFeedbackForm] = useState<{ description: string; rating: number; type: "evaluation" | "demand" }>({ description: "", rating: 5, type: "evaluation" });
   const [submittingStationFeedback, setSubmittingStationFeedback] = useState(false);
-  const [feedbackFilter, setFeedbackFilter] = useState<"all" | "approved" | "rejected">("all");
+  const [feedbackFilter, setFeedbackFilter] = useState<"all" | "pending" | "approved" | "rejected">("all");
   const [feedbackSort, setFeedbackSort] = useState<"newest" | "highest">("newest");
 
 
@@ -4016,6 +4016,7 @@ export default function App() {
                       <div className="flex gap-1">
                         {([
                           { key: "all", label: "全部" },
+                          { key: "pending", label: "待审核" },
                           { key: "approved", label: "已通过" },
                           { key: "rejected", label: "违禁驳回" },
                         ] as const).map(f => (
@@ -4047,7 +4048,8 @@ export default function App() {
                         return list.map(f => (
                           <div key={f.id} className={`rounded-lg border p-3 ${
                             f.status === "approved" ? "bg-white border-slate-200" :
-                            "bg-red-50 border-red-200"
+                            f.status === "rejected" ? "bg-red-50 border-red-200" :
+                            "bg-amber-50 border-amber-200"
                           }`}>
                             <div className="flex justify-between items-start mb-1">
                               <div className="flex items-center gap-2">
@@ -4066,6 +4068,16 @@ export default function App() {
                               {f.status === "rejected" && (
                                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-600">
                                   违禁词驳回
+                                </span>
+                              )}
+                              {f.status === "pending" && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
+                                  待审核
+                                </span>
+                              )}
+                              {f.status === "approved" && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 text-green-600">
+                                  已通过
                                 </span>
                               )}
                             </div>

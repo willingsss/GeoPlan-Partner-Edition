@@ -94,7 +94,7 @@ app.get("/api/v1/feedback/by-station/:stationId", (req, res) => {
 
 // 提交公众反馈 (自动审核: 命中违禁词自动驳回, 否则待审核)
 app.post("/api/v1/feedback", async (req, res) => {
-  const { type, lng, lat, description, rating, submitter, contact } = req.body;
+  const { type, lng, lat, description, rating, submitter, contact, stationId } = req.body;
   // 徐州经纬度红线校验
   if (lng < 116.36 || lng > 118.67 || lat < 33.72 || lat > 34.97) {
     return res.status(400).json({ success: false, message: "坐标超出徐州市范围，已被红线拦截" });
@@ -103,9 +103,12 @@ app.post("/api/v1/feedback", async (req, res) => {
   const check = containsForbiddenKeyword(description || "");
   const status = check.hit ? "rejected" : "pending";
   try {
+    const lngNum = parseFloat(lng);
+    const latVal = parseFloat(lat);
+    const geomWkt = `POINT(${latVal} ${lngNum})`;
     const [result] = await dbPool.query(
-      `INSERT INTO t_feedback (type, description, rating, lng, lat, submitter, contact, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [type || "demand", description || "", rating || null, parseFloat(lng), parseFloat(lat), submitter || "匿名用户", contact || null, status]
+      `INSERT INTO t_feedback (type, description, rating, lng, lat, geom, submitter, contact, status) VALUES (?, ?, ?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?)`,
+      [type || "demand", description || "", rating || null, lngNum, latVal, geomWkt, submitter || "匿名用户", contact || null, status]
     );
     const newFeedback = {
       id: (result as any).insertId,
@@ -114,6 +117,7 @@ app.post("/api/v1/feedback", async (req, res) => {
       rating: rating || null,
       lng: parseFloat(lng),
       lat: parseFloat(lat),
+      stationId: stationId ? parseInt(stationId as any) : undefined,
       submitter: submitter || "匿名用户",
       contact: contact || null,
       status,

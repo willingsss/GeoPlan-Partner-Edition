@@ -147,10 +147,13 @@ app.post("/api/v1/stations", requireAuth, requireRole("管理员"), async (req, 
   const { name, brand, lng, lat, fast_chargers, slow_chargers, address, district, status } = req.body;
   if (!name || !brand || !lng || !lat) return res.status(400).json({ success: false, message: "参数不完整" });
   try {
+    const lngNum = parseFloat(lng);
+    const latVal = parseFloat(lat);
+    const geomWkt = `POINT(${latVal} ${lngNum})`;
     const [result]: any = await dbPool.query(
-      `INSERT INTO t_charging_station (name, brand, lng, lat, fast_chargers, slow_chargers, address, district, status, update_time)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURDATE())`,
-      [name, brand, parseFloat(lng), parseFloat(lat), fast_chargers || 0, slow_chargers || 0, address || "", district || "", status || "运营中"]
+      `INSERT INTO t_charging_station (name, brand, lng, lat, geom, fast_chargers, slow_chargers, address, district, status, update_time)
+       VALUES (?, ?, ?, ?, ST_GeomFromText(?, 4326), ?, ?, ?, ?, ?, CURDATE())`,
+      [name, brand, lngNum, latVal, geomWkt, fast_chargers || 0, slow_chargers || 0, address || "", district || "", status || "运营中"]
     );
     const newStation: ChargingStation = {
       id: result.insertId, name, brand, lng: parseFloat(lng), lat: parseFloat(lat),
@@ -173,9 +176,12 @@ app.put("/api/v1/stations/:id", requireAuth, requireRole("管理员"), async (re
   const id = parseInt(req.params.id);
   const { name, brand, lng, lat, fast_chargers, slow_chargers, address, district, status } = req.body;
   try {
+    const lngNum = parseFloat(lng);
+    const latVal = parseFloat(lat);
+    const geomWkt = `POINT(${latVal} ${lngNum})`;
     await dbPool.query(
-      `UPDATE t_charging_station SET name=?, brand=?, lng=?, lat=?, fast_chargers=?, slow_chargers=?, address=?, district=?, status=?, update_time=CURDATE() WHERE id=?`,
-      [name, brand, parseFloat(lng), parseFloat(lat), fast_chargers, slow_chargers, address, district, status, id]
+      `UPDATE t_charging_station SET name=?, brand=?, lng=?, lat=?, geom=ST_GeomFromText(?, 4326), fast_chargers=?, slow_chargers=?, address=?, district=?, status=?, update_time=CURDATE() WHERE id=?`,
+      [name, brand, lngNum, latVal, geomWkt, fast_chargers, slow_chargers, address, district, status, id]
     );
     const s = chargingStations.find(s => s.id === id);
     if (s) {
