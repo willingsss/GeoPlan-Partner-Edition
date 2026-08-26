@@ -130,7 +130,8 @@ export default function CoverageHistoryCompare({
                   className="text-[9px] px-1 py-0.5 rounded"
                   style={{ background: "var(--color-surface)", color: "var(--color-ink-4)" }}
                 >
-                  {item.params.radius || (item.params.chargeMode === "fast" ? 800 : 400)}m
+                  {/* 服务半径硬编码值与 server/config/coverageConfig.ts 保持一致 (快充1000m / 慢充400m) */}
+                  {item.params.radius || (item.params.chargeMode === "fast" ? 1000 : 400)}m
                 </span>
                 <span
                   className="text-[9px] px-1 py-0.5 rounded"

@@ -1,5 +1,5 @@
 import React from "react";
-import { Radar, Download, Printer, Info, MapPin, RefreshCw, Layers, Activity } from "lucide-react";
+import { Radar, Download, Printer, Info, MapPin, RefreshCw, Layers, Activity, X } from "lucide-react";
 import type { CoverageSummary } from "../types";
 
 export interface CoverageControlBarProps {
@@ -29,6 +29,7 @@ export interface CoverageControlBarProps {
   runCoverageAnalysis: () => void;
   exportCoverageCSV: () => void;
   printCoverageReport: () => void;
+  onClearAnalysis: () => void;
 }
 
 /**
@@ -46,6 +47,7 @@ export default function CoverageControlBar({
   showServiceArea, onToggleServiceArea,
   showOverlapArea, onToggleOverlapArea,
   runCoverageAnalysis, exportCoverageCSV, printCoverageReport,
+  onClearAnalysis,
 }: CoverageControlBarProps) {
   return (
     <div className="flex-1 min-w-[420px] px-2.5 py-2">
@@ -144,6 +146,16 @@ export default function CoverageControlBar({
     : "bg-zinc-900 hover:bg-zinc-800 text-white"
     }`}>
     {coverageLoading ? <><RefreshCw className="w-3 h-3 animate-spin" /> 分析中</> : <><Radar className="w-3 h-3" /> 开始分析</>}
+    </button>
+    {/* 清除分析结果: 一键清空所有图层 (服务区/重叠区/盲区/社区分级着色) */}
+    <button onClick={onClearAnalysis} disabled={!coverageSummary}
+    className={`h-7 px-2.5 rounded text-[11px] font-medium flex items-center gap-1 transition-all ${
+    !coverageSummary
+    ? "bg-zinc-100 text-zinc-300 cursor-not-allowed"
+    : "bg-zinc-100 hover:bg-red-50 text-zinc-600 hover:text-red-600"
+    }`}
+    title="清除地图上的服务区 / 重叠区 / 盲区 / 分级着色等所有分析图层">
+    <X className="w-3 h-3" /> 清除
     </button>
     {/* 阶段四 任务 4.3.1: 导出 CSV 按钮 (灰色变体) */}
     <button onClick={exportCoverageCSV} disabled={!coverageResults.length}

@@ -43,6 +43,7 @@ import OlMap from "ol/Map";
 import View from "ol/View";
 import TileLayer from "ol/layer/Tile";
 import VectorLayer from "ol/layer/Vector";
+import VectorImageLayer from "ol/layer/VectorImage";
 import HeatmapLayer from "ol/layer/Heatmap";
 import OSM from "ol/source/OSM";
 import XYZ from "ol/source/XYZ";
@@ -81,6 +82,7 @@ import {
 } from "./types";
 import { XUZHOU_CENTER } from "./config/map";
 import { gcj02ToWgs84, wgs84ToGcj02 } from "./lib/coordinate";
+import { EMPTY_STYLE, cacheStyle, clearStyleCache, populationToFillColor } from "./lib/styleCache";
 import MapToolbar, { type MapTool } from "./components/MapToolbar";
 import PrintDialog from "./components/PrintDialog";
 import RoiDialog from "./components/RoiDialog";
@@ -125,6 +127,8 @@ const DISTRICT_CENTERS: Record<string, [number, number]> = {
 // =========================================================================
 // 当前选中的站点 id（用于地图高亮样式，module 级以便 style 函数读取）
 let selectedStationId: number | null = null;
+// LOD 方案三+四: 鼠标悬停的站点 id（用于服务区高亮渲染，module 级以便 style 函数读取）
+let hoveredStationId: number | null = null;
 
 function getStationStyle(feature: any): Style {
   const brand = feature.get("brand") || "国家电网";
@@ -180,10 +184,10 @@ let showServiceAreaGlobal = true;
 // 重叠区图层显示开关 (图例点击切换)
 let showOverlapAreaGlobal = true;
 
-function communityGradedStyle(feature: any): Style {
+function communityGradedStyle(feature: any, resolution?: number): Style {
   // 行政区过滤: 非目标区的社区不渲染 (分析后由 _visible 标记控制)
   if (feature.get("_visible") === false) {
-    return new Style({});
+    return EMPTY_STYLE;
   }
   const level = feature.get("coverageLevel") as string | undefined;
   const ratio = feature.get("coverageRatio") as number | undefined;
@@ -198,39 +202,54 @@ function communityGradedStyle(feature: any): Style {
   }
   // 分级筛选: 选中集合非空且该社区级别不在集合 → 不渲染
   if (selectedCoverageLevelsGlobal && selectedCoverageLevelsGlobal.size > 0 && effectiveLevel && !selectedCoverageLevelsGlobal.has(effectiveLevel)) {
-    return new Style({});
+    return EMPTY_STYLE;
   }
-  // 有 level 时按分级色着色
-  if (level && COVERAGE_LEVEL_COLORS[level]) {
-    const color = COVERAGE_LEVEL_COLORS[level];
+  // O3: 缩放级别低时不显示社区文本 (resolution > 50 ≈ zoom < 13)
+  // 视口内社区少 (高缩放级别) 时才显示文本, 避免大量文本渲染拖累平移
+  const showText = resolution != null && resolution <= 50;
+  const name = showText ? (feature.get("name") || "") : "";
+
+  // O1: 不带文本样式按 effectiveLevel 缓存 (大比例尺下复用, 减少 new Style)
+  if (!name) {
+    return cacheStyle("communityGradedBase", effectiveLevel || "default", () => {
+      if (effectiveLevel && COVERAGE_LEVEL_COLORS[effectiveLevel]) {
+        const color = COVERAGE_LEVEL_COLORS[effectiveLevel];
+        return new Style({
+          fill: new Fill({ color: hexToRgba(color, 0.35) }),
+          stroke: new Stroke({ color, width: 1 }),
+        });
+      }
+      // 默认灰色填充 (未分析)
+      return new Style({
+        fill: new Fill({ color: "rgba(161,161,170,0.15)" }),
+        stroke: new Stroke({ color: "var(--color-line-strong)", width: 1 }),
+      });
+    });
+  }
+  // 带文本样式: 仅高缩放级别视口内少数社区触发, 临时创建可接受
+  if (effectiveLevel && COVERAGE_LEVEL_COLORS[effectiveLevel]) {
+    const color = COVERAGE_LEVEL_COLORS[effectiveLevel];
     return new Style({
       fill: new Fill({ color: hexToRgba(color, 0.35) }),
       stroke: new Stroke({ color, width: 1 }),
       text: new Text({
-        text: feature.get("name") || "",
+        text: name,
         font: "bold 10px sans-serif",
         fill: new Fill({ color: "#1F2937" }),
         stroke: new Stroke({ color: "#ffffff", width: 2 }),
       }),
     });
   }
-  // 无 level: 兜底用 coverageRatio 推断
-  if (typeof ratio === "number") {
-    let inferred = "极差";
-    if (ratio >= 90) inferred = "优秀";
-    else if (ratio >= 60) inferred = "良好";
-    else if (ratio >= 30) inferred = "一般";
-    else if (ratio >= 10) inferred = "较差";
-    const color = COVERAGE_LEVEL_COLORS[inferred];
-    return new Style({
-      fill: new Fill({ color: hexToRgba(color, 0.35) }),
-      stroke: new Stroke({ color, width: 1 }),
-    });
-  }
-  // 默认灰色填充 (未分析)
+  // 默认灰色填充 (带文本)
   return new Style({
     fill: new Fill({ color: "rgba(161,161,170,0.15)" }),
     stroke: new Stroke({ color: "var(--color-line-strong)", width: 1 }),
+    text: new Text({
+      text: name,
+      font: "bold 10px sans-serif",
+      fill: new Fill({ color: "#1F2937" }),
+      stroke: new Stroke({ color: "#ffffff", width: 2 }),
+    }),
   });
 }
 
@@ -303,6 +322,8 @@ export default function App() {
     schemesLoaded, setSchemesLoaded,
   } = useSiteAnalysis();
   const [selectedStation, setSelectedStation] = useState<any>(null);
+  // 服务区点击信息面板 (LOD 方案: 点击等时圈/缓冲区弹出属性面板)
+  const [serviceAreaInfo, setServiceAreaInfo] = useState<any | null>(null);
   // 候选点"在此选址"联动: 记录从覆盖分析点进来的候选点, 选址面板只显示对应那一个
   const [activeCandidate, setActiveCandidate] = useState<BlindSpotCluster | null>(null);
   // 选址评估覆盖的社区明细 (盲区社区联动, 可点开看详情)
@@ -383,6 +404,51 @@ export default function App() {
     showOverlapAreaGlobal = next;
     overlapLayerRef.current?.changed();
     overlapSourceRef.current?.changed();
+  };
+
+  // 清除覆盖分析结果: 一键清空所有结果状态、隐藏所有分析图层
+  // 用于"分析完成后一直显示在地图上无法取消"的场景
+  const clearCoverageAnalysis = () => {
+    // 1. 清空所有结果状态
+    setCoverageSummary(null);
+    setCoverageResults([]);
+    setBlindSpotClusters([]);
+    setCoverageLevels([]);
+    setDistrictStats([]);
+    setLastCoverageSummary(null);
+    setIsochroneCoverage(null);
+    setSelectedCoverageLevels(new Set<string>());
+
+    // 2. 重置图层显示开关 (恢复默认显示状态)
+    setShowServiceArea(true);
+    setShowOverlapArea(true);
+    showServiceAreaGlobal = true;
+    showOverlapAreaGlobal = true;
+    selectedCoverageLevelsGlobal = null;
+
+    // 3. 清空所有图层 (服务区 / 重叠区 / 盲区 / 候选点 / 行政区边界)
+    serviceAreaSourceRef.current?.clear();
+    overlapSourceRef.current?.clear();
+    blindSpotSourceRef.current?.clear();
+    clusterSourceRef.current?.clear();
+    districtBoundarySourceRef.current?.clear();
+
+    // 4. 清除社区 Feature 上写入的分析属性 (coverageRatio / coverageLevel / _visible)
+    communitySourceRef.current?.getFeatures().forEach((f: any) => {
+      f.unset("coverageRatio");
+      f.unset("coverageLevel");
+      f.set("_visible", true);
+    });
+
+    // 5. 清空跨 Tab 保留的盲区几何 (供 evaluate-site 联动判断)
+    lastCoverageBlindSpotsRef.current = [];
+
+    // 6. 清除悬停状态 (LOD 方案四)
+    hoveredStationId = null;
+
+    // 7. 触发图层刷新, 使样式立即生效
+    communityLayerRef.current?.changed();
+    serviceAreaLayerRef.current?.changed();
   };
 
   // 覆盖率分级筛选切换 (图例点击): 支持多选, 空 = 全部显示
@@ -898,16 +964,26 @@ export default function App() {
     const overlapSource = new VectorSource();
     overlapSourceRef.current = overlapSource;
 
-    const communityStyle = (feature: any) => {
+    const communityStyle = (feature: any, resolution?: number) => {
       const popCount = feature.get("population_total") || 10000;
-      let fillCol = "rgba(0,200,150,0.06)";
-      if (popCount > 14000) fillCol = "rgba(0,200,150,0.14)";
-      else if (popCount > 10000) fillCol = "rgba(0,200,150,0.10)";
+      // O1: 按 popBucket 缓存基础样式 (无文本), 减少 new Style
+      // O3: resolution > 50 (zoom < 13) 时不显示文本, 大幅减少小比例尺下文本渲染
+      const showText = resolution != null && resolution <= 50;
+      const name = showText ? (feature.get("name") || "") : "";
+      if (!name) {
+        // 无文本样式: 按人口分桶缓存 (3 档)
+        const bucket = popCount > 14000 ? "hi" : (popCount > 10000 ? "mid" : "lo");
+        return cacheStyle("communityBase", bucket, () => new Style({
+          stroke: new Stroke({ color: "rgba(0,200,150,0.5)", width: 1.5 }),
+          fill: new Fill({ color: populationToFillColor(popCount) }),
+        }));
+      }
+      // 带文本样式: 仅高缩放级别视口内少数社区触发, 临时创建可接受
       return new Style({
         stroke: new Stroke({ color: "rgba(0,200,150,0.5)", width: 1.5 }),
-        fill: new Fill({ color: fillCol }),
+        fill: new Fill({ color: populationToFillColor(popCount) }),
         text: new Text({
-          text: feature.get("name") || "",
+          text: name,
           font: "bold 10px sans-serif",
           fill: new Fill({ color: "#1F2937" }),
           stroke: new Stroke({ color: "#ffffff", width: 2 }),
@@ -917,14 +993,13 @@ export default function App() {
     // 保存原始社区样式引用, 供 Tab 切换时恢复 (阶段二 任务 2.2)
     communityStyleRef.current = communityStyle;
 
-    // 服务区重叠区样式: 45° 斜线 pattern 填充 (阶段二 任务 2.3)
-    // 斜线加粗加深, 保证行政区模式下重叠区肉眼可见 (开关才有感知)
+    // 服务区重叠区样式: 45° 斜线 pattern 填充, 灰色调避免与等时圈/缓冲区混淆
     const overlapPatternCanvas = document.createElement("canvas");
     overlapPatternCanvas.width = 10;
     overlapPatternCanvas.height = 10;
     const overlapPctx = overlapPatternCanvas.getContext("2d")!;
-    overlapPctx.strokeStyle = "rgba(245, 158, 11, 0.9)";
-    overlapPctx.lineWidth = 2;
+    overlapPctx.strokeStyle = "rgba(120, 120, 120, 0.5)";
+    overlapPctx.lineWidth = 1.5;
     overlapPctx.beginPath();
     overlapPctx.moveTo(0, 10);
     overlapPctx.lineTo(10, 0);
@@ -932,10 +1007,19 @@ export default function App() {
     const overlapPattern = overlapPctx.createPattern(overlapPatternCanvas, "repeat")!;
     const overlapStyle = new Style({
       fill: new Fill({ color: overlapPattern as any }),
-      stroke: new Stroke({ color: "#F59E0B", width: 1.5 }),
+      stroke: new Stroke({ color: "rgba(100, 100, 100, 0.4)", width: 1 }),
     });
-    // 重叠区显示开关 (图例点击): 关闭时不渲染
-    const overlapStyleFn = () => (showOverlapAreaGlobal ? overlapStyle : new Style({}));
+    // LOD 方案三: 重叠区只在高缩放 (zoom > 15) 时显示, 中低缩放隐藏
+    // 图例开关 (showOverlapAreaGlobal) 仍然是总开关
+    const overlapStyleFn = (_feature: any, resolution?: number) => {
+      if (!showOverlapAreaGlobal) return EMPTY_STYLE;
+      const zoom = resolution != null
+        ? Math.log2(40075016.686 / (resolution * 256))
+        : (mapRef.current?.getView().getZoom() ?? 10);
+      // 中低缩放: 隐藏重叠区 (斜线密度太高, 视觉混乱)
+      if (zoom < 15) return EMPTY_STYLE;
+      return overlapStyle;
+    };
 
     const blindSpotStyle = new Style({
       stroke: new Stroke({ color: "#ef4444", width: 2.5 }),
@@ -948,29 +1032,82 @@ export default function App() {
       }),
     });
 
-    const serviceAreaStyle = (feature: any) => {
-      // 服务区图层开关 (图例点击): 关闭时不渲染
-      if (!showServiceAreaGlobal) {
-        return new Style({});
-      }
-      // 服务区统一使用品牌主色 (青色), 不再按站点品牌着色, 避免地图颜色杂乱
-      const color = "#00C896";
-      // 阶段五 等时圈: 等时圈用虚线 + 半透明填充, 缓冲区用实线 + 极淡填充, 视觉可区分且不遮底图
+    // =========================================================================
+    // LOD 方案三+四: 服务区样式函数
+    // - 低缩放 (zoom < 12): 完全隐藏 (只看盲区 + 站点点位)
+    // - 中缩放 (z12~z15): 极淡化 (0.8px 细描边 + 无填充), 悬停站点高亮
+    // - 高缩放 (zoom > 15): 完整显示 (描边 + 淡填充), 悬停站点加发光
+    // 图例开关 (showServiceAreaGlobal) 是总开关, 关闭后一律不显示
+    // =========================================================================
+    const serviceAreaStyle = (feature: any, resolution?: number) => {
+      // 图例总开关: 关闭时不渲染
+      if (!showServiceAreaGlobal) return EMPTY_STYLE;
+
+      // 等时圈子开关
       const source = feature.get("source");
-      if (source === "isochrone") {
-        // 等时圈图层开关关闭时不渲染 (返回透明样式)
-        if (!showIsochroneLayerRef.current) {
-          return new Style({});
-        }
-        return new Style({
-          stroke: new Stroke({ color: "#7c3aed", width: 1.5, lineDash: [6, 4] }),
-          fill: new Fill({ color: "rgba(124, 58, 237, 0.05)" }),
-        });
+      const isIsochrone = source === "isochrone";
+      if (isIsochrone && !showIsochroneLayerRef.current) return EMPTY_STYLE;
+
+      // 计算当前 zoom 级别 (resolution -> zoom 转换)
+      const zoom = resolution != null
+        ? Math.log2(40075016.686 / (resolution * 256))
+        : (mapRef.current?.getView().getZoom() ?? 10);
+
+      // 获取此服务区对应的站点 id (用于悬停高亮匹配)
+      const featStationId = feature.get("stationId");
+      const isHovered = hoveredStationId !== null && featStationId === hoveredStationId;
+
+      // 颜色按来源区分: 缓冲区=绿色, 等时圈=紫色
+      const strokeColor = isIsochrone ? "#7c3aed" : "#00C896";
+      const fillColorBase = isIsochrone ? "124, 58, 237" : "0, 200, 150";
+
+      // ---- 第一级: 全局视图 (zoom < 12) → 完全隐藏 ----
+      if (zoom < 12) {
+        // 悬停时仍然显示高亮的服务区 (即使全局视角也允许悬停查看单个)
+        if (!isHovered) return EMPTY_STYLE;
+        // 悬停高亮样式
+        return cacheStyle("serviceArea", `hover-${isIsochrone ? "iso" : "buf"}`, () => new Style({
+          stroke: new Stroke({ color: strokeColor, width: 2.5 }),
+          fill: new Fill({ color: `rgba(${fillColorBase}, 0.12)` }),
+        }));
       }
-      return new Style({
-        stroke: new Stroke({ color, width: 1.5 }),
-        fill: new Fill({ color: color + "08" }),
-      });
+
+      // ---- 第二级: 区域视图 (z12 ~ z15) → 极淡化, 悬停高亮 ----
+      if (zoom < 15) {
+        if (isHovered) {
+          // 悬停的服务区: 完整高亮显示
+          return cacheStyle("serviceArea", `hover-${isIsochrone ? "iso" : "buf"}`, () => new Style({
+            stroke: new Stroke({ color: strokeColor, width: 2.5 }),
+            fill: new Fill({ color: `rgba(${fillColorBase}, 0.12)` }),
+          }));
+        }
+        // 非悬停: 极淡化 (细描边 + 无填充)
+        return cacheStyle("serviceArea", `dim-${isIsochrone ? "iso" : "buf"}`, () => new Style({
+          stroke: new Stroke({ color: `rgba(${fillColorBase}, 0.25)`, width: 0.8 }),
+        }));
+      }
+
+      // ---- 第三级: 站点视图 (zoom > 15) → 完整显示, 悬停加粗 ----
+      if (isHovered) {
+        // 悬停时加粗描边 + 适度填充
+        return cacheStyle("serviceArea", `hl-${isIsochrone ? "iso" : "buf"}`, () => new Style({
+          stroke: new Stroke({
+            color: `rgba(${fillColorBase}, 0.7)`,
+            width: 2.5,
+            lineDash: isIsochrone ? [6, 4] : undefined,
+          }),
+          fill: new Fill({ color: `rgba(${fillColorBase}, 0.08)` }),
+        }));
+      }
+      // 正常完整显示 (浅色)
+      return cacheStyle("serviceArea", `full-${isIsochrone ? "iso" : "buf"}`, () => new Style({
+        stroke: new Stroke({
+          color: `rgba(${fillColorBase}, 0.4)`,
+          width: 1.2,
+          lineDash: isIsochrone ? [6, 4] : undefined,
+        }),
+        fill: new Fill({ color: `rgba(${fillColorBase}, 0.02)` }),
+      }));
     };
 
     const virtualStationStyle = new Style({
@@ -990,27 +1127,32 @@ export default function App() {
 
     const intersectionStyle = (feature: any) => {
       const ratio = feature.get("coverage_ratio") || 0;
-      return new Style({
+      // O1: 按 ratio 分桶缓存 (10 档), 减少 new Style
+      const bucket = Math.min(Math.floor(ratio / 10) * 10, 90);
+      return cacheStyle("intersection", `r${bucket}`, () => new Style({
         stroke: new Stroke({ color: "#22c55e", width: 2 }),
         fill: new Fill({ color: "rgba(34,197,94,0.35)" }),
         text: new Text({
-          text: `${ratio}%`,
+          text: `${bucket}%`,
           font: "9px sans-serif",
           fill: new Fill({ color: "#052e16" }),
           stroke: new Stroke({ color: "#ffffff", width: 2 }),
         }),
-      });
+      }));
     };
 
     const feedbackStyle = (feature: any) => {
       const type = feature.get("type");
-      const color = type === "demand" ? "#f97316" : "#06b6d4";
-      return new Style({
-        image: new CircleStyle({
-          radius: 6,
-          fill: new Fill({ color }),
-          stroke: new Stroke({ color: "#ffffff", width: 2 }),
-        }),
+      // O1: 按 type 缓存 (2 种: demand / 其他)
+      return cacheStyle("feedback", type || "default", () => {
+        const color = type === "demand" ? "#f97316" : "#06b6d4";
+        return new Style({
+          image: new CircleStyle({
+            radius: 6,
+            fill: new Fill({ color }),
+            stroke: new Stroke({ color: "#ffffff", width: 2 }),
+          }),
+        });
       });
     };
 
@@ -1027,8 +1169,21 @@ export default function App() {
             maxZoom: 20,
           }),
         }),
-        (() => { const l = new VectorLayer({ source: communitySource, style: communityStyle, visible: false }); communityLayerRef.current = l; return l; })(),
-        (() => { const l = new VectorLayer({ source: serviceAreaSource, style: serviceAreaStyle }); serviceAreaLayerRef.current = l; return l; })(),
+        // O2: 社区/服务区/重叠区改用 VectorImageLayer (图像缓存渲染, 平移丝滑)
+        //   代价: 图层切换/数据更新有约 200ms 延迟, 但大幅减少平移时的几何重绘开销
+        (() => { const l = new VectorImageLayer({
+          source: communitySource,
+          style: communityStyle,
+          visible: false,
+          renderBuffer: 200,   // 限制视口外渲染范围 (像素), 减少不必要的几何计算
+          imageRatio: 1.5,     // 图像覆盖范围略大于视口, 减少平移时的图像重生成
+        }); communityLayerRef.current = l; return l; })(),
+        (() => { const l = new VectorImageLayer({
+          source: serviceAreaSource,
+          style: serviceAreaStyle,
+          renderBuffer: 200,
+          imageRatio: 1.5,
+        }); serviceAreaLayerRef.current = l; return l; })(),
         // 行政区边界图层: 分析时高亮显示所选行政区范围 (橙色虚线轮廓)
         (() => { const l = new VectorLayer({
           source: districtBoundarySourceRef.current!,
@@ -1082,27 +1237,36 @@ export default function App() {
           source: clusterSource,
           style: (feature: any) => {
             const c: BlindSpotCluster = feature.get("cluster");
-            // 人口格式化: >=1000 显示为 "x.xk", 否则原值
             const pop = c?.population ?? 0;
-            const popText = pop >= 1000 ? `${(pop / 1000).toFixed(1)}k` : `${pop}`;
-            return new Style({
-              image: new CircleStyle({
-                radius: 10,
-                fill: new Fill({ color: "#f59e0b" }),
-                stroke: new Stroke({ color: "#ffffff", width: 2 }),
-              }),
-              text: new Text({
-                text: popText,
-                font: "bold 10px sans-serif",
-                offsetY: -18,
-                fill: new Fill({ color: "#92400e" }),
-                stroke: new Stroke({ color: "#ffffff", width: 3 }),
-              }),
+            // O1: 按 popBucket 缓存, 避免每个聚类点都 new Style
+            const popBucket = pop >= 1000 ? `k${Math.floor(pop / 1000)}` : `p${Math.floor(pop / 100)}`;
+            return cacheStyle("cluster", popBucket, () => {
+              const popText = pop >= 1000 ? `${(pop / 1000).toFixed(1)}k` : `${pop}`;
+              return new Style({
+                image: new CircleStyle({
+                  radius: 10,
+                  fill: new Fill({ color: "#f59e0b" }),
+                  stroke: new Stroke({ color: "#ffffff", width: 2 }),
+                }),
+                text: new Text({
+                  text: popText,
+                  font: "bold 10px sans-serif",
+                  offsetY: -18,
+                  fill: new Fill({ color: "#92400e" }),
+                  stroke: new Stroke({ color: "#ffffff", width: 3 }),
+                }),
+              });
             });
           },
         }); clusterLayerRef.current = l; return l; })(),
         // 服务区重叠图层 (阶段二 任务 2.3): 斜线 pattern, 仅 coverage Tab 可见
-        (() => { const l = new VectorLayer({ source: overlapSource, style: overlapStyleFn, visible: false }); overlapLayerRef.current = l; return l; })(),
+        (() => { const l = new VectorImageLayer({
+          source: overlapSource,
+          style: overlapStyleFn,
+          visible: false,
+          renderBuffer: 200,
+          imageRatio: 1.5,
+        }); overlapLayerRef.current = l; return l; })(),
         // GIS 分析缓冲区图层
         new VectorLayer({
           source: gisBufferSource,
@@ -1242,10 +1406,61 @@ export default function App() {
     // DOM 节点移到地图 overlay 容器, 导致 React reconciliation 时 insertBefore 失败.
     // 现改为普通 React 模态框 (屏幕中央), 不再使用 map.addOverlay.
 
-    // 鼠标移动
+    // LOD 方案三: 缩放结束时强制刷新服务区+重叠区图层, 确保 LOD 样式立即更新
+    // VectorImageLayer 在 imageRatio 范围内可能复用旧渲染图像, 需手动触发 changed()
+    // 同时动态调整热力图半径: 低缩放时收缩, 避免所有点糊成一团
+    let lastZoom = Math.round(map.getView().getZoom() ?? 12);
+    const updateHeatmapRadius = (z: number) => {
+      // 半径公式: zoom 10→8px, zoom 12→16px, zoom 15→30px, zoom 18→42px
+      const r = Math.round(Math.max(8, 8 + (z - 10) * 4.2));
+      const b = Math.round(Math.max(5, r * 0.65));
+      heatmapLayerRef.current?.setRadius(r);
+      heatmapLayerRef.current?.setBlur(b);
+      feedbackHeatmapLayerRef.current?.setRadius(r);
+      feedbackHeatmapLayerRef.current?.setBlur(b);
+      coverageHeatmapLayerRef.current?.setRadius(r);
+      coverageHeatmapLayerRef.current?.setBlur(b);
+    };
+    updateHeatmapRadius(lastZoom);
+    map.on("moveend", () => {
+      const z = Math.round(map.getView().getZoom() ?? 12);
+      if (z !== lastZoom) {
+        lastZoom = z;
+        serviceAreaLayerRef.current?.changed();
+        overlapLayerRef.current?.changed();
+        updateHeatmapRadius(z);
+      }
+    });
+
+    // 鼠标移动: 更新坐标 + 节流检测悬停充电站 (LOD 方案四)
+    let hoverThrottle = 0;
     map.on("pointermove", (e) => {
       const coord = toLonLat(e.coordinate);
       setMousePosition([parseFloat(coord[0].toFixed(5)), parseFloat(coord[1].toFixed(5))]);
+
+      // 节流: 每 50ms 最多检测一次悬停
+      const now = Date.now();
+      if (now - hoverThrottle < 50) return;
+      hoverThrottle = now;
+
+      // 只在 coverage tab 且有服务区数据时才做悬停检测
+      if (activeTabRef.current !== "coverage") return;
+      if (!serviceAreaSourceRef.current || serviceAreaSourceRef.current.getFeatures().length === 0) return;
+
+      // 检测鼠标下是否有充电站点位
+      let hitStationId: number | null = null;
+      map.forEachFeatureAtPixel(e.pixel, (feature, layer) => {
+        if (layer === stationLayerRef.current) {
+          const id = feature.get("id");
+          if (id != null) hitStationId = id;
+        }
+      }, { hitTolerance: 4 });
+
+      // 只在变化时触发重绘
+      if (hitStationId !== hoveredStationId) {
+        hoveredStationId = hitStationId;
+        serviceAreaLayerRef.current?.changed();
+      }
     });
 
     // 地图点击
@@ -1260,11 +1475,12 @@ export default function App() {
       const lng = parseFloat(wgsLng.toFixed(6));
       const lat = parseFloat(wgsLat.toFixed(6));
 
-      // 检查是否点击了充电站 / 候选点 / 重叠区 / 社区
+      // 检查是否点击了充电站 / 候选点 / 重叠区 / 社区 / 服务区
       let clickedStation: any = null;
       let clickedCluster: BlindSpotCluster | null = null;
       let clickedOverlap: any = null;
       let clickedCommunityFeature: any = null;
+      let clickedServiceArea: any = null;
       map.forEachFeatureAtPixel(e.pixel, (feature, layer) => {
         const props = feature.getProperties();
         if (props.brand && props.name) {
@@ -1281,6 +1497,10 @@ export default function App() {
         // 社区 feature (阶段二 任务 2.5.2)
         if (layer === communityLayerRef.current) {
           clickedCommunityFeature = feature;
+        }
+        // 服务区/等时圈 feature (LOD 方案: 点击弹出属性面板)
+        if (layer === serviceAreaLayerRef.current && props.stationName) {
+          clickedServiceArea = props;
         }
       });
 
@@ -1302,6 +1522,12 @@ export default function App() {
         if (aiOverlayRef.current) aiOverlayRef.current.setPosition(undefined);
         if (aiHighlightTimerRef.current) { clearInterval(aiHighlightTimerRef.current); aiHighlightTimerRef.current = null; }
         setAiStationDetail(null);
+        return;
+      }
+
+      // 覆盖分析 Tab: 点击服务区/等时圈弹出属性面板
+      if (currentTab === "coverage" && clickedServiceArea) {
+        setServiceAreaInfo(clickedServiceArea);
         return;
       }
 
@@ -1356,6 +1582,7 @@ export default function App() {
         hideStationInfoPopup();
       stationLayerRef.current?.changed();
       setSelectedCluster(null);
+      setServiceAreaInfo(null);
       // 同时关闭 AI 高亮
       if (aiHighlightSourceRef.current) aiHighlightSourceRef.current.clear();
       if (aiOverlayRef.current) aiOverlayRef.current.setPosition(undefined);
@@ -2078,49 +2305,70 @@ export default function App() {
           const saFeatures = readFeaturesFromWGS84(json.data.serviceAreas);
           serviceAreaSourceRef.current.addFeatures(saFeatures);
         }
-        // 渲染行政区边界 (划定可视化界限)
-        if (districtBoundarySourceRef.current) {
-          districtBoundarySourceRef.current.clear();
-          if (json.data.districtBoundary) {
-            const bFeats = readFeaturesFromWGS84({ type: "FeatureCollection", features: [json.data.districtBoundary] });
-            districtBoundarySourceRef.current.addFeatures(bFeats);
-          }
-        }
-        // 渲染盲区
-        if (blindSpotSourceRef.current) {
-          blindSpotSourceRef.current.clear();
-          const bsFeatures = readFeaturesFromWGS84(json.data.blindSpots);
-          blindSpotSourceRef.current.addFeatures(bsFeatures);
-        }
-        // 渲染候选点 (盲区聚类中心)
-        if (clusterSourceRef.current) {
-          clusterSourceRef.current.clear();
-          clusters.forEach((c: BlindSpotCluster) => {
-            // 后端 center 为 WGS84 [lng, lat], 转换为 GCJ02 后投影到底图
-            const [gcjLng, gcjLat] = wgs84ToGcj02(c.center[0], c.center[1]);
-            const feat = new Feature({ geometry: new Point(fromLonLat([gcjLng, gcjLat])) });
-            feat.set("cluster", c);
-            clusterSourceRef.current!.addFeature(feat);
-          });
-        }
-        // 将 coverageRatio 和 level 写入 communitySource 中对应 Feature (阶段二 任务 2.2.2)
-        if (communitySourceRef.current) {
-          const commResults: any[] = json.data.communityResults || [];
-          commResults.forEach((comm: any) => {
-            // 按 id 匹配 communitySource 中的 Feature
-            const feat = communitySourceRef.current!.getFeatureById(comm.id);
-            if (feat) {
-              feat.set("coverageRatio", comm.coverageRatio);
-              feat.set("coverageLevel", comm.level);
+        // O7: 后续渲染分批执行, 避免大量 Feature 同步写入阻塞主线程
+        //   第 1 帧: 行政区边界 + 盲区 (数据量小, 立即响应)
+        //   第 2 帧: 候选点 (聚类中心)
+        //   第 3 帧: 社区覆盖率写入 (大量 Feature, 需拆分)
+        //   第 4 帧: 重叠区 (数据量小)
+        requestAnimationFrame(() => {
+          // 渲染行政区边界 (划定可视化界限)
+          if (districtBoundarySourceRef.current) {
+            districtBoundarySourceRef.current.clear();
+            if (json.data.districtBoundary) {
+              const bFeats = readFeaturesFromWGS84({ type: "FeatureCollection", features: [json.data.districtBoundary] });
+              districtBoundarySourceRef.current.addFeatures(bFeats);
             }
+          }
+          // 渲染盲区
+          if (blindSpotSourceRef.current) {
+            blindSpotSourceRef.current.clear();
+            const bsFeatures = readFeaturesFromWGS84(json.data.blindSpots);
+            blindSpotSourceRef.current.addFeatures(bsFeatures);
+          }
+          // 第 2 帧: 候选点 + 重叠区
+          requestAnimationFrame(() => {
+            if (clusterSourceRef.current) {
+              clusterSourceRef.current.clear();
+              clusters.forEach((c: BlindSpotCluster) => {
+                const [gcjLng, gcjLat] = wgs84ToGcj02(c.center[0], c.center[1]);
+                const feat = new Feature({ geometry: new Point(fromLonLat([gcjLng, gcjLat])) });
+                feat.set("cluster", c);
+                clusterSourceRef.current!.addFeature(feat);
+              });
+            }
+            if (overlapSourceRef.current && json.data.overlapAreas) {
+              overlapSourceRef.current.clear();
+              const ovFeatures = readFeaturesFromWGS84(json.data.overlapAreas);
+              overlapSourceRef.current.addFeatures(ovFeatures);
+            }
+            // 第 3 帧: 社区覆盖率分批写入 (避免一次循环几千个阻塞)
+            requestAnimationFrame(() => {
+              if (communitySourceRef.current) {
+                const commResults: any[] = json.data.communityResults || [];
+                const BATCH = 400;
+                let idx = 0;
+                const writeBatch = () => {
+                  const end = Math.min(idx + BATCH, commResults.length);
+                  for (; idx < end; idx++) {
+                    const comm = commResults[idx];
+                    const feat = communitySourceRef.current!.getFeatureById(comm.id);
+                    if (feat) {
+                      feat.set("coverageRatio", comm.coverageRatio);
+                      feat.set("coverageLevel", comm.level);
+                    }
+                  }
+                  if (idx < commResults.length) {
+                    requestAnimationFrame(writeBatch);
+                  } else {
+                    // 最后触发一次图层刷新
+                    communityLayerRef.current?.changed();
+                  }
+                };
+                writeBatch();
+              }
+            });
           });
-        }
-        // 渲染服务区重叠区 (阶段二 任务 2.3.2)
-        if (overlapSourceRef.current && json.data.overlapAreas) {
-          overlapSourceRef.current.clear();
-          const ovFeatures = readFeaturesFromWGS84(json.data.overlapAreas);
-          overlapSourceRef.current.addFeatures(ovFeatures);
-        }
+        });
       }
     } catch (e) { console.error(e); }
     // 阶段三 任务 3.4.2: 分析完成, 进度跳到 100, 500ms 后清零并停止定时器
@@ -2141,7 +2389,8 @@ export default function App() {
     // 阶段五 等时圈: CSV 首行追加服务区模式信息便于追溯
     const saModeLabel = serviceAreaMode === "buffer" ? "缓冲区" : serviceAreaMode === "isochrone" ? "等时圈" : "混合";
     const header = ["社区名", "行政区", "人口", "覆盖率(%)", "分级", "覆盖充电站"];
-    const metaRow = [`# 服务区模式=${saModeLabel}`, `充电模式=${chargeMode === "fast" ? "快充" : "慢充"}`, `服务半径=${coverageRadius || (chargeMode === "fast" ? 800 : 400)}m`, `行政区=${coverageDistrict === "all" ? "全部" : coverageDistrict}`];
+    // 服务半径硬编码值与 server/config/coverageConfig.ts 保持一致 (快充1000m / 慢充400m)
+    const metaRow = [`# 服务区模式=${saModeLabel}`, `充电模式=${chargeMode === "fast" ? "快充" : "慢充"}`, `服务半径=${coverageRadius || (chargeMode === "fast" ? 1000 : 400)}m`, `行政区=${coverageDistrict === "all" ? "全部" : coverageDistrict}`];
     const rows = coverageResults.map(c => [
       c.name,
       c.district,
@@ -2189,7 +2438,8 @@ export default function App() {
     }
     // 参数显示
     const modeText = chargeMode === "fast" ? "快充" : "慢充";
-    const radiusText = `${coverageRadius || (chargeMode === "fast" ? 800 : 400)}m`;
+    // 服务半径硬编码值与 server/config/coverageConfig.ts 保持一致 (快充1000m / 慢充400m)
+    const radiusText = `${coverageRadius || (chargeMode === "fast" ? 1000 : 400)}m`;
     const districtText = coverageDistrict === "all" ? "全部行政区" : coverageDistrict;
     // 阶段五 等时圈: 报告中标注服务区模式
     const saModeText = serviceAreaMode === "buffer" ? "圆形缓冲区" : serviceAreaMode === "isochrone" ? "路网等时圈" : "混合 (等时圈优先, 缺失回退缓冲区)";
@@ -3452,6 +3702,7 @@ export default function App() {
             runCoverageAnalysis={runCoverageAnalysis}
             exportCoverageCSV={exportCoverageCSV}
             printCoverageReport={printCoverageReport}
+            onClearAnalysis={clearCoverageAnalysis}
           />
         )}
 
@@ -3500,6 +3751,59 @@ export default function App() {
               {/* 地图工具栏已移至顶部横栏 (避免遮挡地图) */}
 
               {/* 空间查询结果浮窗已移至主界面顶层 (fixed 视口定位) */}
+
+              {/* 服务区/等时圈信息面板 (点击服务区弹出, Bento 玻璃拟态) */}
+              {serviceAreaInfo && (
+                <div
+                  className="absolute top-16 right-3 z-40 w-[260px] overflow-hidden pointer-events-auto animate-panel-enter bento-tile"
+                  style={{
+                    background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
+                    backdropFilter: "blur(20px) saturate(1.4)",
+                    WebkitBackdropFilter: "blur(20px) saturate(1.4)",
+                    border: "1px solid rgba(255,255,255,0.4)",
+                    boxShadow: "var(--shadow-elevated)",
+                    borderRadius: 14,
+                  }}
+                  onClick={e => e.stopPropagation()}
+                >
+                  <div className="px-3.5 py-2.5 flex items-center gap-2" style={{ background: serviceAreaInfo.source === "isochrone" ? "rgba(124,58,237,0.08)" : "rgba(0,200,150,0.08)", borderBottom: `1px solid ${serviceAreaInfo.source === "isochrone" ? "rgba(124,58,237,0.12)" : "rgba(0,200,150,0.12)"}` }}>
+                    <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: serviceAreaInfo.source === "isochrone" ? "rgba(124,58,237,0.12)" : "rgba(0,200,150,0.12)" }}>
+                      <Info className="w-3.5 h-3.5" style={{ color: serviceAreaInfo.source === "isochrone" ? "#7c3aed" : "var(--color-brand-text)" }} />
+                    </div>
+                    <span className="text-[12px] font-bold" style={{ color: serviceAreaInfo.source === "isochrone" ? "#7c3aed" : "var(--color-brand-text)" }}>
+                      {serviceAreaInfo.source === "isochrone" ? "等时圈" : "服务区"}
+                    </span>
+                    <button onClick={() => setServiceAreaInfo(null)}
+                      className="ml-auto w-5 h-5 rounded-md flex items-center justify-center transition-colors"
+                      style={{ color: "var(--color-ink-4)" }}
+                      onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+                      onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  <div className="px-3.5 py-3 space-y-2 text-[11px]" style={{ color: "var(--color-ink-2)" }}>
+                    <div className="flex justify-between items-center">
+                      <span style={{ color: "var(--color-ink-4)" }}>所属站点</span>
+                      <span className="font-semibold" style={{ color: "var(--color-ink-1)" }}>{serviceAreaInfo.stationName}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span style={{ color: "var(--color-ink-4)" }}>运营品牌</span>
+                      <span className="font-semibold" style={{ color: "var(--color-ink-1)" }}>{serviceAreaInfo.brand || "—"}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span style={{ color: "var(--color-ink-4)" }}>服务半径</span>
+                      <span className="font-semibold font-num" style={{ color: "var(--color-brand-text)" }}>{serviceAreaInfo.radius ? `${serviceAreaInfo.radius} m` : "—"}</span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span style={{ color: "var(--color-ink-4)" }}>计算模式</span>
+                      <span className="font-semibold" style={{ color: "var(--color-ink-1)" }}>
+                        {serviceAreaInfo.source === "isochrone" ? "等时圈 (路网可达)" : serviceAreaInfo.mode === "hybrid" ? "混合 (等时圈优先)" : "圆形缓冲区"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* 候选点选中弹窗 (地图右上角, Bento 玻璃拟态) */}
               {selectedCluster && (

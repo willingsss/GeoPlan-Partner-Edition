@@ -1,6 +1,8 @@
 import express from "express";
 import * as turf from "@turf/turf";
 import { chargingStations, communitiesDatabase, schemesDatabase } from "../db";
+import { COVERAGE_RADIUS, getCoverageRadius } from "../config/coverageConfig";
+import { buildCacheKey, getFromCache, setToCache } from "../lib/analysisCache";
 import { toEPSG3857, projectGeometryTo3857, projectGeometryTo4326, getPlanarPolygonArea3857, createPlanarBuffer3857, getCachedBBox3857, getCachedCentroid3857, getCachedProj3857, bboxIntersect } from "../lib/geo";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { fetchDistrictBoundary } from "../services/districtBoundary";
@@ -10,15 +12,25 @@ export default function registerAnalysisRoutes(app: express.Express) {
 app.post("/api/v1/analysis/coverage", async (req, res) => {
   try {
     const { chargeMode, radius, district, serviceAreaMode } = req.body; // "fast" | "slow"
+
+    // LRU 缓存: 相同参数 60 秒内直接返回, 避免重复几何求交计算
+    const cacheKey = buildCacheKey({ chargeMode, radius, district, serviceAreaMode });
+    const cached = getFromCache(cacheKey);
+    if (cached) {
+      res.json({ success: true, data: cached, _fromCache: true });
+      return;
+    }
     // serviceAreaMode: "buffer"（默认，圆形缓冲区）/ "isochrone"（路网等时圈）/ "hybrid"（混合，缺失回退缓冲区）
     const saMode: "buffer" | "isochrone" | "hybrid" = ["buffer", "isochrone", "hybrid"].includes(serviceAreaMode)
       ? serviceAreaMode
       : "buffer";
-    // 快充: 驾车10分钟 ~800m半径; 慢充: 步行15分钟 ~400m半径
+    // 快充: 驾车补电半径 1000m
+    // 慢充: 目的地覆盖半径 400m (驻地/办公地慢充桩覆盖社区范围)
+    // 等时圈场景: 快充驾车10分钟 / 慢充步行15分钟 (在 amapIsochrone.ts 中独立配置, 与本缓冲区半径解耦)
     // 优先使用传入的自定义 radius，未传时回退到 chargeMode 推导
     const serviceRadius = (typeof radius === "number" && radius > 0)
       ? radius
-      : (chargeMode === "fast" ? 800 : 400);
+      : getCoverageRadius(chargeMode);
     // 覆盖分析纳入所有有效坐标的充电站 (含维护中, 因为规划分析需考虑全部基础设施)
     // 仅排除蔚来换电 (换电站与充电站服务模式不同) 和坐标无效的站点
     const activeStations = chargingStations.filter(s => s.brand !== "蔚来换电" && s.lng > 0 && s.lat > 0);
@@ -133,6 +145,7 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
     // 性能优化：① 懒缓存社区的 3857 投影/bbox/质心（多次分析复用）
     //         ② bbox 快速判定 + 质心距离预筛，跳过远距离服务区
     //         ③ 覆盖率 ≥0.95 时早退（视为基本完全覆盖）
+    //         ④ O6: 异步分块计算, 每块间让出事件循环, 避免单请求阻塞服务器其他请求
     const communityResults: any[] = [];
     const blindSpotFeatures: any[] = [];
     let totalCoveredPop = 0;
@@ -140,7 +153,9 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
     let coveredCount = 0;
     let blindSpotCount = 0;
 
-    targetCommunities.forEach((comm: any) => {
+    // 把社区循环改为分块异步执行: 每 BATCH 个社区让出一次事件循环, 允许其他 HTTP 请求并发处理
+    const COMMUNITY_BATCH = 200;
+    const processCommunity = (comm: any) => {
       const commBbox = getCachedBBox3857(comm);
       const commProj = getCachedProj3857(comm);
       const commCentroid = getCachedCentroid3857(comm);
@@ -224,7 +239,19 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
         isBlindSpot,
         coveredBy: coveredByStation,
       });
-    });
+    };
+
+    // 分块执行: 用 setImmediate 让出事件循环, 不阻塞服务器其他请求
+    for (let i = 0; i < targetCommunities.length; i += COMMUNITY_BATCH) {
+      const end = Math.min(i + COMMUNITY_BATCH, targetCommunities.length);
+      for (let j = i; j < end; j++) {
+        processCommunity(targetCommunities[j]);
+      }
+      // 每块结束后让出事件循环, 允许其他请求处理 (类似 await Promise.resolve())
+      if (i + COMMUNITY_BATCH < targetCommunities.length) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+    }
 
     // 按行政区统计
     const districtStats: any = {};
@@ -248,6 +275,7 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
       const rawGeom = buffer?.geometry ?? buffer;
       const wgs84Geom = projectGeometryTo4326(rawGeom);
       return turf.feature(wgs84Geom, {
+        stationId: station.id,
         stationName: station.name,
         brand: station.brand,
         radius: serviceRadius,
@@ -405,45 +433,47 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
       };
     });
 
-    res.json({
-      success: true,
-      data: {
-        chargeMode,
-        serviceRadius,
-        district: districtFilter || "all",
-        serviceAreas: { type: "FeatureCollection", features: serviceAreaFeatures },
-        overlapAreas,
+    const data = {
+      chargeMode,
+      serviceRadius,
+      district: districtFilter || "all",
+      serviceAreas: { type: "FeatureCollection", features: serviceAreaFeatures },
+      overlapAreas,
+      redundancyScore,
+      blindSpots: { type: "FeatureCollection", features: blindSpotFeatures },
+      blindSpotClusters,
+      communityResults: communityResults.sort((a, b) => a.coverageRatio - b.coverageRatio),
+      coverageLevels,
+      districtStats: Object.values(districtStats),
+      stationEfficiency,
+      summary: {
+        totalCommunities: communityResults.length,
+        coveredCommunities: coveredCount,
+        blindSpotCommunities: blindSpotCount,
+        coverageRate: communityResults.length > 0 ? Math.round((coveredCount / communityResults.length) * 1000) / 10 : 0,
+        populationCoverageRate: totalPopulation > 0 ? Math.round((totalCoveredPop / totalPopulation) * 1000) / 10 : 0,
+        totalPopulation,
+        blindSpotPopulation: communityResults.filter(c => c.isBlindSpot).reduce((s, c) => s + c.population, 0),
+        totalStations: filteredStations.length,
         redundancyScore,
-        blindSpots: { type: "FeatureCollection", features: blindSpotFeatures },
-        blindSpotClusters,
-        communityResults: communityResults.sort((a, b) => a.coverageRatio - b.coverageRatio),
-        coverageLevels,
-        districtStats: Object.values(districtStats),
-        stationEfficiency,
-        summary: {
-          totalCommunities: communityResults.length,
-          coveredCommunities: coveredCount,
-          blindSpotCommunities: blindSpotCount,
-          coverageRate: communityResults.length > 0 ? Math.round((coveredCount / communityResults.length) * 1000) / 10 : 0,
-          populationCoverageRate: totalPopulation > 0 ? Math.round((totalCoveredPop / totalPopulation) * 1000) / 10 : 0,
-          totalPopulation,
-          blindSpotPopulation: communityResults.filter(c => c.isBlindSpot).reduce((s, c) => s + c.population, 0),
-          totalStations: filteredStations.length,
-          redundancyScore,
-        },
-        // 服务区模式信息
-        districtBoundary,
-        serviceAreaMode: saMode,
-        isochroneCoverage: {
-          covered: isochroneCoverageCount,
-          total: filteredStations.length,
-          fallback: fallbackCount,
-          ratio: filteredStations.length > 0
-            ? Math.round((isochroneCoverageCount / filteredStations.length) * 1000) / 10
-            : 0,
-        },
       },
-    });
+      // 服务区模式信息
+      districtBoundary,
+      serviceAreaMode: saMode,
+      isochroneCoverage: {
+        covered: isochroneCoverageCount,
+        total: filteredStations.length,
+        fallback: fallbackCount,
+        ratio: filteredStations.length > 0
+          ? Math.round((isochroneCoverageCount / filteredStations.length) * 1000) / 10
+          : 0,
+      },
+    };
+
+    // 写入 LRU 缓存 (60 秒内复用)
+    setToCache(cacheKey, data);
+
+    res.json({ success: true, data });
   } catch (error: any) {
     console.error("覆盖分析错误:", error);
     res.status(500).json({ success: false, error: error.message });
@@ -454,7 +484,7 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
 app.post("/api/v1/analysis/evaluate-site", requireAuth, requireRole("投资商", "管理员"), (req, res) => {
   try {
     const { lng, lat, radius, chargeMode, coverageBlindSpots } = req.body;
-    const radiusMeters = parseFloat(radius) || (chargeMode === "fast" ? 800 : 400);
+    const radiusMeters = parseFloat(radius) || getCoverageRadius(chargeMode);
     const center3857 = toEPSG3857([parseFloat(lng), parseFloat(lat)]);
     const bufferPoly = createPlanarBuffer3857(center3857, radiusMeters);
     const bufferArea = getPlanarPolygonArea3857(bufferPoly);

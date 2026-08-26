@@ -795,8 +795,8 @@ flowchart LR
       </div>
       <h4>覆盖分析请求参数</h4>
       <pre><code>{
-  <span class="code-string">"chargeMode"</span>: <span class="code-string">"fast"</span>,      <span class="code-comment">// "fast"(800m) | "slow"(400m)</span>
-  <span class="code-string">"radius"</span>: <span class="code-number">800</span>,          <span class="code-comment">// 自定义半径(米)，优先于 chargeMode</span>
+  <span class="code-string">"chargeMode"</span>: <span class="code-string">"fast"</span>,      <span class="code-comment">// "fast"(1000m) | "slow"(400m)</span>
+  <span class="code-string">"radius"</span>: <span class="code-number">1000</span>,          <span class="code-comment">// 自定义半径(米)，优先于 chargeMode</span>
   <span class="code-string">"district"</span>: <span class="code-string">"all"</span>        <span class="code-comment">// 行政区过滤，"all" 表示全市</span>
 }</code></pre>
       <h4>覆盖分析返回结构</h4>
@@ -884,7 +884,7 @@ flowchart LR
         </div>
       </div>
       <h3>平面缓冲区创建</h3>
-      <p>在 EPSG:3857 坐标系下直接创建圆形缓冲区面，模拟充电站的服务区域。快充模式默认 800 米半径（驾车 10 分钟），慢充模式默认 400 米半径（步行 15 分钟）。</p>
+      <p>在 EPSG:3857 坐标系下直接创建圆形缓冲区面，模拟充电站的服务区域。快充模式默认 1000 米半径（驾车补电半径），慢充模式默认 400 米半径（目的地覆盖半径，对应步行 15 分钟生活圈）。</p>
       <pre><code><span class="code-comment">// 在 EPSG:3857 下创建圆形缓冲区面 (64 边正多边形逼近)</span>
 <span class="code-keyword">function</span> <span class="code-type">createPlanarBuffer3857</span>(
   center3857: [<span class="code-type">number</span>, <span class="code-type">number</span>],
