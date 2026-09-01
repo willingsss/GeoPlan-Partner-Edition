@@ -2,7 +2,11 @@ import express from "express";
 import * as turf from "@turf/turf";
 import { chargingStations, communitiesDatabase, feedbackDatabase, schemesDatabase } from "../db";
 import { wgs84ToGcj02, toEPSG4326 } from "../lib/geo";
-import { parseGisIntent, doGisAnalysis } from "../services/aiContext";
+import { parseGisIntent, doGisAnalysis, resolveGisIntentByLLM } from "../services/aiContext";
+import { getCommunityCentroids, nearestStation } from "../services/spatialIndex";
+import { streamMockAiResponse } from "../services/aiMock";
+import { requireAuth } from "../middleware/auth";
+import { rateLimit } from "../middleware/rateLimit";
 
 export default function registerAiRoutes(app: express.Express) {
 
@@ -10,8 +14,22 @@ export default function registerAiRoutes(app: express.Express) {
 // 10. AI 辅助决策接口 (SSE 流式，通过 DeepSeek API)
 // =========================================================================
 
+// ===== 上下文结果缓存（TTL 30s 自动失效，避免重复全量计算）=====
+function memoizeTtl<A extends any[], R>(fn: (...args: A) => R, ttlMs = 30_000): (...args: A) => R {
+  const cache = new Map<string, { value: R; expiresAt: number }>();
+  return (...args: A) => {
+    const key = JSON.stringify(args);
+    const now = Date.now();
+    const hit = cache.get(key);
+    if (hit && now < hit.expiresAt) return hit.value;
+    const value = fn(...args);
+    cache.set(key, { value, expiresAt: now + ttlMs });
+    return value;
+  };
+}
+
 // 从空间数据库/内存数据生成 AI 可用的上下文摘要
-function getStationStatsContext(): string {
+const getStationStatsContext = memoizeTtl((): string => {
   const total = chargingStations.length;
   const operating = chargingStations.filter(s => s.status === "运营中").length;
   const byBrand: Record<string, number> = {};
@@ -21,60 +39,60 @@ function getStationStatsContext(): string {
     byDistrict[s.district] = (byDistrict[s.district] || 0) + 1;
   });
   return `徐州市充电设施最新统计：总计${total}座，运营中${operating}座。按品牌：${Object.entries(byBrand).map(([k, v]) => `${k}${v}座`).join("，")}。按行政区：${Object.entries(byDistrict).map(([k, v]) => `${k}${v}座`).join("，")}。`;
-}
+});
 
-function getCoverageContext(radiusMeters: number): string {
-  const features = communitiesDatabase.features || [];
-  const operating = chargingStations.filter(s => s.status === "运营中");
+const getCoverageContext = memoizeTtl((radiusMeters: number): string => {
+  const centroids = getCommunityCentroids();
   let totalPop = 0;
   let coveredPop = 0;
   let blindPop = 0;
   let blindCount = 0;
   const blinds: { name: string; district: string; pop: number; dist: number }[] = [];
 
-  features.forEach(f => {
-    const center = turf.centroid(f);
-    const pop = Number(f.properties?.population_total || 0);
+  for (const comm of centroids) {
+    const pop = comm.population;
     totalPop += pop;
-    let minDist = Infinity;
-    operating.forEach(s => {
-      const d = turf.distance(center, turf.point([s.lng, s.lat]), { units: "meters" });
-      if (d < minDist) minDist = d;
-    });
+    // R-tree 最近邻替代逐站全量遍历（O(N) → O(log N)）
+    const nearest = nearestStation(comm.centroid[0], comm.centroid[1], s => s.status === "运营中");
+    const minDist = nearest
+      ? turf.distance(turf.point(comm.centroid), turf.point([nearest.lng, nearest.lat]), { units: "meters" })
+      : Infinity;
     if (minDist <= radiusMeters) {
       coveredPop += pop;
     } else {
       blindPop += pop;
       blindCount++;
       blinds.push({
-        name: f.properties?.name || "未知社区",
-        district: f.properties?.district || "未知区",
+        name: comm.feature.properties?.name || "未知社区",
+        district: comm.feature.properties?.district || "未知区",
         pop,
         dist: minDist,
       });
     }
-  });
+  }
 
   const topBlinds = blinds.sort((a, b) => b.pop - a.pop).slice(0, 8);
-  return `充电覆盖分析（最近运营中站点距离>${radiusMeters}m视为盲区）：社区总数${features.length}个，覆盖人口约${coveredPop.toLocaleString()}人，盲区${blindCount}个（影响人口约${blindPop.toLocaleString()}人）。人口最多的盲区：${topBlinds.map(b => `${b.name}(${b.district}, ${b.pop.toLocaleString()}人, 距最近站${b.dist >= 1000 ? `${(b.dist / 1000).toFixed(1)}km` : `${Math.round(b.dist)}m`})`).join("；")}。`;
-}
+  return `充电覆盖分析（最近运营中站点距离>${radiusMeters}m视为盲区）：社区总数${centroids.length}个，覆盖人口约${coveredPop.toLocaleString()}人，盲区${blindCount}个（影响人口约${blindPop.toLocaleString()}人）。人口最多的盲区：${topBlinds.map(b => `${b.name}(${b.district}, ${b.pop.toLocaleString()}人, 距最近站${b.dist >= 1000 ? `${(b.dist / 1000).toFixed(1)}km` : `${Math.round(b.dist)}m`})`).join("；")}。`;
+});
 
-function getSchemeContext(): string {
+const getSchemeContext = memoizeTtl((): string => {
   const list = schemesDatabase.slice(0, 5);
   if (!list.length) return "当前暂无已保存选址方案。";
   return `已保存选址方案（前5）：${list.map(s => `${s.name}(${s.brand}, 人口覆盖${s.covered_population}, 社区覆盖${s.covered_communities}, 竞争避让${s.competition_score}, 社会效益${s.social_benefit})`).join("；")}。`;
-}
+});
 
-function getFeedbackContext(): string {
+const getFeedbackContext = memoizeTtl((): string => {
   const list = feedbackDatabase.slice(0, 8);
   if (!list.length) return "当前暂无公众反馈。";
   return `近期公众反馈（前8条）：${list.map(f => `${f.type === "demand" ? "需求" : "评价"}${f.rating ? `(${f.rating}星)` : ""}：${(f.description || "").slice(0, 30)}`).join("；")}。`;
-}
+});
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY || "";
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1";
+// 与前端 useAiAssistant 的 HISTORY_LIMIT 保持一致
+const AI_HISTORY_LIMIT = 8;
 
-app.post("/api/v1/ai/chat", async (req, res) => {
+app.post("/api/v1/ai/chat", rateLimit({ windowMs: 60_000, max: 30 }), requireAuth, async (req, res) => {
   const { message, context, history, userLocation } = req.body;
 
   // 设置 SSE
@@ -151,32 +169,47 @@ app.post("/api/v1/ai/chat", async (req, res) => {
     enrichedContext += `\n\n请根据上面已排序的真实数据，推荐最近的3-5个充电站。要求：\n- 必须直接使用列表中给出的距离，不要自行估算或重新计算；\n- 每个站点只列出名称、距离、地址、快充/慢充数量；\n- 不要编造具体的“导航建议”、转弯路线或行驶时间；\n- 最后一句话可简要提示最近的是哪个站；\n- 回答要口语化、简洁，每次不要使用固定格式和套话。`;
   }
 
-  // GIS 意图解析与空间分析
-  const gisIntent = parseGisIntent(message, userLocation);
+  // GIS 意图解析与空间分析：优先 DeepSeek function calling，失败回退到正则
+  const gisIntent = (await resolveGisIntentByLLM(message)) ?? parseGisIntent(message, userLocation);
   let gisResult: any = null;
-  if (gisIntent && userLocation) {
-    gisResult = doGisAnalysis(gisIntent, userLocation);
+  if (gisIntent) {
+    // nearby 需用户位置才有意义；district/brand/coverage 可在无定位时用默认中心
+    if (gisIntent.type !== "nearby" || userLocation) {
+      gisResult = doGisAnalysis(gisIntent, userLocation);
+    }
   }
 
-  // 注入 GIS 空间分析结果到上下文
+  // 注入 GIS 空间分析结果到上下文（按意图类型生成不同摘要，避免误解）
   if (gisResult) {
-    enrichedContext += `\n\n【GIS 空间分析结果（已以卡片形式展示给用户）】半径${(gisResult.radius/1000).toFixed(1)}km 范围内：充电站 ${gisResult.count} 座，覆盖人口约 ${gisResult.coveredPopulation.toLocaleString()} 人，覆盖社区 ${gisResult.coveredCommunities} 个。`;
+    let summary: string;
+    if (gisIntent!.type === "brand") {
+      summary = `【GIS 空间分析结果（已以卡片形式展示给用户）】${gisResult.brand} 品牌在徐州市共有充电站 ${gisResult.count} 座。`;
+    } else if (gisIntent!.type === "district") {
+      summary = `【GIS 空间分析结果（已以卡片形式展示给用户）】${gisResult.district} 共有充电站 ${gisResult.count} 座${gisIntent!.fastOnly ? "（仅快充）" : ""}，覆盖人口约 ${gisResult.coveredPopulation.toLocaleString()} 人，覆盖社区 ${gisResult.coveredCommunities} 个。`;
+    } else {
+      summary = `【GIS 空间分析结果（已以卡片形式展示给用户）】半径${(gisResult.radius / 1000).toFixed(1)}km 范围内：充电站 ${gisResult.count} 座，覆盖人口约 ${gisResult.coveredPopulation.toLocaleString()} 人，覆盖社区 ${gisResult.coveredCommunities} 个。`;
+    }
+    enrichedContext += `\n\n${summary}`;
     enrichedContext += `\n\n注意：站点列表已经以可点击卡片形式展示在用户界面上了，你不需要重复列出所有站点。请用 2-3 句话做简要总结和建议，例如：告诉用户最近的是哪个站、有多少个快充站可选、覆盖情况如何等。不要编造导航路线或行驶时间。`;
   }
 
   try {
     if (DEEPSEEK_API_KEY) {
-      // 构造对话消息：system + 历史记录（最近10轮）+ 当前用户问题
+      // 构造对话消息：system + 历史记录（最近 AI_HISTORY_LIMIT 轮）+ 当前用户问题
       const messages: { role: string; content: string }[] = [
         { role: "system", content: systemPrompt },
       ];
       if (Array.isArray(history)) {
-        messages.push(...history.slice(-10));
+        messages.push(...history.slice(-AI_HISTORY_LIMIT));
       }
       const currentContent = enrichedContext
         ? `上下文信息：${enrichedContext}\n\n用户问题：${message}`
         : message;
       messages.push({ role: "user", content: currentContent });
+
+      // 事实/统计类问题降温度，减少随机性，提高确定性
+      const isFactQuery = /覆盖|盲区|多少|数量|几座|统计|概况|分布|计数/.test(lowerMsg);
+      const temperature = isFactQuery || gisResult ? 0.2 : 0.8;
 
       const resp = await fetch(`${DEEPSEEK_BASE_URL}/chat/completions`, {
         method: "POST",
@@ -188,7 +221,7 @@ app.post("/api/v1/ai/chat", async (req, res) => {
           model: "deepseek-chat",
           messages,
           stream: true,
-          temperature: 0.8,
+          temperature,
         }),
       });
 
@@ -255,58 +288,8 @@ app.post("/api/v1/ai/chat", async (req, res) => {
       }
       res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     } else {
-      // 无 API Key 时的降级模拟回复
-      const mockResponses: Record<string, string> = {
-        "分布": "徐州市城区目前整合了四大品牌充电设施：\n\n**国家电网**（12座）：覆盖鼓楼区、云龙区、泉山区、铜山区，以快充为主，重点布局在交通枢纽和商业中心。\n\n**特来电**（10座）：分布较均匀，在居民区和商业区均有布局，快慢充搭配合理。\n\n**星星充电**（10座）：以慢充为主，主要分布在居民小区周边，服务老旧小区夜间充电需求。\n\n**蔚来换电站**（8座）：分布在核心商圈和交通节点，提供3分钟换电服务。\n\n总体来看，泉山区和鼓楼区充电设施较密集，铜山区和云龙区新城区覆盖相对不足。",
-        "盲区": "充电盲区识别功能使用说明：\n\n1. 在「充电覆盖分析」面板选择快充或慢充模式\n2. 系统会自动为所有运营中充电站生成等时线服务区（快充800m/慢充400m）\n3. 将服务区与住宅小区面数据进行空间叠加分析\n4. 覆盖率低于10%的小区将被标记为盲区，在地图上以红色高亮显示\n5. 右侧ECharts看板会展示各行政区覆盖率、盲区数量及受影响人口\n\n当前徐州市盲区主要集中在：九里山片区、潘塘街道、高新区和西苑片区。",
-        "选址": "选址决策建议：\n\n根据平台空间分析，推荐以下高价值选址区域：\n\n1. **西苑片区**（117.13, 34.26）：周边1.5km无充电站，覆盖人口约8900人，竞争避让度100分\n2. **九里山片区**（117.14, 34.29）：盲区社区，覆盖人口约6500人，社会效益显著\n3. **潘塘街道**（117.25, 34.21）：新城区盲区，覆盖人口约5400人，未来发展潜力大\n\n建议优先建设快充站，服务半径800m可最大化覆盖效果。使用「商业选址决策」面板的拖拽功能可实时评估不同位置的覆盖效果。",
-      };
-
-      // 最近站点推荐 (降级模式：基于用户位置计算距离)
-      if (isNearestQuery && context && context.includes("用户当前位置")) {
-        const match = context.match(/经度\s*(-?\d+\.?\d*).*?纬度\s*(-?\d+\.?\d*)/);
-        if (match) {
-          const userLng = parseFloat(match[1]);
-          const userLat = parseFloat(match[2]);
-          const sorted = chargingStations
-            .filter(s => s.status === "运营中")
-            .map(s => {
-              const dist = turf.distance(turf.point([userLng, userLat]), turf.point([s.lng, s.lat]), { units: "meters" });
-              return { ...s, dist };
-            })
-            .sort((a, b) => a.dist - b.dist)
-            .slice(0, 5);
-          if (sorted.length > 0) {
-            let reply = `根据您的当前位置（${userLng.toFixed(5)}, ${userLat.toFixed(5)}），为您推荐最近的5个充电站：\n\n`;
-            sorted.forEach((s, i) => {
-              const distStr = s.dist >= 1000 ? `${(s.dist / 1000).toFixed(2)}km` : `${Math.round(s.dist)}m`;
-              reply += `${i + 1}. **${s.name}** (${s.brand})\n   距离: ${distStr} | 位置: ${s.district} | 快充${s.fastChargers}/慢充${s.slowChargers}\n   坐标: ${s.lng}, ${s.lat}\n\n`;
-            });
-            reply += `💡 提示：在地图上点击对应充电站，弹出窗口中点击"去这里"即可规划导航路线。`;
-            mockResponses["最近"] = reply;
-            mockResponses["附近"] = reply;
-            mockResponses["离我"] = reply;
-          }
-        }
-      }
-
-      let response = "您好！我是GeoPlan平台AI助手。我可以帮您查询充电设施分布、解释空间分析工具、提供选址建议等。请问有什么可以帮您的？\n\n您可以使用自然语言提问，例如：\n- \"徐州市充电设施分布概况\"\n- \"如何识别充电盲区\"\n- \"推荐几个选址方案\"";
-
-      for (const key in mockResponses) {
-        if (message && message.includes(key)) {
-          response = mockResponses[key];
-          break;
-        }
-      }
-
-      // 模拟流式输出
-      const chars = response.split("");
-      for (let i = 0; i < chars.length; i += 3) {
-        const chunk = chars.slice(i, i + 3).join("");
-        res.write(`data: ${JSON.stringify({ content: chunk })}\n\n`);
-        await new Promise(r => setTimeout(r, 30));
-      }
-      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      // 无 API Key 时的降级模拟回复（逻辑抽离到 aiMock 服务）
+      await streamMockAiResponse(res, message, context, isNearestQuery);
     }
   } catch (error: any) {
     res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);

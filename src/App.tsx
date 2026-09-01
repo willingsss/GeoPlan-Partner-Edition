@@ -35,6 +35,7 @@ import SiteControlBar from "./components/SiteControlBar";
 import SiteResultPanel from "./components/SiteResultPanel";
 import AdminPanel from "./components/admin/AdminPanel";
 import AiAssistantPanel from "./components/AiAssistantPanel";
+import AiAnalysisPanel from "./components/AiAnalysisPanel";
 import useAdminPanel from "./hooks/useAdminPanel";
 import useAiAssistant from "./hooks/useAiAssistant";
 import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
@@ -267,6 +268,46 @@ function calcSchemeScore(m: any): { score: number; grade: string; gradeColor: st
 }
 
 // =========================================================================
+// AI 深度解读上下文构造 (单方案/双方案对比, 注入 /api/v1/ai/chat 的 context)
+// =========================================================================
+function buildSchemeAiContext(s: any, sc: { score: number; grade: string }): string {
+  return [
+    `当前正在对充电站选址方案「${s.name}」进行深度评估，以下是该方案的完整指标数据：`,
+    `- 品牌: ${s.brand || "未指定"}`,
+    `- 坐标(WGS84): 经度 ${Number(s.lng).toFixed(6)}, 纬度 ${Number(s.lat).toFixed(6)}`,
+    `- 服务半径: ${Number(s.radius) || 800}m`,
+    `- 覆盖人口: ${Number(s.covered_population || 0).toLocaleString()} 人`,
+    `- 覆盖社区: ${Number(s.covered_communities || 0)} 个`,
+    `- 盲区消除率: ${Number(s.blind_spot_reduction || 0)}%`,
+    `- 竞争避让度: ${Number(s.competition_score || 0)}/100 (周边 1.5km 现有充电站越少分数越高, 每有 1 站扣 12 分)`,
+    `- 社会效益: ${Number(s.social_benefit || 0)}/100 (按新增覆盖人口计分, 覆盖约 2 万人满分)`,
+    `- 综合评分: ${sc.score}/100 (${sc.grade}), 权重: 人口30% · 社区15% · 竞争20% · 效益20% · 盲区15%`,
+  ].join("\n");
+}
+
+function buildCompareAiContext(s1: any, s2: any): string {
+  const sc1 = calcSchemeScore(s1);
+  const sc2 = calcSchemeScore(s2);
+  const line = (tag: string, s: any, sc: { score: number; grade: string }) => [
+    `【${tag}「${s.name}」】品牌 ${s.brand || "未指定"} · 半径 ${Number(s.radius) || 800}m · 坐标(${Number(s.lng).toFixed(4)}, ${Number(s.lat).toFixed(4)})`,
+    `覆盖人口 ${Number(s.covered_population || 0).toLocaleString()} 人 · 覆盖社区 ${Number(s.covered_communities || 0)} 个 · 盲区消除率 ${Number(s.blind_spot_reduction || 0)}%`,
+    `竞争避让度 ${Number(s.competition_score || 0)}/100 · 社会效益 ${Number(s.social_benefit || 0)}/100 · 综合评分 ${sc.score}/100 (${sc.grade})`,
+  ].join("\n");
+  return [
+    "当前正在对两个充电站选址方案进行深度对比，请基于以下真实指标数据给出裁决：",
+    line("方案A", s1, sc1),
+    line("方案B", s2, sc2),
+    "评分权重: 人口30% · 社区15% · 竞争20% · 效益20% · 盲区15%",
+  ].join("\n\n");
+}
+
+// AI 决策浮动窗口默认贴合主弹窗右侧 (间隙 12 + 窗宽 380 + 边距 12);
+// 屏幕空间不足时窗口回退屏幕右侧悬浮, 此时主弹窗左移让位
+const AI_WIN_WIDTH = 380 + 24;
+const aiFallbackShift = (dialogWidth: number) =>
+  typeof window !== "undefined" && window.innerWidth < dialogWidth + AI_WIN_WIDTH + 48 ? 200 : 0;
+
+// =========================================================================
 
 export default function App() {
   // =========================================================================
@@ -333,6 +374,14 @@ export default function App() {
   // 单方案深度评估弹窗: 方案详情 + 内嵌地图
   const [schemeDetailOpen, setSchemeDetailOpen] = useState(false);
   const [schemeDetailId, setSchemeDetailId] = useState<number | null>(null);
+  // AI 决策浮动窗口打开状态 (贴合主弹窗右侧; 弹窗关闭时重置)
+  const [schemeAiOpen, setSchemeAiOpen] = useState(false);
+  const [compareAiOpen, setCompareAiOpen] = useState(false);
+  useEffect(() => { if (!schemeDetailOpen) setSchemeAiOpen(false); }, [schemeDetailOpen]);
+  useEffect(() => { if (!compareDialogOpen) setCompareAiOpen(false); }, [compareDialogOpen]);
+  // 两个弹窗卡片锚点 (AI 窗口据此贴合定位)
+  const schemeDialogRef = useRef<HTMLDivElement>(null);
+  const compareDialogRef = useRef<HTMLDivElement>(null);
   const schemeMapRef = useRef<HTMLDivElement>(null);
   const schemeMapInstRef = useRef<OlMap | null>(null);
   // 方案对比弹窗: 左右双地图 (A/B 各一个, 可独立拖动)
@@ -2609,25 +2658,31 @@ export default function App() {
   const saveScheme = async () => {
     if (!virtualStation || !siteMetrics) return;
     const name = schemeName || `方案${schemes.length + 1}`;
-    const res = await authFetch("/api/v1/schemes", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name, lng: virtualStation.lng, lat: virtualStation.lat,
-        radius: siteRadius, brand: siteBrand, metrics: siteMetrics,
-        // 阶段二 任务 2.3.4: 携带 ROI 数据 (基于默认参数估算)
-        roi: {
-          fastChargers: 4,
-          slowChargers: 4,
-          coveredPopulation: siteMetrics.covered_population,
-        },
-      }),
-    });
-    const json = await res.json();
-    if (json.success) {
-      setSchemes([...schemes, json.data]);
-      setSchemeName("");
-      showToast("方案已保存", "success");
+    try {
+      const res = await authFetch("/api/v1/schemes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name, lng: virtualStation.lng, lat: virtualStation.lat,
+          radius: siteRadius, brand: siteBrand, metrics: siteMetrics,
+          // 阶段二 任务 2.3.4: 携带 ROI 数据 (基于默认参数估算)
+          roi: {
+            fastChargers: 4,
+            slowChargers: 4,
+            coveredPopulation: siteMetrics.covered_population,
+          },
+        }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setSchemes([...schemes, json.data]);
+        setSchemeName("");
+        showToast("方案已保存", "success");
+      } else {
+        showToast(json.message || `保存失败 (${res.status})`, "error");
+      }
+    } catch (e: any) {
+      showToast("保存失败: " + (e?.message || "无法连接服务器"), "error");
     }
   };
 
@@ -4792,11 +4847,15 @@ export default function App() {
             onClick={() => setSchemeDetailOpen(false)}
           >
             <div
+              ref={schemeDialogRef}
               className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
               style={{
                 background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
                 border: "1px solid rgba(255,255,255,0.6)",
                 boxShadow: "var(--shadow-elevated)",
+                // AI 窗口贴合右侧时不动; 窄屏回退悬浮模式时才左移让位
+                transform: schemeAiOpen ? `translateX(-${aiFallbackShift(720)}px)` : "translateX(0)",
+                transition: "transform 0.25s ease",
               }}
               onClick={e => e.stopPropagation()}
             >
@@ -4891,6 +4950,25 @@ export default function App() {
                     <p>竞争20% · 效益20% · 盲区15%</p>
                   </div>
                 </div>
+                {/* AI 深度解读: 独立浮动窗口流式分析 + 预设追问 + 自由提问 (联动智能助手) */}
+                <AiAnalysisPanel
+                  title="AI 深度解读"
+                  buttonText="让 AI 分析这个方案"
+                  startLabel="方案深度解读"
+                  startQuestion={"请对这个充电站选址方案进行深度解读。格式要求：\n" +
+                    "1. 第一行先给出明确结论（**加粗**：总体评级判断、是否值得推进）；\n" +
+                    "2. 之后依次分三个小节展开：『综合优势』『主要风险』『可执行的优化建议』，小节用 ### 标题；\n" +
+                    "3. 每个小节内用要点列表（- 开头），每条要点单独一行、一句话说清一件事；\n" +
+                    "4. 不要长段落，控制在 6 条要点以内，引用指标时给出具体数字。"}
+                  context={buildSchemeAiContext(s, sc)}
+                  onOpenChange={setSchemeAiOpen}
+                  anchorRef={schemeDialogRef}
+                  presets={[
+                    { label: "如何提升竞争避让度？", question: "针对该方案，有哪些可执行的方式能提升竞争避让度？请先给结论再展开。" },
+                    { label: "适合快充还是慢充？", question: "结合该方案的覆盖人群和位置特点，这里更适合建快充还是慢充？桩数比例如何配置？请先给结论再展开。" },
+                    { label: "周边竞争分析", question: "请结合该方案的竞争避让度分数，分析周边竞争环境并给出应对建议。请先给结论再展开。" },
+                  ]}
+                />
               </div>
             </div>
           </div>
@@ -4917,11 +4995,15 @@ export default function App() {
             onClick={() => setCompareDialogOpen(false)}
           >
             <div
+              ref={compareDialogRef}
               className="w-[860px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
               style={{
                 background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
                 border: "1px solid rgba(255,255,255,0.6)",
                 boxShadow: "var(--shadow-elevated)",
+                // AI 窗口贴合右侧时不动; 窄屏回退悬浮模式时才左移让位
+                transform: compareAiOpen ? `translateX(-${aiFallbackShift(860)}px)` : "translateX(0)",
+                transition: "transform 0.25s ease",
               }}
               onClick={e => e.stopPropagation()}
             >
@@ -5011,6 +5093,25 @@ export default function App() {
                     </tbody>
                   </table>
                 </div>
+                {/* AI 对比裁决: 独立浮动窗口流式分析推荐 + 预设追问 + 自由提问 (联动智能助手) */}
+                <AiAnalysisPanel
+                  title="AI 对比裁决"
+                  buttonText="AI 帮我选"
+                  startLabel="方案对比裁决"
+                  startQuestion={"请对比这两个充电站选址方案并给出裁决。格式要求：\n" +
+                    "1. 第一行先明确结论（**加粗**：推荐哪个方案，或给出组合建议）；\n" +
+                    "2. 之后分小节展开分析理由：『推荐理由』『落选方的主要短板』『风险提示』，小节用 ### 标题；\n" +
+                    "3. 每个小节内用要点列表（- 开头），每条要点单独一行、一句话说清一件事；\n" +
+                    "4. 不要长段落，控制在 6 条要点以内，对比时引用具体数字。"}
+                  context={buildCompareAiContext(s1, s2)}
+                  onOpenChange={setCompareAiOpen}
+                  anchorRef={compareDialogRef}
+                  presets={[
+                    { label: "两方案的风险对比", question: "请分别分析这两个方案各自的主要风险点。请先给结论再展开。" },
+                    { label: "只能选一个选哪个？", question: "如果预算只允许建设一个站点，你会推荐哪个？请先给结论，再给出决定性理由。" },
+                    { label: "组合建设建议", question: "如果两个方案都要建设，如何做差异化定位以避免内部竞争？请先给结论再展开。" },
+                  ]}
+                />
               </div>
             </div>
           </div>

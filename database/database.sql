@@ -101,6 +101,7 @@ CREATE TABLE t_scheme (
     geom                  POINT SRID 4326 NOT NULL COMMENT '选址中心点',
     radius                INT          NOT NULL DEFAULT 800 COMMENT '服务半径(米)',
     brand                 VARCHAR(30)  NOT NULL DEFAULT '国家电网' COMMENT '拟建品牌',
+    district              VARCHAR(30)  DEFAULT NULL COMMENT '所属行政区',
     covered_population    INT          DEFAULT 0 COMMENT '覆盖人口',
     covered_communities   INT          DEFAULT 0 COMMENT '覆盖社区数',
     blind_spot_reduction  DECIMAL(5,2) DEFAULT 0 COMMENT '盲区消除率(%)',

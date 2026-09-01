@@ -4,35 +4,8 @@
 // 用途: 覆盖分析时划定真实行政区可视化界限 (替代社区 union 近似轮廓)
 // =========================================================================
 
-// GCJ02 -> WGS84 (与 amapIsochrone 同款算法)
-function gcj02ToWgs84(lng: number, lat: number): [number, number] {
-  const PI = 3.1415926535897932384626;
-  const A = 6378245.0;
-  const EE = 0.00669342162296594323;
-  function transformLat(x: number, y: number): number {
-    let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-    ret += ((20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0) / 3.0;
-    ret += ((20.0 * Math.sin(y * PI) + 40.0 * Math.sin((y / 3.0) * PI)) * 2.0) / 3.0;
-    ret += ((160.0 * Math.sin((y / 12.0) * PI) + 320 * Math.sin((y * PI) / 30.0)) * 2.0) / 3.0;
-    return ret;
-  }
-  function transformLng(x: number, y: number): number {
-    let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-    ret += ((20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0) / 3.0;
-    ret += ((20.0 * Math.sin(x * PI) + 40.0 * Math.sin((x / 3.0) * PI)) * 2.0) / 3.0;
-    ret += ((150.0 * Math.sin((x / 12.0) * PI) + 300.0 * Math.sin((x / 30.0) * PI)) * 2.0) / 3.0;
-    return ret;
-  }
-  let dLat = transformLat(lng - 105.0, lat - 35.0);
-  let dLng = transformLng(lng - 105.0, lat - 35.0);
-  const radLat = (lat / 180.0) * PI;
-  let magic = Math.sin(radLat);
-  magic = 1 - EE * magic * magic;
-  const sqrtMagic = Math.sqrt(magic);
-  dLat = (dLat * 180.0) / (((A * (1 - EE)) / (magic * sqrtMagic)) * PI);
-  dLng = (dLng * 180.0) / ((A / sqrtMagic) * Math.cos(radLat) * PI);
-  return [lng - dLng, lat - dLat];
-}
+// GCJ02 -> WGS84（收敛到共享模块）
+import { gcj02ToWgs84 } from "../../shared/coordinate";
 
 const cache = new Map<string, { data: any | null; ts: number }>();
 // 失败缓存 30 秒后允许重试 (网络瞬断快速自愈)

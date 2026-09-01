@@ -19,7 +19,7 @@ function renderInline(text: string): React.ReactNode {
     if (m.index > lastIndex) parts.push(<span key={k++}>{text.slice(lastIndex, m.index)}</span>);
     const raw = m[0];
     if (raw.startsWith("**")) parts.push(<strong key={k++} className="font-semibold text-slate-900">{raw.slice(2, -2)}</strong>);
-    else if (raw.startsWith("`")) parts.push(<code key={k++} className="bg-slate-200 text-purple-700 px-0.5 rounded text-[9px] font-mono">{raw.slice(1, -1)}</code>);
+    else if (raw.startsWith("`")) parts.push(<code key={k++} className="bg-slate-200 text-purple-700 px-0.5 rounded text-[13px] font-mono">{raw.slice(1, -1)}</code>);
     else if (raw.startsWith("[")) {
       const linkMatch = raw.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
       if (linkMatch) {
@@ -38,7 +38,8 @@ function renderInline(text: string): React.ReactNode {
   return <>{parts}</>;
 }
 
-function renderAiContent(text: string): React.ReactNode {
+// 供 AiAnalysisBlock (深度评估/方案对比弹窗 AI 解读) 复用
+export function renderAiContent(text: string): React.ReactNode {
   if (!text.trim()) return null;
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks: React.ReactNode[] = [];
@@ -81,9 +82,9 @@ function renderAiContent(text: string): React.ReactNode {
     const headingMatch = trimmed.match(/^(#{1,4})\s+(.*)$/);
     if (headingMatch) {
       const level = headingMatch[1].length;
-      const size = level === 1 ? "text-[11px]" : "text-[10px]";
+      const size = level === 1 ? "text-[16px]" : "text-[14px]";
       blocks.push(
-        <div key={`h-${key++}`} className={`font-bold text-slate-800 ${size} mt-1.5 mb-0.5`}>
+        <div key={`h-${key++}`} className={`font-bold text-slate-800 ${size} mt-2.5 mb-1`}>
           {renderInline(headingMatch[2])}
         </div>
       );
@@ -99,7 +100,7 @@ function renderAiContent(text: string): React.ReactNode {
         i++;
       }
       blocks.push(
-        <ul key={`ul-${key++}`} className="list-disc pl-3 space-y-0.5 my-1">
+        <ul key={`ul-${key++}`} className="list-disc pl-4 space-y-1 my-1.5">
           {items.map((item, idx) => <li key={idx}>{renderInline(item)}</li>)}
         </ul>
       );
@@ -114,7 +115,7 @@ function renderAiContent(text: string): React.ReactNode {
         i++;
       }
       blocks.push(
-        <ol key={`ol-${key++}`} className="list-decimal pl-3 space-y-0.5 my-1">
+        <ol key={`ol-${key++}`} className="list-decimal pl-4 space-y-1 my-1.5">
           {items.map((item, idx) => <li key={idx}>{renderInline(item)}</li>)}
         </ol>
       );
@@ -133,7 +134,7 @@ function renderAiContent(text: string): React.ReactNode {
       const header = rows[0] || [];
       const bodyRows = rows.slice(1).filter(r => !r.every(c => /^[-:]+$/.test(c)));
       blocks.push(
-        <table key={`tbl-${key++}`} className="w-full text-[9px] my-1 rounded overflow-hidden"
+        <table key={`tbl-${key++}`} className="w-full text-[12px] my-1 rounded overflow-hidden"
           style={{ borderCollapse: "collapse", border: "1px solid var(--color-muted)" }}>
           <thead>
             <tr style={{ background: "var(--color-subtle)" }}>
@@ -168,7 +169,7 @@ function renderAiContent(text: string): React.ReactNode {
     flushParagraph(paras);
   }
 
-  return <div className="text-[10px] leading-relaxed text-slate-800">{blocks}</div>;
+  return <div className="text-[14px] leading-relaxed text-slate-800">{blocks}</div>;
 }
 
 // =========================================================================

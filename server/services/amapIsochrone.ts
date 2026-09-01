@@ -29,55 +29,9 @@ function getAmapKey(): string {
 }
 
 // =========================================================================
-// 1. GCJ02 ↔ WGS84 坐标转换（项目已有 WGS84→GCJ02，此处补反向）
+// 1. GCJ02 ↔ WGS84 坐标转换（收敛到共享模块）
 // =========================================================================
-const PI = 3.1415926535897932384626;
-const A = 6378245.0;
-const EE = 0.00669342162296594323;
-
-function transformLat(x: number, y: number): number {
-  let ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
-  ret += ((20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0) / 3.0;
-  ret += ((20.0 * Math.sin(y * PI) + 40.0 * Math.sin((y / 3.0) * PI)) * 2.0) / 3.0;
-  ret += ((160.0 * Math.sin((y / 12.0) * PI) + 320 * Math.sin((y * PI) / 30.0)) * 2.0) / 3.0;
-  return ret;
-}
-
-function transformLng(x: number, y: number): number {
-  let ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
-  ret += ((20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0) / 3.0;
-  ret += ((20.0 * Math.sin(x * PI) + 40.0 * Math.sin((x / 3.0) * PI)) * 2.0) / 3.0;
-  ret += ((150.0 * Math.sin((x / 12.0) * PI) + 300.0 * Math.sin((x / 30.0) * PI)) * 2.0) / 3.0;
-  return ret;
-}
-
-// WGS84 -> GCJ02（与 server.ts 中一致，供本服务内部使用）
-export function wgs84ToGcj02(lng: number, lat: number): [number, number] {
-  let dLat = transformLat(lng - 105.0, lat - 35.0);
-  let dLng = transformLng(lng - 105.0, lat - 35.0);
-  const radLat = (lat / 180.0) * PI;
-  let magic = Math.sin(radLat);
-  magic = 1 - EE * magic * magic;
-  const sqrtMagic = Math.sqrt(magic);
-  dLat = (dLat * 180.0) / ((A * (1 - EE)) / (magic * sqrtMagic) * PI);
-  dLng = (dLng * 180.0) / (A / sqrtMagic * Math.cos(radLat) * PI);
-  return [lng + dLng, lat + dLat];
-}
-
-// GCJ02 -> WGS84（反向：用偏导近似，精度足够 GIS 应用）
-export function gcj02ToWgs84(lng: number, lat: number): [number, number] {
-  // 先计算 (lng, lat) 处的偏移量（假设原 WGS84 接近 (lng, lat)）
-  let dLat = transformLat(lng - 105.0, lat - 35.0);
-  let dLng = transformLng(lng - 105.0, lat - 35.0);
-  const radLat = (lat / 180.0) * PI;
-  let magic = Math.sin(radLat);
-  magic = 1 - EE * magic * magic;
-  const sqrtMagic = Math.sqrt(magic);
-  dLat = (dLat * 180.0) / ((A * (1 - EE)) / (magic * sqrtMagic) * PI);
-  dLng = (dLng * 180.0) / (A / sqrtMagic * Math.cos(radLat) * PI);
-  // 反向减去偏移
-  return [lng - dLng, lat - dLat];
-}
+import { wgs84ToGcj02, gcj02ToWgs84 } from "../../shared/coordinate";
 
 // 批量转换 GeoJSON 几何坐标（GCJ02 → WGS84）
 function convertGeoJsonGcj02ToWgs84(geom: any): any {
