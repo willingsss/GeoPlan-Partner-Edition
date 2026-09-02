@@ -22,13 +22,15 @@ import {
 } from "lucide-react";
 import { XUZHOU_CENTER } from "../config/map";
 import { BRAND_CONFIG } from "../types";
+import DashboardStoryNav, { type DashboardJumpPayload, type DashboardTarget } from "./DashboardStoryNav";
 
 interface DashboardProps {
   open: boolean;
   onBack: () => void;
+  onNavigate?: (t: DashboardTarget, payload?: DashboardJumpPayload) => void;
 }
 
-export default function Dashboard({ open, onBack }: DashboardProps) {
+export default function Dashboard({ open, onBack, onNavigate }: DashboardProps) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [now, setNow] = useState(new Date());
@@ -82,8 +84,9 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
         maxZoom: 18,
       }),
       layers: [
-        // 高德暗色风格底图
+        // 高德暗色风格底图 (墨绿滤镜呼应决策大屏主题色)
         new TileLayer({
+          className: "basemap-tint-green",
           source: new XYZ({
             url: "https://webrd0{1-4}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}",
             crossOrigin: "anonymous",
@@ -174,7 +177,7 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
           itemWidth: 8,
           itemHeight: 8,
           itemGap: 6,
-          textStyle: { color: "#A1A1AA", fontSize: 9 },
+          textStyle: { color: "#5A7BA0", fontSize: 9 },
         },
         series: [{
           type: "pie",
@@ -204,21 +207,21 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
         xAxis: {
           type: "category",
           data: dist.map((d: any) => d.district),
-          axisLabel: { color: "#A1A1AA", fontSize: 10, rotate: 30 },
-          axisLine: { lineStyle: { color: "#3F3F46" } },
+          axisLabel: { color: "#5A7BA0", fontSize: 10, rotate: 30 },
+          axisLine: { lineStyle: { color: "rgba(27,42,74,0.15)" } },
         },
         yAxis: {
           type: "value",
-          axisLabel: { color: "#A1A1AA", fontSize: 10 },
-          splitLine: { lineStyle: { color: "#27272A" } },
+          axisLabel: { color: "#5A7BA0", fontSize: 10 },
+          splitLine: { lineStyle: { color: "rgba(27,42,74,0.08)" } },
         },
         series: [{
           type: "bar",
           data: dist.map((d: any) => d.stations),
           itemStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: "#00C896" },
-              { offset: 1, color: "#0A0E27" },
+              { offset: 0, color: "#3FA98C" },
+              { offset: 1, color: "rgba(63,169,140,0.15)" },
             ]),
             borderRadius: [4, 4, 0, 0],
           },
@@ -235,23 +238,23 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
       const trend = data.growthTrend || [];
       chart.setOption({
         tooltip: { trigger: "axis" },
-        legend: { data: ["新增站点", "新增方案", "新增反馈"], textStyle: { color: "#A1A1AA", fontSize: 10 }, top: 0 },
+        legend: { data: ["新增站点", "新增方案", "新增反馈"], textStyle: { color: "#5A7BA0", fontSize: 10 }, top: 0 },
         grid: { left: 40, right: 20, top: 30, bottom: 30 },
         xAxis: {
           type: "category",
           data: trend.map((t: any) => t.month.slice(5)),
-          axisLabel: { color: "#A1A1AA", fontSize: 10 },
-          axisLine: { lineStyle: { color: "#3F3F46" } },
+          axisLabel: { color: "#5A7BA0", fontSize: 10 },
+          axisLine: { lineStyle: { color: "rgba(27,42,74,0.15)" } },
         },
         yAxis: {
           type: "value",
-          axisLabel: { color: "#A1A1AA", fontSize: 10 },
-          splitLine: { lineStyle: { color: "#27272A" } },
+          axisLabel: { color: "#5A7BA0", fontSize: 10 },
+          splitLine: { lineStyle: { color: "rgba(27,42,74,0.08)" } },
         },
         series: [
-          { name: "新增站点", type: "line", smooth: true, data: trend.map((t: any) => t.stations), itemStyle: { color: "#00C896" }, areaStyle: { color: "rgba(0,200,150,0.15)" } },
-          { name: "新增方案", type: "line", smooth: true, data: trend.map((t: any) => t.schemes), itemStyle: { color: "#FFD460" } },
-          { name: "新增反馈", type: "line", smooth: true, data: trend.map((t: any) => t.feedback), itemStyle: { color: "#38BDF8" } },
+          { name: "新增站点", type: "line", smooth: true, data: trend.map((t: any) => t.stations), itemStyle: { color: "#3FA98C" }, areaStyle: { color: "rgba(63,169,140,0.12)" } },
+          { name: "新增方案", type: "line", smooth: true, data: trend.map((t: any) => t.schemes), itemStyle: { color: "#D9A843" } },
+          { name: "新增反馈", type: "line", smooth: true, data: trend.map((t: any) => t.feedback), itemStyle: { color: "#6B9AC4" } },
         ],
       });
       trendChartInstRef.current = chart;
@@ -290,80 +293,84 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
   const ticker = data?.ticker || [];
   const topBlindSpots = data?.topBlindSpots || [];
 
-  // KPI 卡片配置
-  const kpiCards = [
-    { label: "充电站总数", value: kpi?.totalStations ?? 0, unit: "座", icon: Zap, color: "#00C896" },
-    { label: "充电桩总数", value: kpi?.totalPorts ?? 0, unit: "桩", icon: BatteryCharging, color: "#FFD460" },
-    { label: "区域覆盖率", value: kpi?.coverageRate ?? 0, unit: "%", icon: Percent, color: "#38BDF8" },
-    { label: "盲区社区数", value: kpi?.blindSpotCommunities ?? 0, unit: "个", icon: AlertTriangle, color: "#FF6B35" },
-    { label: "今日新增反馈", value: kpi?.todayFeedback ?? 0, unit: "条", icon: MessageSquarePlus, color: "#A855F7" },
+  // KPI 卡片配置 (盲区社区数支持深链跳转到盲区攻坚大屏)
+  const kpiCards: { label: string; value: number; unit: string; icon: typeof Zap; color: string; target?: DashboardTarget }[] = [
+    { label: "充电站总数", value: kpi?.totalStations ?? 0, unit: "座", icon: Zap, color: "#3FA98C" },
+    { label: "充电桩总数", value: kpi?.totalPorts ?? 0, unit: "桩", icon: BatteryCharging, color: "#D9A843" },
+    { label: "区域覆盖率", value: kpi?.coverageRate ?? 0, unit: "%", icon: Percent, color: "#6B9AC4" },
+    { label: "盲区社区数", value: kpi?.blindSpotCommunities ?? 0, unit: "个", icon: AlertTriangle, color: "#E08D5A", target: "blindspot" },
+    { label: "今日新增反馈", value: kpi?.todayFeedback ?? 0, unit: "条", icon: MessageSquarePlus, color: "#9B8AC4" },
   ];
 
   return (
     <div
       className="fixed inset-0 z-[100] flex flex-col overflow-hidden"
       style={{
-        background: "#09090B",
-        color: "#E4E4E7",
+        background: "linear-gradient(160deg, #EAF2F8 0%, #E0ECF5 50%, #D6E6F8 100%)",
+        color: "#1B2A4A",
         fontFamily: "var(--font-sans)",
       }}
     >
-      {/* Subtle 网格背景纹理 */}
+      {/* Subtle 网格背景纹理 (淡蓝) */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
-          backgroundImage: "radial-gradient(circle, rgba(255,255,255,0.03) 1px, transparent 1px)",
+          backgroundImage: "radial-gradient(circle, rgba(90,123,160,0.07) 1px, transparent 1px)",
           backgroundSize: "32px 32px",
         }}
       />
 
-      {/* ===== 顶部标题栏 — 玻璃拟态 ===== */}
+      {/* ===== 顶部标题栏 — 淡色液态玻璃 ===== */}
       <header
         className="shrink-0 flex items-center justify-between px-6 relative"
         style={{
           height: 64,
-          background: "rgba(24,24,27,0.7)",
-          backdropFilter: "blur(16px) saturate(1.2)",
-          WebkitBackdropFilter: "blur(16px) saturate(1.2)",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          background: "linear-gradient(165deg, rgba(255,255,255,0.62) 0%, rgba(255,255,255,0.42) 100%)",
+          backdropFilter: "blur(20px) saturate(1.6) brightness(1.03)",
+          WebkitBackdropFilter: "blur(20px) saturate(1.6) brightness(1.03)",
+          borderBottom: "1px solid rgba(255,255,255,0.65)",
+          boxShadow: "0 4px 24px -12px rgba(27,42,74,0.12)",
         }}
       >
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "rgba(0,200,150,0.1)", border: "1px solid rgba(0,200,150,0.2)" }}>
-            <Zap className="w-5 h-5" style={{ color: "#00C896" }} />
+          <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: "linear-gradient(135deg, #EAF2F8 0%, #D6E6F2 100%)", border: "1px solid rgba(90,123,160,0.35)" }}>
+            <Zap className="w-5 h-5" style={{ color: "#1B2A4A" }} fill="#1B2A4A" />
           </div>
           <div>
-            <h1 className="text-[18px] font-semibold tracking-wide" style={{ color: "#FAFAFA" }}>
+            <h1 className="text-[18px] font-semibold tracking-wide" style={{ color: "#1B2A4A" }}>
               徐州新能源充电设施决策大屏
             </h1>
-            <p className="text-[10.5px] text-zinc-500 tracking-wider">
+            <p className="text-[10.5px] tracking-wider" style={{ color: "#7A8A9A" }}>
               XUZHOU NEW ENERGY CHARGING INFRASTRUCTURE DASHBOARD
             </p>
           </div>
         </div>
 
+        {onNavigate && <DashboardStoryNav current="main" onNavigate={onNavigate} />}
+
         <div className="flex items-center gap-4 text-[11.5px]">
           <div className="flex items-center gap-1.5">
-            <Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-            <span className="text-zinc-300 font-num">
+            <Activity className="w-3.5 h-3.5 animate-pulse" style={{ color: "#3FA98C" }} />
+            <span className="font-num" style={{ color: "#5A7BA0" }}>
               {now.toLocaleString("zh-CN", { hour12: false })}
             </span>
           </div>
-          <span className="text-zinc-700">|</span>
-          <span className="text-zinc-500">
-            数据更新: <span className="text-emerald-300 font-num">{data?.updateTime || "加载中..."}</span>
+          <span style={{ color: "rgba(90,123,160,0.35)" }}>|</span>
+          <span style={{ color: "#7A8A9A" }}>
+            数据更新: <span className="font-num" style={{ color: "#3FA98C" }}>{data?.updateTime || "加载中..."}</span>
           </span>
           <button
             onClick={loadData}
-            className="ml-2 w-7 h-7 rounded-lg flex items-center justify-center hover:bg-white/5 transition-colors"
+            className="ml-2 w-7 h-7 rounded-lg flex items-center justify-center transition-colors"
+            style={{ background: "rgba(255,255,255,0.4)", border: "1px solid rgba(255,255,255,0.6)" }}
             title="刷新数据"
           >
-            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" /> : <RefreshCw className="w-3.5 h-3.5 text-zinc-400" />}
+            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: "#3FA98C" }} /> : <RefreshCw className="w-3.5 h-3.5" style={{ color: "#5A7BA0" }} />}
           </button>
           <button
             onClick={onBack}
             className="ml-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-medium transition-all hover:scale-105"
-            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", color: "#D4D4D8" }}
+            style={{ background: "rgba(255,255,255,0.4)", border: "1px solid rgba(255,255,255,0.65)", color: "#1B2A4A" }}
           >
             <X className="w-3.5 h-3.5" />
             返回主界面
@@ -377,23 +384,23 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
         <aside className="w-[220px] shrink-0 flex flex-col gap-3">
           {kpiCards.map((card, i) => {
             const Icon = card.icon;
+            const clickable = !!card.target && !!onNavigate;
             return (
               <div
                 key={i}
-                className="rounded-xl p-3.5 flex-1 flex flex-col justify-between relative overflow-hidden animate-slide-up bento-tile"
-                style={{
-                  background: "rgba(24,24,27,0.6)",
-                  backdropFilter: "blur(12px) saturate(1.2)",
-                  WebkitBackdropFilter: "blur(12px) saturate(1.2)",
-                  border: "1px solid rgba(255,255,255,0.06)",
-                  boxShadow: "0 4px 24px -4px rgba(0,0,0,0.3)",
-                }}
+                onClick={clickable ? () => onNavigate?.(card.target!, { from: "main", blindSpotCount: kpi?.blindSpotCommunities ?? 0, focusTopBlindSpot: true }) : undefined}
+                className={`rounded-xl p-3.5 flex-1 flex flex-col justify-between relative overflow-hidden animate-slide-up dash-card ${clickable ? "group cursor-pointer transition-transform hover:scale-[1.02]" : ""}`}
+                style={
+                  clickable
+                    ? { border: "1px solid rgba(224,141,90,0.4)", boxShadow: "0 8px 32px -12px rgba(224,141,90,0.25), inset 0 1px 1px rgba(255,255,255,0.85)" }
+                    : undefined
+                }
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] text-zinc-500">{card.label}</span>
+                  <span className="text-[11px]" style={{ color: "#7A8A9A" }}>{card.label}</span>
                   <div
                     className="w-7 h-7 rounded-lg flex items-center justify-center"
-                    style={{ background: `${card.color}15`, border: `1px solid ${card.color}25` }}
+                    style={{ background: "rgba(255,255,255,0.55)", border: `1px solid ${card.color}35` }}
                   >
                     <Icon className="w-3.5 h-3.5" style={{ color: card.color }} />
                   </div>
@@ -402,7 +409,12 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
                   <span className="text-[30px] font-bold font-num leading-none" style={{ color: card.color }}>
                     {card.value.toLocaleString()}
                   </span>
-                  <span className="text-[11px] text-zinc-600">{card.unit}</span>
+                  <span className="text-[11px]" style={{ color: "#A8B4C4" }}>{card.unit}</span>
+                  {clickable && (
+                    <span className="ml-auto text-[9px] font-medium group-hover:transition-colors" style={{ color: "#E08D5A" }}>
+                      攻坚 →
+                    </span>
+                  )}
                 </div>
                 {/* 底部 subtle 装饰线 */}
                 <div
@@ -417,18 +429,17 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
         {/* ===== 中央: 大地图 ===== */}
         <main className="flex-1 flex flex-col gap-3 min-w-0">
           <div
-            className="flex-1 rounded-xl overflow-hidden relative bento-tile"
-            style={{ background: "rgba(9,9,11,0.8)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 24px -4px rgba(0,0,0,0.3)" }}
+            className="flex-1 rounded-xl overflow-hidden relative dash-card"
           >
             <div ref={mapRef} className="w-full h-full" />
-            {/* 地图角标 — 玻璃拟态 */}
-            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: "rgba(9,9,11,0.7)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.08)" }}>
-              <TrendingUp className="w-3 h-3 text-emerald-400" />
-              <span className="text-[11px] text-emerald-300">全市充电站分布 + 负荷热力图</span>
+            {/* 地图角标 — 淡色玻璃 */}
+            <div className="absolute top-3 left-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-lg" style={{ background: "rgba(255,255,255,0.65)", backdropFilter: "blur(12px) saturate(1.5)", border: "1px solid rgba(255,255,255,0.7)" }}>
+              <TrendingUp className="w-3 h-3" style={{ color: "#3FA98C" }} />
+              <span className="text-[11px]" style={{ color: "#1B2A4A" }}>全市充电站分布 + 负荷热力图</span>
             </div>
-            <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3 px-3 py-1.5 rounded-lg text-[10px]" style={{ background: "rgba(9,9,11,0.7)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.08)" }}>
+            <div className="absolute bottom-3 left-3 z-10 flex items-center gap-3 px-3 py-1.5 rounded-lg text-[10px]" style={{ background: "rgba(255,255,255,0.65)", backdropFilter: "blur(12px) saturate(1.5)", border: "1px solid rgba(255,255,255,0.7)" }}>
               {Object.entries(BRAND_CONFIG).slice(0, 6).map(([k, v]) => (
-                <span key={k} className="flex items-center gap-1 text-zinc-500">
+                <span key={k} className="flex items-center gap-1" style={{ color: "#5A7BA0" }}>
                   <span className="w-1.5 h-1.5 rounded-full" style={{ background: v.color }} />
                   {v.label}
                 </span>
@@ -436,13 +447,13 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
             </div>
           </div>
 
-          {/* ===== 底部滚动条: 反馈/日志轮播 — 玻璃拟态 ===== */}
+          {/* ===== 底部滚动条: 反馈/日志轮播 — 淡色玻璃 ===== */}
           <div
-            className="shrink-0 rounded-xl overflow-hidden"
-            style={{ height: 44, background: "rgba(24,24,27,0.6)", backdropFilter: "blur(8px)", border: "1px solid rgba(255,255,255,0.06)" }}
+            className="shrink-0 rounded-xl overflow-hidden dash-card"
+            style={{ height: 44 }}
           >
             <div className="flex items-center h-full">
-              <div className="shrink-0 px-3 h-full flex items-center gap-1.5 text-[11px] font-medium text-emerald-300" style={{ background: "rgba(0,200,150,0.08)", borderRight: "1px solid rgba(255,255,255,0.06)" }}>
+              <div className="shrink-0 px-3 h-full flex items-center gap-1.5 text-[11px] font-medium" style={{ background: "rgba(63,169,140,0.12)", borderRight: "1px solid rgba(255,255,255,0.65)", color: "#2E8B74" }}>
                 <Activity className="w-3 h-3" />
                 实时动态
               </div>
@@ -450,73 +461,73 @@ export default function Dashboard({ open, onBack }: DashboardProps) {
                 {ticker.length > 0 ? (
                   <div className="flex items-center whitespace-nowrap animate-marquee" style={{ animationDuration: `${Math.max(20, ticker.length * 4)}s` }}>
                     {[...ticker, ...ticker].map((item, idx) => (
-                      <span key={idx} className="inline-flex items-center gap-2 px-6 text-[11.5px] text-zinc-400">
-                        <span className="px-1.5 py-0.5 rounded text-[9px]" style={{ background: item.type === "评价" ? "rgba(168,85,247,0.12)" : item.type === "需求" ? "rgba(255,212,96,0.12)" : "rgba(56,189,248,0.12)", color: item.type === "评价" ? "#C084FC" : item.type === "需求" ? "#FFD460" : "#38BDF8" }}>
+                      <span key={idx} className="inline-flex items-center gap-2 px-6 text-[11.5px]" style={{ color: "#5A7BA0" }}>
+                        <span className="px-1.5 py-0.5 rounded text-[9px]" style={{ background: item.type === "评价" ? "rgba(155,138,196,0.14)" : item.type === "需求" ? "rgba(217,168,67,0.14)" : "rgba(107,154,196,0.14)", color: item.type === "评价" ? "#8478B5" : item.type === "需求" ? "#B8862F" : "#5B88B5" }}>
                           {item.type}
                         </span>
-                        <span className="text-zinc-400">{item.content}</span>
-                        <span className="text-zinc-600 text-[10px]">— {item.submitter} · {item.time}</span>
-                        <span className="text-zinc-700 mx-2">◆</span>
+                        <span style={{ color: "#5A7BA0" }}>{item.content}</span>
+                        <span className="text-[10px]" style={{ color: "#A8B4C4" }}>— {item.submitter} · {item.time}</span>
+                        <span className="mx-2" style={{ color: "rgba(90,123,160,0.4)" }}>◆</span>
                       </span>
                     ))}
                   </div>
                 ) : (
-                  <div className="flex items-center h-full px-6 text-[11px] text-zinc-600">暂无实时动态</div>
+                  <div className="flex items-center h-full px-6 text-[11px]" style={{ color: "#A8B4C4" }}>暂无实时动态</div>
                 )}
               </div>
             </div>
           </div>
         </main>
 
-        {/* ===== 右侧: 图表列 — 深色玻璃拟态 ===== */}
+        {/* ===== 右侧: 图表列 — 淡色玻璃 ===== */}
         <aside className="w-[300px] shrink-0 flex flex-col gap-3">
           {/* 品牌市占率环图 */}
-          <div className="rounded-xl p-3 flex flex-col bento-tile" style={{ background: "rgba(24,24,27,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 24px -4px rgba(0,0,0,0.3)", height: 200 }}>
+          <div className="rounded-xl p-3 flex flex-col dash-card" style={{ height: 200 }}>
             <div className="flex items-center gap-1.5 mb-1">
-              <BarChart3 className="w-3 h-3 text-emerald-400" />
-              <h3 className="text-[11.5px] font-medium text-zinc-300">品牌市占率</h3>
+              <BarChart3 className="w-3 h-3" style={{ color: "#3FA98C" }} />
+              <h3 className="text-[11.5px] font-medium" style={{ color: "#1B2A4A" }}>品牌市占率</h3>
             </div>
             <div ref={brandChartRef} className="flex-1" />
           </div>
 
           {/* 行政区分布柱图 */}
-          <div className="rounded-xl p-3 flex flex-col bento-tile" style={{ background: "rgba(24,24,27,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 24px -4px rgba(0,0,0,0.3)", height: 200 }}>
+          <div className="rounded-xl p-3 flex flex-col dash-card" style={{ height: 200 }}>
             <div className="flex items-center gap-1.5 mb-1">
-              <BarChart3 className="w-3 h-3 text-emerald-400" />
-              <h3 className="text-[11.5px] font-medium text-zinc-300">行政区分布</h3>
+              <BarChart3 className="w-3 h-3" style={{ color: "#3FA98C" }} />
+              <h3 className="text-[11.5px] font-medium" style={{ color: "#1B2A4A" }}>行政区分布</h3>
             </div>
             <div ref={districtChartRef} className="flex-1" />
           </div>
 
           {/* 增长趋势折线图 */}
-          <div className="rounded-xl p-3 flex flex-col bento-tile" style={{ background: "rgba(24,24,27,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 24px -4px rgba(0,0,0,0.3)", height: 180 }}>
+          <div className="rounded-xl p-3 flex flex-col dash-card" style={{ height: 180 }}>
             <div className="flex items-center gap-1.5 mb-1">
-              <TrendingUp className="w-3 h-3 text-emerald-400" />
-              <h3 className="text-[11.5px] font-medium text-zinc-300">12 月增长趋势</h3>
+              <TrendingUp className="w-3 h-3" style={{ color: "#3FA98C" }} />
+              <h3 className="text-[11.5px] font-medium" style={{ color: "#1B2A4A" }}>12 月增长趋势</h3>
             </div>
             <div ref={trendChartRef} className="flex-1" />
           </div>
 
           {/* Top5 盲区列表 */}
-          <div className="rounded-xl p-3 flex-1 flex flex-col min-h-0 bento-tile" style={{ background: "rgba(24,24,27,0.6)", backdropFilter: "blur(12px)", border: "1px solid rgba(255,255,255,0.06)", boxShadow: "0 4px 24px -4px rgba(0,0,0,0.3)" }}>
+          <div className="rounded-xl p-3 flex-1 flex flex-col min-h-0 dash-card">
             <div className="flex items-center gap-1.5 mb-2">
-              <Trophy className="w-3 h-3" style={{ color: "#FF6B35" }} />
-              <h3 className="text-[11.5px] font-medium text-zinc-300">Top5 盲区社区</h3>
+              <Trophy className="w-3 h-3" style={{ color: "#E08D5A" }} />
+              <h3 className="text-[11.5px] font-medium" style={{ color: "#1B2A4A" }}>Top5 盲区社区</h3>
             </div>
             <div className="flex-1 overflow-y-auto space-y-1.5">
               {topBlindSpots.length === 0 ? (
-                <p className="text-[10.5px] text-zinc-600 text-center py-4">暂无盲区数据</p>
+                <p className="text-[10.5px] text-center py-4" style={{ color: "#A8B4C4" }}>暂无盲区数据</p>
               ) : topBlindSpots.map((c: any, i: number) => (
-                <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: "rgba(255,107,53,0.05)", border: "1px solid rgba(255,107,53,0.08)" }}>
-                  <span className="w-4 h-4 rounded text-[9px] flex items-center justify-center font-bold" style={{ background: i === 0 ? "rgba(255,212,96,0.2)" : i === 1 ? "rgba(192,192,192,0.2)" : i === 2 ? "rgba(205,127,50,0.2)" : "rgba(63,63,70,0.5)", color: i < 3 ? "#E4E4E7" : "#71717A" }}>
+                <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: "rgba(255,255,255,0.45)", border: "1px solid rgba(224,141,90,0.18)" }}>
+                  <span className="w-4 h-4 rounded text-[9px] flex items-center justify-center font-bold" style={{ background: i === 0 ? "rgba(217,168,67,0.22)" : i === 1 ? "rgba(107,154,196,0.22)" : i === 2 ? "rgba(224,141,90,0.22)" : "rgba(90,123,160,0.12)", color: i < 3 ? "#1B2A4A" : "#7A8A9A" }}>
                     {i + 1}
                   </span>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[11px] text-zinc-300 truncate">{c.name}</p>
-                    <p className="text-[9px] text-zinc-600">{c.district}</p>
+                    <p className="text-[11px] truncate" style={{ color: "#1B2A4A" }}>{c.name}</p>
+                    <p className="text-[9px]" style={{ color: "#A8B4C4" }}>{c.district}</p>
                   </div>
-                  <span className="text-[11px] font-num text-orange-300">{c.population.toLocaleString()}</span>
-                  <span className="text-[9px] text-zinc-600">人</span>
+                  <span className="text-[11px] font-num" style={{ color: "#D97F4A" }}>{c.population.toLocaleString()}</span>
+                  <span className="text-[9px]" style={{ color: "#A8B4C4" }}>人</span>
                 </div>
               ))}
             </div>

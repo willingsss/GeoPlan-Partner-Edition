@@ -28,6 +28,12 @@ export interface CommunityResult {
   coveredBy: string | null;
   // 覆盖率分级 (极差 / 较差 / 一般 / 良好 / 优秀, 后端返回)
   level?: string;
+  // 阶段五 hybrid 双指标区间: 缓冲区口径 / 等时圈口径覆盖率 (%) 与不确定性区间
+  coverageBuf?: number;    // 缓冲区(直线距离理想化)口径覆盖率
+  coverageIso?: number;    // 等时圈(真实路网可达)口径覆盖率
+  pessimistic?: number;    // 双口径下界 (悲观)
+  optimistic?: number;     // 双口径上界 (乐观)
+  confidence?: number;     // 置信度 (等时圈星形法方向命中率, 0-100)
 }
 
 export interface CoverageSummary {
@@ -35,6 +41,8 @@ export interface CoverageSummary {
   coveredCommunities: number;
   blindSpotCommunities: number;
   coverageRate: number;
+  // hybrid 双指标区间: [悲观口径覆盖率, 乐观口径覆盖率], 区间宽度即估计不确定性带宽 (仅 hybrid 模式非空)
+  coverageRateInterval?: [number, number] | null;
   // 人口加权覆盖率 (阶段一 任务 1.1.3)
   populationCoverageRate?: number;
   totalPopulation: number;

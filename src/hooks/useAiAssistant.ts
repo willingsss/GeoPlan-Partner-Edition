@@ -37,6 +37,16 @@ interface UseAiAssistantOptions {
 const HISTORY_LIMIT = 8; // 多轮上下文: 最近 8 条
 const STORAGE_KEY = "geoplan_ai_messages"; // 会话持久化
 
+// 解析后端错误响应, 返回给用户可读的提示 (401 = 登录失效而非服务故障)
+export async function aiErrorMessage(res: Response): Promise<string> {
+  if (res.status === 401) return "登录已失效，请重新登录后再使用 AI 功能。";
+  try {
+    const json = await res.json();
+    if (json?.message) return `AI 请求失败: ${json.message}`;
+  } catch { /* 响应体非 JSON */ }
+  return `AI 请求失败 (HTTP ${res.status})`;
+}
+
 export default function useAiAssistant({ userLocation, onGisResult }: UseAiAssistantOptions) {
   // 会话持久化: 刷新后恢复历史对话
   const [aiMessages, setAiMessages] = useState<{ role: "user" | "assistant"; content: string; gisResult?: AiGisResult }[]>(() => {
@@ -92,9 +102,14 @@ export default function useAiAssistant({ userLocation, onGisResult }: UseAiAssis
       const timeoutId = setTimeout(() => controller.abort(), 30000);
       // 多轮上下文优化: 只传最近 HISTORY_LIMIT 条
       const history = baseMessages.slice(-HISTORY_LIMIT).map(m => ({ role: m.role, content: m.content }));
+      // 后端 /ai/chat 挂了 requireAuth, 必须携带登录 token
+      const token = localStorage.getItem("geoplan_token");
       const res = await fetch("/api/v1/ai/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           message: userText,
           context,
@@ -104,7 +119,7 @@ export default function useAiAssistant({ userLocation, onGisResult }: UseAiAssis
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok || !res.body) throw new Error(await aiErrorMessage(res));
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -163,7 +178,7 @@ export default function useAiAssistant({ userLocation, onGisResult }: UseAiAssis
         console.error(e);
         setAiMessages(prev => {
           const updated = [...prev];
-          updated[updated.length - 1] = { role: "assistant", content: "⚠️ AI 服务暂时不可用，请稍后重试。(" + (e?.message || "连接异常") + ")" };
+          updated[updated.length - 1] = { role: "assistant", content: "⚠️ " + (e?.message || "AI 服务暂时不可用，请稍后重试。") };
           return updated;
         });
       }

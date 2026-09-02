@@ -4,7 +4,7 @@
 import { useState, useEffect, useRef } from "react";
 import * as echarts from "echarts";
 import {
-  Settings, RefreshCw, Zap, User as UserIcon, MessageSquare, Target, Database,
+  RefreshCw, Zap, User as UserIcon, MessageSquare, Target, Database,
   FileText, Activity, CheckCircle2, Clock, AlertCircle, RotateCcw, Plus, Edit, Search, ShieldCheck, Trash2, BarChart3,
 } from "lucide-react";
 import { BRAND_CONFIG, BRANDS, ROLE_CONFIG, UserRole } from "../../types";
@@ -12,6 +12,7 @@ import useAdminPanel from "../../hooks/useAdminPanel";
 import StationEditModal from "./StationEditModal";
 import ReportCenter from "../ReportCenter";
 import ConfirmDialog from "../ConfirmDialog";
+import ModeSwitcher from "../ModeSwitcher";
 
 interface AdminPanelProps {
   authFetch: (url: string, init?: any) => Promise<Response>;
@@ -19,9 +20,15 @@ interface AdminPanelProps {
   asArray: (value: any) => any[];
   normalizeStations: (data: any) => any[];
   activeTab: string;
+  navTabs: { id: any; label: string; icon: import("react").ComponentType<{ className?: string }> }[];
+  onNavTabChange: (tab: any) => void;
+  onOpenDashboard: () => void;
+  onOpenBlindSpotDashboard: () => void;
+  onOpenSchemeDashboard: () => void;
+  topRightSlot?: import("react").ReactNode;
 }
 
-export default function AdminPanel({ authFetch, showToast, asArray, normalizeStations, activeTab }: AdminPanelProps) {
+export default function AdminPanel({ authFetch, showToast, asArray, normalizeStations, activeTab, navTabs, onNavTabChange, onOpenDashboard, onOpenBlindSpotDashboard, onOpenSchemeDashboard, topRightSlot }: AdminPanelProps) {
   const {
     adminTab, setAdminTab,
     users, logs,
@@ -119,41 +126,25 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                 className="absolute inset-0 z-30 flex flex-col overflow-hidden"
                 style={{ background: "var(--color-canvas)" }}
               >
-                {/* 管理界面标题栏 - Linear 风: 紧凑, 单色边框 */}
-                <div
-                  className="px-5 py-3 flex items-center justify-between shrink-0"
-                  style={{ background: "var(--color-surface)", borderBottom: "1px solid var(--color-muted)" }}
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div
-                      className="w-7 h-7 rounded-md flex items-center justify-center"
-                      style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
-                    >
-                      <Settings className="w-4 h-4" style={{ color: "var(--color-ink-2)" }} />
+                {/* 页面内嵌模式导航条 (非悬浮, 替代主页浮窗胶囊; 右侧嵌入控制按钮组) */}
+                <div className="relative w-full">
+                  <ModeSwitcher
+                    embedded
+                    visibleTabs={navTabs}
+                    activeTab={activeTab as any}
+                    onTabChange={onNavTabChange}
+                    onOpenDashboard={onOpenDashboard}
+                    onOpenBlindSpotDashboard={onOpenBlindSpotDashboard}
+                    onOpenSchemeDashboard={onOpenSchemeDashboard}
+                  />
+                  {topRightSlot && (
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 z-10">
+                      {topRightSlot}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-[15px] font-semibold" style={{ color: "var(--color-ink-1)" }}>系统管理控制台</h3>
-                      <span
-                        className="text-[10px] px-1.5 py-0 rounded"
-                        style={{
-                          background: "var(--color-grape-subtle)",
-                          color: "var(--color-grape)",
-                          border: "1px solid var(--color-grape-border)",
-                        }}
-                      >
-                        管理员
-                      </span>
-                    </div>
-                  </div>
-                  <button
-                    onClick={loadAdminData}
-                    className="btn-brand text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 font-medium"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" /> 刷新
-                  </button>
+                  )}
                 </div>
 
-                {/* 分类 Tab 栏 - Linear 风: 下划线指示器, 等宽标签 */}
+                {/* 分类 Tab 栏 - Linear 风: 下划线指示器, 等宽标签 (刷新按钮在右侧) */}
                 <div
                   className="px-5 flex gap-0 shrink-0"
                   style={{ background: "var(--color-surface)", borderBottom: "1px solid var(--color-muted)" }}
@@ -190,6 +181,13 @@ export default function AdminPanel({ authFetch, showToast, asArray, normalizeSta
                       </button>
                     );
                   })}
+                  {/* 刷新 (原标题栏按钮, 移至 Tab 行右侧) */}
+                  <button
+                    onClick={loadAdminData}
+                    className="ml-auto self-center btn-brand text-xs px-3 py-1.5 rounded-md flex items-center gap-1.5 font-medium"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> 刷新
+                  </button>
                 </div>
 
                 {/* 管理内容区 - Linear 风: 紧凑 padding */}

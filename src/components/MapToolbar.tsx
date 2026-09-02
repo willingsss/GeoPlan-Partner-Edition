@@ -45,7 +45,7 @@ const tooltipStyle: CSSProperties = {
 };
 
 const tooltipClass =
-  "absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-1 rounded-lg whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 -translate-y-1 group-hover:translate-y-0";
+  "absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 rounded-lg whitespace-nowrap pointer-events-none opacity-0 group-hover:opacity-100 transition-all duration-200 translate-y-1 group-hover:translate-y-0";
 
 // 按钮基础类名 (横向紧凑版)
 const btnClass =
@@ -59,12 +59,7 @@ export default function MapToolbar({ map, activeTool, onToolChange, onClearMeasu
   if (!map) return null;
 
   return (
-    <div className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-lg"
-      style={{
-        background: "rgba(0,0,0,0.03)",
-        border: "1px solid rgba(0,0,0,0.05)",
-      }}
-    >
+    <div className="flex items-center gap-0.5 px-1.5 py-1">
       {/* 工具按钮组 */}
       {TOOL_LIST.map((tool) => {
         const Icon = tool.icon;

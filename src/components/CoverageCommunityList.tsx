@@ -167,6 +167,9 @@ export default function CoverageCommunityList({
           visible.map((c) => {
             const level = inferLevel(c.coverageRatio);
             const color = LEVEL_COLORS[level] || "var(--color-ink-5)";
+            // 双指标区间: 悲观~乐观带宽 (仅区间模式返回; 带宽>0.1 才显示)
+            const hasInterval = c.pessimistic !== undefined && c.optimistic !== undefined
+              && (c.optimistic - c.pessimistic) > 0.1;
             return (
               <div
                 key={c.id}
@@ -199,6 +202,28 @@ export default function CoverageCommunityList({
                     </span>
                   </div>
                 </div>
+                {hasInterval && (
+                  <div className="flex items-center justify-between mt-0.5">
+                    <span
+                      className="text-[9px] font-num"
+                      style={{ color: "var(--color-ink-5)" }}
+                      title={`缓冲区口径 ${(c.coverageBuf ?? 0).toFixed(1)}% / 等时圈口径 ${(c.coverageIso ?? 0).toFixed(1)}%，区间宽度反映该社区覆盖估计的不确定性`}
+                    >
+                      区间 {c.pessimistic!.toFixed(1)}~{c.optimistic!.toFixed(1)}%
+                    </span>
+                    {typeof c.confidence === "number" && (
+                      <span
+                        className="text-[9px] font-num"
+                        style={{
+                          color: c.confidence >= 80 ? "#059669" : c.confidence > 0 ? "#d97706" : "var(--color-ink-5)",
+                        }}
+                        title="等时圈星形法方向命中率（0-100），越高表示该社区覆盖估计越可信"
+                      >
+                        置信 {c.confidence.toFixed(0)}%
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className="flex items-center justify-between mt-0.5">
                   <span className="text-[10px] truncate" style={{ color: "var(--color-ink-5)" }}>
                     {c.coveredBy ? `覆盖: ${c.coveredBy}` : "无覆盖"}

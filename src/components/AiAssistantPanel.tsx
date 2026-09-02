@@ -2,7 +2,18 @@
 // AI 智能助手 - 悬浮球 + 浮动对话面板 (拆分自 App.tsx)
 // 纯展示组件: AI 状态/函数通过 props 注入, renderAiContent 本地渲染
 import React, { useState } from "react";
-import { Bot, Check, Copy, LocateFixed, MapPin, RotateCcw, Send, Sparkles, Square, Trash, X, Target } from "lucide-react";
+import { Check, Copy, LocateFixed, MapPin, RotateCcw, Send, Sparkles, Square, Trash, X, Target } from "lucide-react";
+
+// ===================================================================
+// DeepSeek 鲸鱼图标 (单 path, 24x24, 品牌蓝 #4D6BFE)
+// ===================================================================
+function DeepSeekIcon({ className, style }: { className?: string; style?: React.CSSProperties }) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <path d="M23.748 4.482c-.254-.124-.364.113-.512.234-.051.039-.094.09-.137.136-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.156-.708-.311-.955-.65-.172-.241-.219-.51-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.093.172.187.129.323-.082.28-.18.552-.266.833-.055.179-.137.217-.329.14a5.5 5.5 0 0 1-1.736-1.18c-.857-.828-1.631-1.742-2.597-2.458a11 11 0 0 0-.689-.471c-.985-.957.13-1.743.388-1.836.27-.098.093-.432-.779-.428s-1.67.295-2.687.684a3 3 0 0 1-.465.137 9.6 9.6 0 0 0-2.883-.102c-1.885.21-3.39 1.102-4.497 2.623C.082 8.606-.231 10.684.152 12.85c.403 2.284 1.569 4.175 3.36 5.653 1.858 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.133-.284 4.994-1.86.47.234.962.327 1.78.397.63.059 1.236-.03 1.705-.128.735-.156.684-.837.419-.961-2.155-1.004-1.682-.595-2.113-.926 1.096-1.296 2.746-2.642 3.392-7.003.05-.347.007-.565 0-.845-.004-.17.035-.237.23-.256a4.2 4.2 0 0 0 1.545-.475c1.396-.763 1.96-2.015 2.093-3.517.02-.23-.004-.467-.247-.588zM11.581 18c-2.089-1.642-3.102-2.183-3.52-2.16-.392.024-.321.471-.235.763.09.288.207.486.371.739.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.167-1.361-.802-2.5-1.86-3.301-3.307-.774-1.393-1.224-2.887-1.298-4.482-.02-.386.093-.522.477-.592a4.7 4.7 0 0 1 1.529-.039c2.132.312 3.946 1.265 5.468 2.774.868.86 1.525 1.887 2.202 2.891.72 1.066 1.494 2.082 2.48 2.914.348.292.625.514.891.677-.802.09-2.14.11-3.054-.614m1-6.44a.306.306 0 0 1 .415-.287.3.3 0 0 1 .2.288.306.306 0 0 1-.31.307.303.303 0 0 1-.304-.308zm3.11 1.596c-.2.081-.399.151-.59.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.552-.758a1.7 1.7 0 0 1 .016-.588c.07-.327-.008-.537-.239-.727-.187-.156-.426-.199-.688-.199a.56.56 0 0 1-.254-.078.253.253 0 0 1-.114-.358c.028-.054.16-.186.192-.21.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.391.451.462.576.685.914.176.265.336.537.445.848.067.195-.019.354-.25.452" />
+    </svg>
+  );
+}
 // ===================================================================
 // AI 回复内容渲染（简易 Markdown 美化）— 自 App.tsx 迁移
 // ===================================================================
@@ -233,16 +244,22 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
   return (
     <>
-      {/* ===== AI助手悬浮球 + 浮动面板 (Linear 风: 极简图标, 无渐变) ===== */}
-      {/* 悬浮球 - 可拖动, 默认往上 20px (bottom: 44) */}
+      {/* ===== AI助手悬浮球: 圆形液态玻璃 + DeepSeek 鲸鱼, 默认右侧居中, 打开后隐藏 ===== */}
+      {!aiPanelOpen && (
       <div
         className="fixed z-50 select-none"
-        style={{ bottom: aiBallPos?.bottom ?? 44, right: aiBallPos?.right ?? 24, cursor: aiDragging ? "grabbing" : "grab" }}
+        style={{
+          // 默认位置: 页面右侧垂直居中; 拖动后跟随 aiBallPos (右下角锚点)
+          ...(aiBallPos
+            ? { bottom: aiBallPos.bottom, right: aiBallPos.right }
+            : { top: "50%", right: 24, transform: "translateY(-50%)" }),
+          cursor: aiDragging ? "grabbing" : "grab",
+        }}
         onMouseDown={(e) => {
           aiDragRef.current = {
             startX: e.clientX,
             startY: e.clientY,
-            startBottom: aiBallPos?.bottom ?? 44,
+            startBottom: aiBallPos?.bottom ?? Math.round(window.innerHeight / 2 - 24),
             startRight: aiBallPos?.right ?? 24,
             moved: false,
           };
@@ -271,73 +288,77 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
           if (aiDragRef.current.moved) return;
           setAiBotBounce(true);
           setTimeout(() => setAiBotBounce(false), 400);
-          setAiPanelOpen(!aiPanelOpen);
+          setAiPanelOpen(true);
         }}
       >
         <div
-          className="w-11 h-11 rounded-xl flex items-center justify-center transition-all"
+          className="w-12 h-12 rounded-full flex items-center justify-center transition-all"
           style={{
-            background: aiPanelOpen ? "#18181B" : "var(--color-brand)",
-            border: "1px solid " + (aiPanelOpen ? "#27272A" : "var(--color-brand-hover)"),
-            boxShadow: aiPanelOpen
-              ? "0 4px 16px rgba(0,0,0,0.15)"
-              : "0 4px 16px rgba(0,200,150,0.25)",
-            transform: aiBotBounce ? "scale(1.08)" : "scale(1)",
-            transition: "transform var(--duration-fast) var(--ease-out), background var(--duration-fast) var(--ease-out)",
+            // 液态玻璃: 半透明白底 + 高饱和折射 + 镜面高光描边
+            background: "linear-gradient(165deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.45) 45%, rgba(255,255,255,0.6) 100%)",
+            backdropFilter: "blur(20px) saturate(1.8) brightness(1.06)",
+            WebkitBackdropFilter: "blur(20px) saturate(1.8) brightness(1.06)",
+            border: "1px solid rgba(255,255,255,0.65)",
+            boxShadow:
+              "0 8px 32px -6px rgba(0,0,0,0.22), 0 2px 8px -2px rgba(0,0,0,0.1), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.95), inset 0 -1.5px 1px -0.5px rgba(255,255,255,0.35)",
+            transform: aiBotBounce ? "scale(1.1)" : "scale(1)",
+            transition: "transform var(--duration-fast) var(--ease-out)",
           }}
         >
-          {aiPanelOpen ? (
-            <X className="w-4 h-4 text-white" />
-          ) : (
-            <div className="relative">
-              <Bot className="w-5 h-5 text-white" />
-              {/* 状态指示点 */}
-              <span
-                className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-300 animate-status-pulse"
-                style={{ border: "1.5px solid var(--color-brand)" }}
-              />
-            </div>
-          )}
+          <div className="relative">
+            {/* DeepSeek 鲸鱼图标 (品牌蓝) */}
+            <DeepSeekIcon className="w-7 h-7" style={{ color: "#4D6BFE" }} />
+            {/* 状态指示点 */}
+            <span
+              className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-400 animate-status-pulse"
+              style={{ border: "1.5px solid rgba(255,255,255,0.9)" }}
+            />
+          </div>
         </div>
       </div>
+      )}
 
-      {/* 浮动AI面板 - Bento 3D 玻璃拟态 */}
+      {/* ===== 竖形 AI 对话框: 右侧居中悬浮, 液态玻璃 (降透明度), 打开时悬浮球隐藏 ===== */}
       <div
-        className="fixed z-50 w-[400px] max-w-[calc(100vw-48px)]"
+        className="fixed z-50"
         style={{
-          bottom: (aiBallPos?.bottom ?? 44) + 60,
-          right: aiBallPos?.right ?? 24,
+          top: "50%",
+          right: 16,
+          transform: aiPanelOpen ? "translateY(-50%) translateX(0)" : "translateY(-50%) translateX(24px)",
           opacity: aiPanelOpen ? 1 : 0,
-          transform: aiPanelOpen
-            ? "perspective(1000px) rotateX(0deg) translateY(0) scale(1)"
-            : "perspective(1000px) rotateX(4deg) translateY(12px) scale(0.96)",
           pointerEvents: aiPanelOpen ? "auto" : "none",
-          transition: "opacity var(--duration-slow) var(--ease-out), transform var(--duration-slow) var(--ease-out)",
-          transformOrigin: "center bottom",
+          transition: "opacity var(--duration-normal) var(--ease-out), transform var(--duration-normal) var(--ease-out)",
         }}
       >
         <div
-          className="flex flex-col overflow-hidden bento-tile"
+          className="flex flex-col overflow-hidden"
           style={{
-            background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
-            backdropFilter: "blur(20px) saturate(1.4)",
-            WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-            border: "1px solid rgba(255,255,255,0.4)",
-            boxShadow: "var(--shadow-elevated)",
-            borderRadius: 16,
-            height: "min(560px, calc(100vh - 140px))",
+            // 液态玻璃 (透明度降低, 更通透): 半透明白 + 高饱和折射 + 镜面高光
+            background: "linear-gradient(165deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.32) 45%, rgba(255,255,255,0.44) 100%)",
+            backdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+            WebkitBackdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+            border: "1px solid rgba(255,255,255,0.5)",
+            boxShadow:
+              "0 16px 48px -12px rgba(0,0,0,0.28), 0 4px 12px -4px rgba(0,0,0,0.12), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.9), inset 0 -1.5px 1px -0.5px rgba(255,255,255,0.3)",
+            borderRadius: 22,
+            width: "min(400px, calc(100vw - 32px))",
+            height: "min(720px, calc(100vh - 32px))",
           }}
         >
-          {/* 面板头部 — 玻璃拟态 subtle */}
+          {/* 面板头部 — 液态玻璃, 含关闭按钮 (悬浮球已隐藏, 关闭入口在此) */}
           <div
-            className="shrink-0 px-3 py-2.5 flex items-center gap-2"
-            style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", background: "rgba(255,255,255,0.6)" }}
+            className="shrink-0 px-3.5 py-3 flex items-center gap-2.5"
+            style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}
           >
             <div
-              className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
-              style={{ background: "var(--color-subtle)", border: "1px solid var(--color-muted)" }}
+              className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+              style={{
+                background: "linear-gradient(165deg, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.5) 100%)",
+                border: "1px solid rgba(255,255,255,0.6)",
+                boxShadow: "inset 0 1px 1px rgba(255,255,255,0.8)",
+              }}
             >
-              <Bot className="w-3.5 h-3.5 text-zinc-700" />
+              <DeepSeekIcon className="w-4.5 h-4.5" style={{ color: "#4D6BFE", width: 18, height: 18 }} />
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
@@ -345,24 +366,35 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                 <span
                   className="text-[10px] px-1 py-0 rounded"
                   style={{
-                    background: "rgba(0,200,150,0.08)",
-                    color: "var(--color-brand-text)",
-                    border: "1px solid rgba(0,200,150,0.2)",
+                    background: "rgba(77,107,254,0.08)",
+                    color: "#4D6BFE",
+                    border: "1px solid rgba(77,107,254,0.2)",
                   }}
                 >
                   在线
                 </span>
               </div>
-              <p className="text-[10px] text-zinc-500">空间数据驱动 · 多轮对话</p>
+              <p className="text-[10px] text-zinc-500">DeepSeek · 空间数据驱动 · 多轮对话</p>
             </div>
             <div className="flex items-center gap-1">
               {aiMessages.length > 0 && (
                 <button onClick={clearAi}
-                  className="w-6 h-6 rounded flex items-center justify-center hover:bg-zinc-100 text-zinc-500 hover:text-red-500 transition-colors"
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-500 hover:text-red-500 transition-all"
+                  style={{ background: "transparent", border: "1px solid transparent" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.5)"; e.currentTarget.style.borderColor = "rgba(0,0,0,0.05)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "transparent"; }}
                   title="清空对话">
-                  <Trash className="w-3 h-3" />
+                  <Trash className="w-3.5 h-3.5" />
                 </button>
               )}
+              <button onClick={() => setAiPanelOpen(false)}
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-500 hover:text-zinc-900 transition-all"
+                style={{ background: "transparent", border: "1px solid transparent" }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.5)"; e.currentTarget.style.borderColor = "rgba(0,0,0,0.05)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = "transparent"; }}
+                title="收起对话 (悬浮球恢复显示)">
+                <X className="w-4 h-4" />
+              </button>
             </div>
           </div>
 
@@ -425,7 +457,7 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                       style={
                         msg.role === "user"
                           ? { background: "var(--color-brand)", borderRadius: "var(--radius-md) var(--radius-md) 2px var(--radius-md)" }
-                          : { background: "var(--color-subtle)", border: "1px solid var(--color-muted)", color: "var(--color-ink-1)", borderRadius: "var(--radius-md) var(--radius-md) 2px var(--radius-md)" }
+                          : { background: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.6)", color: "var(--color-ink-1)", borderRadius: "var(--radius-md) var(--radius-md) 2px var(--radius-md)" }
                       }
                     >
                       {msg.role === "user"
@@ -434,13 +466,13 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                           <>
                             {msg.gisResult && (
                               <div className="mb-2">
-                                {/* GIS 卡片 - Linear 风: 无渐变, 单色边框 + 大等宽数字 */}
+                                {/* GIS 卡片 - 液态玻璃: 半透明白 + 高光描边, 与对话面板同质感 */}
                                 <div
-                                  className="rounded-md p-2.5 mb-1.5"
+                                  className="rounded-xl p-2.5 mb-1.5"
                                   style={{
-                                    background: "var(--color-surface)",
-                                    border: "1px solid var(--color-muted)",
-                                    borderLeft: "2px solid var(--color-brand)",
+                                    background: "linear-gradient(165deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.35) 100%)",
+                                    border: "1px solid rgba(255,255,255,0.65)",
+                                    boxShadow: "0 4px 16px -6px rgba(0,0,0,0.12), inset 0 1px 1px rgba(255,255,255,0.8)",
                                   }}
                                 >
                                   <div className="flex items-center gap-1.5 mb-2">
@@ -451,8 +483,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                     <span
                                       className="text-[9px] px-1 py-0 rounded ml-auto"
                                       style={{
-                                        background: "rgba(0,200,150,0.08)",
+                                        background: "rgba(0,200,150,0.12)",
                                         color: "var(--color-brand-text)",
+                                        border: "1px solid rgba(0,200,150,0.25)",
                                       }}
                                     >
                                       空间分析
@@ -460,15 +493,15 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                   </div>
                                   <div className="grid grid-cols-3 gap-1.5 mb-2">
                                     <div
-                                      className="rounded px-1.5 py-1 text-center"
-                                      style={{ background: "var(--color-subtle)" }}
+                                      className="rounded-lg px-1.5 py-1 text-center"
+                                      style={{ background: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.55)", boxShadow: "inset 0 1px 1px rgba(255,255,255,0.6)" }}
                                     >
                                       <p className="text-[15px] font-bold text-zinc-900 font-num">{msg.gisResult.count}</p>
                                       <p className="text-[9px] text-zinc-500">充电站</p>
                                     </div>
                                     <div
-                                      className="rounded px-1.5 py-1 text-center"
-                                      style={{ background: "var(--color-subtle)" }}
+                                      className="rounded-lg px-1.5 py-1 text-center"
+                                      style={{ background: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.55)", boxShadow: "inset 0 1px 1px rgba(255,255,255,0.6)" }}
                                     >
                                       <p className="text-[15px] font-bold text-zinc-900 font-num">
                                         {msg.gisResult.coveredPopulation >= 10000
@@ -478,8 +511,8 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                       <p className="text-[9px] text-zinc-500">覆盖人口</p>
                                     </div>
                                     <div
-                                      className="rounded px-1.5 py-1 text-center"
-                                      style={{ background: "var(--color-subtle)" }}
+                                      className="rounded-lg px-1.5 py-1 text-center"
+                                      style={{ background: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.55)", boxShadow: "inset 0 1px 1px rgba(255,255,255,0.6)" }}
                                     >
                                       <p className="text-[15px] font-bold text-zinc-900 font-num">{msg.gisResult.coveredCommunities}</p>
                                       <p className="text-[9px] text-zinc-500">覆盖社区</p>
@@ -492,10 +525,10 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                       center: msg.gisResult.center,
                                       radius: msg.gisResult.radius,
                                     })}
-                                    className="flex-1 text-[11px] py-1 rounded flex items-center justify-center gap-1 transition-colors font-medium"
+                                    className="flex-1 text-[11px] py-1 rounded-lg flex items-center justify-center gap-1 transition-colors font-medium"
                                     style={{
-                                      background: "var(--color-brand-subtle)",
-                                      border: "1px solid var(--color-brand-border)",
+                                      background: "rgba(0,200,150,0.14)",
+                                      border: "1px solid rgba(0,200,150,0.3)",
                                       color: "var(--color-brand-text)",
                                     }}
                                   >
@@ -505,10 +538,10 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                   {msg.gisResult.center && (
                                     <button
                                       onClick={() => onAiSaveScheme(msg.gisResult!.center, msg.gisResult!.radius || 800)}
-                                      className="flex-1 text-[11px] py-1 rounded flex items-center justify-center gap-1 transition-colors font-medium"
+                                      className="flex-1 mt-1.5 w-full text-[11px] py-1 rounded-lg flex items-center justify-center gap-1 transition-colors font-medium"
                                       style={{
-                                        background: "rgba(168,85,247,0.08)",
-                                        border: "1px solid rgba(168,85,247,0.2)",
+                                        background: "rgba(168,85,247,0.12)",
+                                        border: "1px solid rgba(168,85,247,0.3)",
                                         color: "#7C3AED",
                                       }}
                                     >
@@ -547,8 +580,10 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                                       <button
                                         key={station.id}
                                         onClick={() => flyToStationById(station.id)}
-                                        className="w-full text-left p-1.5 rounded-md transition-all group"
-                                        style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)" }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.7)"; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.45)"; }}
+                                        className="w-full text-left p-1.5 rounded-lg transition-all group"
+                                        style={{ background: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.6)", boxShadow: "inset 0 1px 1px rgba(255,255,255,0.5)" }}
                                       >
                                         <div className="flex items-start gap-1.5">
                                           <MapPin className="w-3 h-3 text-zinc-400 group-hover:text-zinc-900 shrink-0 mt-0.5 transition-colors" />
@@ -609,9 +644,9 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
 
           {/* AI 站点详情已移至地图 Overlay */}
 
-          {/* 快捷指令 - 一键触发常见问题 */}
-          <div className="shrink-0 px-3 pt-2 pb-0 bg-white flex gap-1.5 flex-wrap"
-            style={{ borderTop: aiMessages.length > 0 ? "none" : "1px solid var(--color-muted)" }}>
+          {/* 快捷指令 - 一键触发常见问题 (透明, 融入玻璃) */}
+          <div className="shrink-0 px-3 pt-2 pb-0 flex gap-1.5 flex-wrap"
+            style={{ borderTop: aiMessages.length > 0 ? "none" : "1px solid rgba(0,0,0,0.06)" }}>
             {["推荐附近站点", "分析盲区缺口", "选址建议", "站点评价", "全市充电分布", "推荐选址区域"].map(q => (
               <button key={q}
                 onClick={() => sendAiText(q)}
@@ -624,10 +659,10 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
             ))}
           </div>
 
-          {/* 输入区域 - Linear 风: 紧凑, 黑底白字发送 */}
+          {/* 输入区域 - 透明融入玻璃, 黑底白字发送 */}
           <div
-            className="shrink-0 px-3 py-2.5 bg-white"
-            style={{ borderTop: "1px solid var(--color-muted)" }}
+            className="shrink-0 px-3 py-2.5"
+            style={{ borderTop: "1px solid rgba(0,0,0,0.06)" }}
           >
             <div className="flex gap-1.5 items-end">
               <textarea
@@ -643,15 +678,32 @@ export default function AiAssistantPanel(props: AiAssistantPanelProps) {
                 placeholder="输入问题 · 回车发送 · Shift+回车换行"
                 disabled={aiStreaming}
                 rows={1}
-                className="input-sys flex-1 text-[12px] px-2.5 py-1.5 text-zinc-900 resize-none overflow-hidden min-h-[32px] max-h-[120px]"
+                className="flex-1 text-[12px] px-2.5 py-1.5 text-zinc-900 resize-none overflow-hidden min-h-[32px] max-h-[120px] rounded-lg outline-none placeholder:text-zinc-400 transition-all"
+                style={{
+                  background: "rgba(255,255,255,0.5)",
+                  border: "1px solid rgba(0,0,0,0.08)",
+                  boxShadow: "inset 0 1px 2px rgba(0,0,0,0.05)",
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = "rgba(77,107,254,0.5)";
+                  e.currentTarget.style.boxShadow = "inset 0 1px 2px rgba(0,0,0,0.05), 0 0 0 3px rgba(77,107,254,0.12)";
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = "rgba(0,0,0,0.08)";
+                  e.currentTarget.style.boxShadow = "inset 0 1px 2px rgba(0,0,0,0.05)";
+                }}
               />
               <button onClick={aiStreaming ? stopAi : sendAiMessage}
                 disabled={!aiStreaming && !aiInput.trim()}
-                className={`w-8 h-8 rounded-md shrink-0 flex items-center justify-center transition-all ${
+                className={`w-8 h-8 rounded-lg shrink-0 flex items-center justify-center transition-all ${
                   aiStreaming
-                    ? "bg-red-500 hover:bg-red-600 text-white"
-                    : "bg-zinc-900 hover:bg-zinc-800 text-white disabled:bg-zinc-200 disabled:text-zinc-400"
-                }`}>
+                    ? "text-white"
+                    : "text-white disabled:opacity-40"
+                }`}
+                style={aiStreaming
+                  ? { background: "#EF4444", boxShadow: "0 2px 8px rgba(239,68,68,0.35)" }
+                  : { background: "linear-gradient(180deg, #4D6BFE 0%, #3D5BF5 100%)", boxShadow: "0 2px 8px rgba(77,107,254,0.35), inset 0 1px 1px rgba(255,255,255,0.25)" }
+                }>
                 {aiStreaming ? <Square className="w-3 h-3" /> : <Send className="w-3 h-3" />}
               </button>
             </div>

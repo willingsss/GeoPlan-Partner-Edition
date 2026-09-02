@@ -68,16 +68,26 @@ export default function RoiDialog({ open, onClose, initParams }: RoiDialogProps)
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4"
       style={{ background: "rgba(9,9,11,0.45)" }} onClick={onClose}>
-      <div className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
+      <div className="w-[720px] max-h-[88vh] overflow-y-auto bento-tile"
         style={{
-          background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
-          border: "1px solid rgba(255,255,255,0.6)",
-          boxShadow: "var(--shadow-elevated)",
+          // 液态玻璃 (与全站悬浮浮窗统一)
+          background: "linear-gradient(165deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.5) 45%, rgba(255,255,255,0.62) 100%)",
+          backdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+          WebkitBackdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+          border: "1px solid rgba(255,255,255,0.55)",
+          boxShadow:
+            "0 24px 64px -16px rgba(0,0,0,0.3), 0 4px 12px -4px rgba(0,0,0,0.12), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.95), inset 0 -1.5px 1px -0.5px rgba(255,255,255,0.35)",
+          borderRadius: 22,
         }}
         onClick={e => e.stopPropagation()}>
         {/* 标题 */}
-        <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid var(--color-muted)" }}>
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(16,185,129,0.1)" }}>
+        <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+            style={{
+              background: "linear-gradient(165deg, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.5) 100%)",
+              border: "1px solid rgba(255,255,255,0.6)",
+              boxShadow: "inset 0 1px 1px rgba(255,255,255,0.8)",
+            }}>
             <Calculator className="w-4 h-4" style={{ color: "#10B981" }} />
           </div>
           <div>

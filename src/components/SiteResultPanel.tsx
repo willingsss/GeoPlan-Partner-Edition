@@ -80,13 +80,17 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
 
   return (
     <>
-      {/* 未选点引导卡: 右栏初始不空白, 提示用户点击地图选点 */}
+      {/* 未选点引导卡: 液态玻璃提示框 (轻量, 不占大片面积) */}
       {!siteMetrics && topCandidates.length === 0 && (
-        <div className="mt-1.5 rounded-lg px-3 py-5 text-center"
-          style={{ background: "var(--color-brand-subtle)", border: "1px dashed var(--color-brand-border)" }}>
-          <MapPin className="w-6 h-6 mx-auto mb-2" style={{ color: "var(--color-brand)" }} />
-          <p className="text-[12px] font-semibold" style={{ color: "var(--color-ink-2)" }}>点击地图选择选址位置</p>
-          <p className="text-[10px] mt-1 leading-relaxed" style={{ color: "var(--color-ink-5)" }}>
+        <div className="mt-1.5 rounded-xl px-3 py-4 text-center"
+          style={{
+            background: "rgba(255,255,255,0.45)",
+            border: "1px solid rgba(255,255,255,0.6)",
+            boxShadow: "inset 0 1px 1px rgba(255,255,255,0.8)",
+          }}>
+          <MapPin className="w-5 h-5 mx-auto mb-1.5" style={{ color: "#5A7BA0" }} />
+          <p className="text-[12px] font-semibold" style={{ color: "#1B2A4A" }}>点击地图选择选址位置</p>
+          <p className="text-[10px] mt-1 leading-relaxed" style={{ color: "#7A8A9A" }}>
             选点后自动评估覆盖人口、竞争环境、社会效益，并给出综合评分
           </p>
         </div>
@@ -294,18 +298,19 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
           )}
         </>
       )}
-      {/* 已保存方案 - Linear 风: 标签按钮 (始终显示, 空态提示) */}
+      {/* 已保存方案 - 字体/图标加大版 (始终显示, 空态提示) */}
       <div className="mt-2">
-        <div className="flex items-center gap-1.5 mb-1">
-          <p className="text-[10px] text-zinc-500">
-            已保存方案（{filteredSchemes.length}/{schemes.length}）· 勾选 2 个方案进行深度对比
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <p className="text-[12px] font-semibold" style={{ color: "#1B2A4A" }}>
+            已保存方案（{filteredSchemes.length}/{schemes.length}）
           </p>
+          <span className="text-[10px]" style={{ color: "#7A8A9A" }}>勾选 2 个深度对比</span>
           {/* 行政区筛选 */}
           {schemeDistricts.length > 0 && (
           <select
             value={districtFilter}
             onChange={e => setDistrictFilter(e.target.value)}
-            className="ml-auto input-sys h-5 text-[9px] px-1 text-zinc-600"
+            className="ml-auto input-sys h-6 text-[11px] px-1.5 text-zinc-600"
             title="按行政区筛选方案"
           >
               <option value="all">全部行政区</option>
@@ -318,19 +323,19 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
             {filteredSchemes.length > 0 && (
               <button
                 onClick={() => onExportSchemes()}
-                className="shrink-0 flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.5 rounded transition-colors"
+                className="shrink-0 flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded transition-colors"
                 style={{ color: "#0F766E", background: "rgba(20,184,166,0.08)", border: "1px solid rgba(20,184,166,0.25)" }}
                 title="导出当前筛选的全部方案为 Excel(CSV)"
               >
-                <FileSpreadsheet className="w-3 h-3" />
+                <FileSpreadsheet className="w-3.5 h-3.5" />
                 导出 Excel
               </button>
             )}
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1.5">
             {filteredSchemes.map(s => (
               <div key={s.id}
-                className={`flex items-center gap-2 px-2 py-1 rounded-md transition-all ${
+                className={`flex items-center gap-2 px-2.5 py-1.5 rounded-md transition-all ${
                   compareSchemes.includes(s.id)
                     ? "bg-amber-50"
                     : "bg-zinc-50 hover:bg-zinc-100"
@@ -341,7 +346,7 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                   type="checkbox"
                   checked={compareSchemes.includes(s.id)}
                   onChange={(e) => onToggleCompare(s.id, e.target.checked)}
-                  className="accent-amber-500 w-3 h-3 shrink-0"
+                  className="accent-amber-500 w-3.5 h-3.5 shrink-0"
                 />
                 {editingId === s.id ? (
                   // 内联重命名编辑
@@ -354,41 +359,41 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                       if (e.key === "Enter") { e.preventDefault(); commitRename(s.id); }
                       if (e.key === "Escape") setEditingId(null);
                     }}
-                    className="flex-1 min-w-0 input-sys h-5 text-[11px] px-1.5 text-zinc-700"
+                    className="flex-1 min-w-0 input-sys h-6 text-[12px] px-1.5 text-zinc-700"
                     placeholder="输入新方案名"
                   />
                 ) : (
                   <>
-                    <span className="text-[11px] text-zinc-700 font-medium flex-1 truncate" title={s.name}>{s.name}</span>
-                    <span className="text-[9px] text-zinc-400">{s.brand}</span>
+                    <span className="text-[12px] text-zinc-700 font-medium flex-1 truncate" title={s.name}>{s.name}</span>
+                    <span className="text-[10px] text-zinc-400">{s.brand}</span>
                   </>
                 )}
                 {/* 聚焦地图按钮 */}
                 <button
                   onClick={() => onFocusScheme(s.id)}
-                  className="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-sky-50"
+                  className="shrink-0 w-6 h-6 rounded flex items-center justify-center transition-colors hover:bg-sky-50"
                   style={{ color: "var(--color-ink-5)" }}
                   title="地图聚焦到该方案位置"
                   onMouseEnter={e => { e.currentTarget.style.color = "#0284C7"; }}
                   onMouseLeave={e => { e.currentTarget.style.color = "var(--color-ink-5)"; }}
                 >
-                  <MapPin className="w-3 h-3" />
+                  <MapPin className="w-3.5 h-3.5" />
                 </button>
                 {/* 重命名按钮 (内联编辑) */}
                 <button
                   onClick={() => startRename(s.id, s.name)}
-                  className="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-amber-50"
+                  className="shrink-0 w-6 h-6 rounded flex items-center justify-center transition-colors hover:bg-amber-50"
                   style={{ color: "var(--color-ink-5)" }}
                   title="重命名该方案"
                   onMouseEnter={e => { e.currentTarget.style.color = "#D97706"; }}
                   onMouseLeave={e => { e.currentTarget.style.color = "var(--color-ink-5)"; }}
                 >
-                  <Pencil className="w-3 h-3" />
+                  <Pencil className="w-3.5 h-3.5" />
                 </button>
                 {/* 单方案深度评估按钮 (导出报告左边) */}
                 <button
                   onClick={() => onViewSchemeDetail(s.id)}
-                  className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded transition-colors"
+                  className="shrink-0 text-[11px] font-semibold px-2 py-1 rounded transition-colors"
                   style={{ color: "var(--color-brand-text)", background: "rgba(0,200,150,0.08)", border: "1px solid rgba(0,200,150,0.2)" }}
                   title="查看该方案的深度分析"
                 >
@@ -403,19 +408,19 @@ export default function SiteResultPanel(props: SiteResultPanelProps) {
                 {/* 删除方案按钮 */}
                 <button
                   onClick={() => onDeleteScheme(s.id)}
-                  className="shrink-0 w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-red-50"
+                  className="shrink-0 w-6 h-6 rounded flex items-center justify-center transition-colors hover:bg-red-50"
                   style={{ color: "var(--color-ink-5)" }}
                   title="删除该方案"
                   onMouseEnter={e => { e.currentTarget.style.color = "#EF4444"; }}
                   onMouseLeave={e => { e.currentTarget.style.color = "var(--color-ink-5)"; }}
                 >
-                  <Trash2 className="w-3 h-3" />
+                  <Trash2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             ))}
             {filteredSchemes.length === 0 && (
               <div className="rounded-md px-3 py-4 text-center" style={{ background: "var(--color-subtle)", border: "1px dashed var(--color-muted)" }}>
-                <p className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>
+                <p className="text-[11px]" style={{ color: "var(--color-ink-5)" }}>
                   暂无已保存方案 · 点击地图选点后点「保存方案」即可创建
                 </p>
               </div>

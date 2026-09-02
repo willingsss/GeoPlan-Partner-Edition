@@ -21,8 +21,8 @@ export interface CoverageResultPanelProps {
   stationEffChartRef: React.MutableRefObject<any>;
   onLocateCommunity: (comm: any) => void;
   onSelectSiteAt: (lng: number, lat: number) => void;
-  // 等时圈模式对比 (buffer/isochrone/hybrid)
-  modeComparison: { loading: boolean; results: { mode: string; label: string; coverageRate: number; populationCoverageRate: number; blindCount: number }[] | null };
+  // 等时圈模式对比 (buffer/isochrone/hybrid, hybrid 含双指标区间)
+  modeComparison: { loading: boolean; results: { mode: string; label: string; coverageRate: number; coverageRateInterval: [number, number] | null; populationCoverageRate: number; blindCount: number }[] | null };
   onRunModeComparison: () => void;
   currentServiceAreaMode: string;
 }
@@ -42,18 +42,13 @@ export default function CoverageResultPanel({
 }: CoverageResultPanelProps) {
   return (
     <div
-    className="z-20 animate-panel-enter flex flex-col rounded-xl overflow-hidden bento-tile"
+    className="z-20 animate-panel-enter flex flex-col overflow-hidden nio-card bento-tile"
     style={{
     position: "fixed",
     right: 12,
-    top: 258,
+    top: 68,
     bottom: 16,
     width: 300,
-    background: "linear-gradient(180deg, rgba(255,255,255,0.88) 0%, rgba(250,250,250,0.82) 100%)",
-    backdropFilter: "blur(20px) saturate(1.4)",
-    WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-    border: "1px solid rgba(255,255,255,0.25)",
-    boxShadow: "var(--shadow-elevated)",
     }}
     >
     {/* Tab 导航栏 - 玻璃风格 */}
@@ -116,16 +111,26 @@ export default function CoverageResultPanel({
     <p className="text-[13px] font-bold font-num" style={{ color: r.mode === currentServiceAreaMode ? "var(--color-brand-text)" : "var(--color-ink-1)" }}>
     {r.coverageRate.toFixed(1)}%
     </p>
+    {/* 区间模式: 显示双口径下界~上界带宽 */}
+    {r.coverageRateInterval && (
+    <p
+    className="text-[8px] font-num"
+    style={{ color: "var(--color-ink-5)" }}
+    title={`双口径区间 ${r.coverageRateInterval[0].toFixed(1)}~${r.coverageRateInterval[1].toFixed(1)}%，带宽 ${(r.coverageRateInterval[1] - r.coverageRateInterval[0]).toFixed(1)} 个百分点；区间模式主值为占比混合覆盖程度均值，与另两种模式的阈值计数口径不同`}
+    >
+    {r.coverageRateInterval[0].toFixed(1)}~{r.coverageRateInterval[1].toFixed(1)}%
+    </p>
+    )}
     <p className="text-[8px] font-num" style={{ color: "var(--color-ink-5)" }}>盲区 {r.blindCount}</p>
     </div>
     ))}
     </div>
     <p className="text-[8px]" style={{ color: "var(--color-ink-5)" }}>
-    覆盖率: 缓冲区 {modeComparison.results[0]?.coverageRate.toFixed(1)}% / 等时圈 {modeComparison.results[1]?.coverageRate.toFixed(1)}% / 混合 {modeComparison.results[2]?.coverageRate.toFixed(1)}%
+    缓冲区 / 等时圈为阈值计数口径（过10%即计入），区间为占比混合覆盖程度均值{modeComparison.results[2]?.coverageRateInterval ? `（${modeComparison.results[2].coverageRateInterval[0].toFixed(1)}~${modeComparison.results[2].coverageRateInterval[1].toFixed(1)}%）` : ""}
     </p>
     </>
     ) : (
-    <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>点击「对比」查看 缓冲区 / 路网等时圈 / 混合 三种服务区模式的覆盖率差异</p>
+    <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>点击「对比」查看 缓冲区 / 路网等时圈 / 双指标区间 三种服务区模式的覆盖率差异</p>
     )}
     </div>
     {/* 堆叠柱图: 各行政区覆盖率 */}

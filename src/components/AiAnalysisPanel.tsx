@@ -6,6 +6,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { RotateCcw, Send, Sparkles, Square, X } from "lucide-react";
 import { renderAiContent } from "./AiAssistantPanel";
+import { aiErrorMessage } from "../hooks/useAiAssistant";
 
 export interface AiPresetQuestion {
   label: string;    // chip 展示文案
@@ -85,14 +86,19 @@ export default function AiAnalysisPanel({ title, buttonText, startQuestion, star
       abortRef.current = controller;
       const timeoutId = setTimeout(() => controller.abort(), 30000);
       const history = baseMessages.slice(-HISTORY_LIMIT).map(m => ({ role: m.role, content: m.content }));
+      // 后端 /ai/chat 挂了 requireAuth, 必须携带登录 token
+      const token = localStorage.getItem("geoplan_token");
       const res = await fetch("/api/v1/ai/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ message: userText, context, history }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok || !res.body) throw new Error(await aiErrorMessage(res));
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -123,7 +129,7 @@ export default function AiAnalysisPanel({ title, buttonText, startQuestion, star
         ? ""
         : e?.name === "AbortError"
           ? "⚠️ 请求超时，AI 服务响应较慢，请稍后再试。"
-          : `⚠️ AI 服务暂时不可用，请稍后重试。(${e?.message || "连接异常"})`;
+          : `⚠️ ${e?.message || "AI 服务暂时不可用，请稍后重试。"}`;
       stoppedRef.current = false;
       if (msg) {
         setMessages(prev => {
@@ -202,52 +208,60 @@ export default function AiAnalysisPanel({ title, buttonText, startQuestion, star
         <Sparkles className="w-3.5 h-3.5" /> {buttonText}
       </button>
 
-      {/* 独立浮动窗口 (portal 到 body; 有空间时贴合主弹窗右侧, 否则屏幕右侧悬浮) */}
+      {/* 独立浮动窗口 (portal 到 body; 液态玻璃质感, 与主 AI 助手对话框统一) */}
       {open && createPortal(
         <div
-          className="fixed z-[80] w-[380px] flex flex-col rounded-2xl overflow-hidden"
-          style={dockPos
-            ? {
-                left: dockPos.left,
-                top: dockPos.top,
-                height: dockPos.height,
-                background: "linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(250,250,250,0.97) 100%)",
-                border: "1px solid rgba(139,92,246,0.25)",
-                boxShadow: "var(--shadow-elevated)",
-              }
-            : {
-                right: 20,
-                top: "50%",
-                transform: "translateY(-50%)",
-                maxHeight: "78vh",
-                background: "linear-gradient(180deg, rgba(255,255,255,0.99) 0%, rgba(250,250,250,0.97) 100%)",
-                border: "1px solid rgba(139,92,246,0.25)",
-                boxShadow: "var(--shadow-elevated)",
-              }}
+          className="fixed z-[80] w-[380px] flex flex-col overflow-hidden"
+          style={Object.assign(
+            dockPos
+              ? { left: dockPos.left, top: dockPos.top, height: dockPos.height }
+              : { right: 20, top: "50%", transform: "translateY(-50%)", maxHeight: "78vh" },
+            {
+              // 液态玻璃: 半透明白 + 高饱和折射 + 镜面高光描边 (与 AiAssistantPanel 同参数)
+              background: "linear-gradient(165deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.32) 45%, rgba(255,255,255,0.44) 100%)",
+              backdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+              WebkitBackdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+              border: "1px solid rgba(255,255,255,0.5)",
+              boxShadow:
+                "0 16px 48px -12px rgba(0,0,0,0.28), 0 4px 12px -4px rgba(0,0,0,0.12), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.9), inset 0 -1.5px 1px -0.5px rgba(255,255,255,0.3)",
+              borderRadius: 22,
+            }
+          )}
           onClick={e => e.stopPropagation()}
         >
-          {/* 标题栏 */}
-          <div className="px-4 py-3 flex items-center gap-2 shrink-0" style={{ borderBottom: "1px solid rgba(139,92,246,0.15)", background: "rgba(139,92,246,0.05)" }}>
-            <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: "rgba(139,92,246,0.12)" }}>
+          {/* 标题栏 — 透明融入玻璃 */}
+          <div className="px-4 py-3 flex items-center gap-2 shrink-0" style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+            <div className="w-8 h-8 rounded-full flex items-center justify-center shrink-0"
+              style={{
+                background: "linear-gradient(165deg, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.5) 100%)",
+                border: "1px solid rgba(255,255,255,0.6)",
+                boxShadow: "inset 0 1px 1px rgba(255,255,255,0.8)",
+              }}>
               <Sparkles className="w-3.5 h-3.5" style={{ color: "#8B5CF6" }} />
             </div>
-            <p className="text-[14px] font-semibold truncate" style={{ color: "var(--color-ink-1)" }}>{title}</p>
+            <p className="text-[14px] font-semibold truncate" style={{ color: "#1B2A4A" }}>{title}</p>
             {streaming ? (
               <button onClick={stop} title="停止生成"
-                className="ml-auto shrink-0 w-6 h-6 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5"
-                style={{ color: "var(--color-ink-4)" }}>
+                className="ml-auto shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all"
+                style={{ color: "var(--color-ink-4)" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.5)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
                 <Square className="w-3.5 h-3.5" />
               </button>
             ) : (
               <button onClick={regenerate} title="重新生成"
-                className="ml-auto shrink-0 w-6 h-6 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5"
-                style={{ color: "var(--color-ink-4)" }}>
+                className="ml-auto shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all"
+                style={{ color: "var(--color-ink-4)" }}
+                onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.5)"; }}
+                onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
                 <RotateCcw className="w-3.5 h-3.5" />
               </button>
             )}
             <button onClick={() => handleOpen(false)} title="关闭"
-              className="shrink-0 w-6 h-6 rounded-lg flex items-center justify-center transition-colors hover:bg-black/5"
-              style={{ color: "var(--color-ink-4)" }}>
+              className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center transition-all"
+              style={{ color: "var(--color-ink-4)" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "rgba(255,255,255,0.5)"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; }}>
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -264,7 +278,7 @@ export default function AiAnalysisPanel({ title, buttonText, startQuestion, star
                 </div>
               ) : (
                 <div key={i} className="rounded-xl rounded-tl-sm px-3 py-2"
-                  style={{ background: "rgba(255,255,255,0.85)", border: "1px solid var(--color-muted)" }}>
+                  style={{ background: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.6)" }}>
                   {m.content
                     ? renderAiContent(m.content)
                     : (
@@ -295,8 +309,8 @@ export default function AiAnalysisPanel({ title, buttonText, startQuestion, star
             </div>
           )}
 
-          {/* 自由输入栏: 用户可针对方案自己提问 */}
-          <div className="px-3 py-2.5 flex items-end gap-2 shrink-0" style={{ borderTop: "1px solid rgba(139,92,246,0.15)" }}>
+          {/* 自由输入栏: 玻璃内嵌输入框 (与主 AI 助手统一) */}
+          <div className="px-3 py-2.5 flex items-end gap-2 shrink-0" style={{ borderTop: "1px solid rgba(0,0,0,0.06)" }}>
             <textarea
               ref={inputRef}
               value={input}
@@ -310,10 +324,11 @@ export default function AiAnalysisPanel({ title, buttonText, startQuestion, star
               rows={1}
               placeholder={streaming ? "AI 正在回答…" : "针对该方案提问，Enter 发送"}
               disabled={streaming}
-              className="flex-1 resize-none rounded-xl px-2.5 py-1.5 text-[14px] leading-relaxed outline-none transition-colors"
+              className="flex-1 resize-none rounded-xl px-2.5 py-1.5 text-[14px] leading-relaxed outline-none transition-all"
               style={{
-                border: "1px solid var(--color-muted)",
-                background: streaming ? "var(--color-subtle)" : "#fff",
+                border: "1px solid rgba(0,0,0,0.08)",
+                background: streaming ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.5)",
+                boxShadow: "inset 0 1px 2px rgba(0,0,0,0.05)",
                 color: "var(--color-ink-1)",
                 maxHeight: 100,
               }}

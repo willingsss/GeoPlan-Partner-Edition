@@ -94,6 +94,7 @@ import { SchemeReportButton } from "./components/SchemeReportPrint";
 import Dashboard from "./components/Dashboard";
 import BlindSpotDashboard from "./components/BlindSpotDashboard";
 import SchemeDashboard from "./components/SchemeDashboard";
+import { type DashboardJumpPayload, type DashboardTarget } from "./components/DashboardStoryNav";
 import { ToastProvider, useToast } from "./components/Toast";
 import Skeleton from "./components/Skeleton";
 import EmptyState from "./components/EmptyState";
@@ -101,7 +102,7 @@ import LoginView from "./components/LoginView";
 import QueryResultPanel from "./components/QueryResultPanel";
 import CoverageControlBar from "./components/CoverageControlBar";
 import CoverageResultPanel from "./components/CoverageResultPanel";
-import Sidebar from "./components/Sidebar";
+import ModeSwitcher from "./components/ModeSwitcher";
 import TopBar from "./components/TopBar";
 import MapVerticalBar from "./components/MapVerticalBar";
 import ShortcutsHelp from "./components/ShortcutsHelp";
@@ -323,6 +324,8 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
 
   const [activeTab, setActiveTab] = useState<SubsystemTab>("map");
+  // 选址模式提示: 切换到选址 Tab 时短暂显示"点击地图选点"引导 (液态玻璃浮层)
+  const [siteHintVisible, setSiteHintVisible] = useState(false);
   const [visibleBrands, setVisibleBrands] = useState<Set<string>>(new Set(BRANDS));
   const [showCommunities, setShowCommunities] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
@@ -333,6 +336,15 @@ export default function App() {
   // 盲区攻坚大屏 / 选址决策大屏 (与决策大屏平级)
   const [showBlindSpotDashboard, setShowBlindSpotDashboard] = useState(false);
   const [showSchemeDashboard, setShowSchemeDashboard] = useState(false);
+  // 大屏故事线跳转 (现状→缺口→行动), 支持携带 payload 深链
+  const [dashboardJumpPayload, setDashboardJumpPayload] = useState<DashboardJumpPayload | null>(null);
+  const navigateDashboard = (t: DashboardTarget, payload?: DashboardJumpPayload) => {
+    // 三屏互斥: 同一时刻只开一块大屏
+    setShowDashboard(t === "main");
+    setShowBlindSpotDashboard(t === "blindspot");
+    setShowSchemeDashboard(t === "scheme");
+    setDashboardJumpPayload(payload ?? null);
+  };
   // 反馈热力图开关 + 筛选 (Task 3.3)
   const [showFeedbackHeatmap, setShowFeedbackHeatmap] = useState(false);
   const [feedbackHeatmapType, setFeedbackHeatmapType] = useState<"all" | "demand" | "evaluation">("all");
@@ -365,6 +377,8 @@ export default function App() {
   const [selectedStation, setSelectedStation] = useState<any>(null);
   // 服务区点击信息面板 (LOD 方案: 点击等时圈/缓冲区弹出属性面板)
   const [serviceAreaInfo, setServiceAreaInfo] = useState<any | null>(null);
+  // 上下文卡片弹出位置 (鼠标点击处的地图像素坐标, clamp 防止溢出视口)
+  const [contextCardPos, setContextCardPos] = useState<{ x: number; y: number } | null>(null);
   // 候选点"在此选址"联动: 记录从覆盖分析点进来的候选点, 选址面板只显示对应那一个
   const [activeCandidate, setActiveCandidate] = useState<BlindSpotCluster | null>(null);
   // 选址评估覆盖的社区明细 (盲区社区联动, 可点开看详情)
@@ -560,20 +574,6 @@ export default function App() {
   const [regionStats, setRegionStats] = useState<any[]>([]);
   // 管理界面分类 Tab
 
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarAnimating, setSidebarAnimating] = useState(false);
-  const sidebarLockRef = useRef(false);
-  // 阶段四 任务 4.4.2: 移动端侧边栏抽屉式开关
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-
-  const toggleSidebar = useCallback(() => {
-    if (sidebarLockRef.current) return;
-    sidebarLockRef.current = true;
-    setSidebarAnimating(true);
-    setSidebarCollapsed(prev => !prev);
-    setTimeout(() => { setSidebarAnimating(false); sidebarLockRef.current = false; }, 500);
-  }, []);
-
   // ===== 地图工具栏: Toast 通知 =====
   // 显示全局 Toast (2.5 秒后自动消失)
   const showToast = useCallback((msg: string, type: "info" | "success" = "info") => {
@@ -763,6 +763,8 @@ export default function App() {
 
   // GIS 分析结果缓存
   const gisBufferSourceRef = useRef<VectorSource | null>(null);
+  // GIS 缓冲区是否正显示在地图上 (显示"取消分析"按钮)
+  const [gisAnalysisActive, setGisAnalysisActive] = useState(false);
   const aiHighlightSourceRef = useRef<VectorSource | null>(null);
   const aiOverlayRef = useRef<Overlay | null>(null);
   // 选中站点信息条 Overlay (长而窄: 名称 + 快充/慢充数量)
@@ -946,6 +948,8 @@ export default function App() {
         const circle = new Circle(center3857, result.radius);
         const bufferFeature = new Feature({ geometry: circle });
         gisBufferSourceRef.current.addFeature(bufferFeature);
+        // 标记分析进行中, 地图上显示"取消分析"按钮
+        setGisAnalysisActive(true);
 
         // 飞图到中心位置
         view.fit(circle.getExtent(), { padding: [80, 80, 80, 80], duration: 800 });
@@ -968,6 +972,12 @@ export default function App() {
       }
     }, 100);
   }, [activeTab]);
+
+  // 取消 GIS 空间分析: 清除地图上的缓冲区圆, 隐藏"取消分析"按钮
+  const clearGisAnalysis = useCallback(() => {
+    gisBufferSourceRef.current?.clear();
+    setGisAnalysisActive(false);
+  }, []);
 
   // =========================================================================
   // 初始化地图
@@ -1554,6 +1564,12 @@ export default function App() {
       });
 
       const currentTab = activeTabRef.current;
+      // 上下文卡片弹出位置: 鼠标点击处像素坐标 (卡片默认在点击点上方居中; 点击过靠上且下方空间充足时翻转到下方)
+      const mapSize = map.getSize();
+      const cardX = Math.min(Math.max(e.pixel[0], 155), Math.max(155, (mapSize[0] || 800) - 165));
+      const cardFlip = e.pixel[1] < 380 && (mapSize[1] || 600) - e.pixel[1] > 420;
+      const cardY = cardFlip ? e.pixel[1] : Math.max(e.pixel[1], 380);
+      const cardPos = { x: cardX, y: cardY, flip: cardFlip };
       if (clickedStation) {
         // 任意 Tab 下点击充电站都弹出中央模态框 (集成属性展示 + 站点反馈)
         setSelectedStation(clickedStation);
@@ -1574,15 +1590,17 @@ export default function App() {
         return;
       }
 
-      // 覆盖分析 Tab: 点击服务区/等时圈弹出属性面板
+      // 覆盖分析 Tab: 点击服务区/等时圈弹出属性面板 (弹出位置 = 鼠标点击处)
       if (currentTab === "coverage" && clickedServiceArea) {
         setServiceAreaInfo(clickedServiceArea);
+        setContextCardPos(cardPos);
         return;
       }
 
-      // 点击候选点: 选中并飞至该点, 弹窗展示
+      // 点击候选点: 选中并飞至该点, 弹窗展示 (弹出位置 = 鼠标点击处)
       if (clickedCluster) {
         setSelectedCluster(clickedCluster);
+        setContextCardPos(cardPos);
         const [gcjLng, gcjLat] = wgs84ToGcj02(clickedCluster.center[0], clickedCluster.center[1]);
         map.getView().animate({ center: fromLonLat([gcjLng, gcjLat]), zoom: 15, duration: 600 });
         return;
@@ -1598,13 +1616,14 @@ export default function App() {
         return;
       }
 
-      // 覆盖分析 Tab: 点击社区弹出详情弹窗 (阶段二 任务 2.5.2)
+      // 覆盖分析 Tab: 点击社区弹出详情卡片 (上下文卡片栈, 与服务区弹窗一致; 阶段二 任务 2.5.2)
       if (currentTab === "coverage" && clickedCommunityFeature) {
         const commId = clickedCommunityFeature.getId() ?? clickedCommunityFeature.get("id");
         const result = coverageResultsRef.current.find((c) => c.id === commId);
         if (result) {
           setCommunityDetail(result);
           setCommunityDetailOpen(true);
+          setContextCardPos(cardPos);
           return;
         }
         // 兜底: feature 未匹配到 coverageResults, 用 properties 构造一个临时对象
@@ -1622,16 +1641,20 @@ export default function App() {
         };
         setCommunityDetail(tempResult);
         setCommunityDetailOpen(true);
+        setContextCardPos(cardPos);
         return;
       }
 
-      // 点击空白处关闭模态框
+      // 点击空白处关闭上下文卡片与模态框
       setSelectedStation(null);
       selectedStationId = null;
         hideStationInfoPopup();
       stationLayerRef.current?.changed();
       setSelectedCluster(null);
       setServiceAreaInfo(null);
+      setCommunityDetailOpen(false);
+      setCommunityDetail(null);
+      setContextCardPos(null);
       // 同时关闭 AI 高亮
       if (aiHighlightSourceRef.current) aiHighlightSourceRef.current.clear();
       if (aiOverlayRef.current) aiOverlayRef.current.setPosition(undefined);
@@ -2436,8 +2459,10 @@ export default function App() {
       return;
     }
     // 阶段五 等时圈: CSV 首行追加服务区模式信息便于追溯
-    const saModeLabel = serviceAreaMode === "buffer" ? "缓冲区" : serviceAreaMode === "isochrone" ? "等时圈" : "混合";
-    const header = ["社区名", "行政区", "人口", "覆盖率(%)", "分级", "覆盖充电站"];
+    const saModeLabel = serviceAreaMode === "buffer" ? "缓冲区" : serviceAreaMode === "isochrone" ? "等时圈" : "双指标区间";
+    // 双指标区间模式: 追加 缓冲区口径/等时圈口径/区间/置信度 列
+    const hasInterval = serviceAreaMode === "hybrid" && coverageResults.some(c => c.pessimistic !== undefined);
+    const header = ["社区名", "行政区", "人口", "覆盖率(%)", ...(hasInterval ? ["覆盖率区间(%)", "置信度(%)"] : []), "分级", "覆盖充电站"];
     // 服务半径硬编码值与 server/config/coverageConfig.ts 保持一致 (快充1000m / 慢充400m)
     const metaRow = [`# 服务区模式=${saModeLabel}`, `充电模式=${chargeMode === "fast" ? "快充" : "慢充"}`, `服务半径=${coverageRadius || (chargeMode === "fast" ? 1000 : 400)}m`, `行政区=${coverageDistrict === "all" ? "全部" : coverageDistrict}`];
     const rows = coverageResults.map(c => [
@@ -2445,6 +2470,7 @@ export default function App() {
       c.district,
       c.population,
       c.coverageRatio,
+      ...(hasInterval ? [c.pessimistic !== undefined && c.optimistic !== undefined ? `${c.pessimistic}~${c.optimistic}` : "", c.confidence ?? ""] : []),
       // 优先用后端返回的 level, 兜底用 coverageRatio 推断
       c.level ?? (c.coverageRatio >= 90 ? "优秀"
         : c.coverageRatio >= 60 ? "良好"
@@ -2491,8 +2517,12 @@ export default function App() {
     const radiusText = `${coverageRadius || (chargeMode === "fast" ? 1000 : 400)}m`;
     const districtText = coverageDistrict === "all" ? "全部行政区" : coverageDistrict;
     // 阶段五 等时圈: 报告中标注服务区模式
-    const saModeText = serviceAreaMode === "buffer" ? "圆形缓冲区" : serviceAreaMode === "isochrone" ? "路网等时圈" : "混合 (等时圈优先, 缺失回退缓冲区)";
-    const isoCovText = isochroneCoverage ? `等时圈 ${isochroneCoverage.covered} 站 / 缓冲回退 ${isochroneCoverage.fallback} 站 (占比 ${isochroneCoverage.ratio}%)` : "";
+    const saModeText = serviceAreaMode === "buffer" ? "圆形缓冲区" : serviceAreaMode === "isochrone" ? "路网等时圈" : "双指标区间 (缓冲区+等时圈双口径占比混合, 主值=覆盖程度均值)";
+    const isoCovText = isochroneCoverage ? `等时圈 ${isochroneCoverage.covered} 站 / 缓冲兜底 ${isochroneCoverage.fallback} 站 (占比 ${isochroneCoverage.ratio}%${typeof isochroneCoverage.avgConfidence === "number" && isochroneCoverage.avgConfidence > 0 ? `, 平均置信度 ${isochroneCoverage.avgConfidence}%` : ""})` : "";
+    // 双指标区间模式: 报告中展示覆盖率双口径区间
+    const intervalText = coverageSummary?.coverageRateInterval
+      ? `覆盖率区间: ${coverageSummary.coverageRateInterval[0]}%~${coverageSummary.coverageRateInterval[1]}% (主值为缓冲区25%+等时圈75%占比混合的覆盖程度均值, 必落于区间内)`
+      : "";
     // Top10 盲区社区 (按人口降序, 仅"极差"分级)
     const top10Blind = coverageResults
       .filter(c => (c.level ?? (c.coverageRatio < 10 ? "极差" : "")) === "极差")
@@ -2522,7 +2552,7 @@ export default function App() {
       <tr><td>${modeText}</td><td>${radiusText}</td><td>${districtText}</td><td>${saModeText}${isoCovText ? `<br/><small style="color:#666;">${isoCovText}</small>` : ""}</td></tr></table>
       <h2>核心指标</h2>
       <div class="metrics">
-        <div class="metric"><div class="metric-label">覆盖率</div><div class="metric-value">${coverageSummary.coverageRate}%</div></div>
+        <div class="metric"><div class="metric-label">覆盖率</div><div class="metric-value">${coverageSummary.coverageRate}%</div>${intervalText ? `<div style="font-size:10px;color:#666;margin-top:2px;">${coverageSummary.coverageRateInterval![0]}%~${coverageSummary.coverageRateInterval![1]}%</div>` : ""}</div>
         <div class="metric"><div class="metric-label">人口覆盖率</div><div class="metric-value">${coverageSummary.populationCoverageRate ?? 0}%</div></div>
         <div class="metric"><div class="metric-label">盲区社区</div><div class="metric-value">${coverageSummary.blindSpotCommunities}</div></div>
         <div class="metric"><div class="metric-label">盲区人口</div><div class="metric-value">${coverageSummary.blindSpotPopulation.toLocaleString()}</div></div>
@@ -3542,6 +3572,17 @@ export default function App() {
   // 渲染
   // =========================================================================
 
+  // NIO 布局: 右侧上下文卡片栈偏移计算
+  // - 覆盖分析有结果时避开右侧结果面板 (300px)
+  // - 空间查询结果可见时避开查询面板 (340px)
+  const queryResultVisible = !!queryResult && (queryResult.stations.length > 0 || queryResult.communities.length > 0);
+  const ctxStackOffset =
+    activeTab === "coverage" && coverageSummary
+      ? "right-[324px]"
+      : queryResultVisible
+        ? "right-[356px]"
+        : "right-4";
+
   // -------------------------------------------------------------------------
   // 登录页面
   // -------------------------------------------------------------------------
@@ -3560,7 +3601,7 @@ export default function App() {
 
   return (
     <div
-      className="h-screen flex overflow-hidden no-select"
+      className="h-screen relative overflow-hidden no-select"
       style={{ background: "var(--color-canvas)", fontFamily: "var(--font-sans)" }}
     >
       {/* 阶段三 任务 3.4.2: 顶部固定进度条 (覆盖分析中显示, 0-100%) */}
@@ -3578,49 +3619,89 @@ export default function App() {
           />
         </div>
       )}
-      {/* ===== 侧边栏 (GIS 指挥甲板) - 普通用户(车主)不显示, 极简地图模式 ===== */}
-      {!isOwner && (
-      <Sidebar
-        sidebarCollapsed={sidebarCollapsed}
-        toggleSidebar={toggleSidebar}
-        mobileSidebarOpen={mobileSidebarOpen}
-        visibleTabs={visibleTabs}
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onOpenDashboard={() => setShowDashboard(true)}
-        onOpenBlindSpotDashboard={() => setShowBlindSpotDashboard(true)}
-        onOpenSchemeDashboard={() => setShowSchemeDashboard(true)}
-        currentUser={currentUser}
-        onLogout={handleLogout}
-      />
+      {/* ===== 左上角 GeoPlan 标题 (浅蓝底 logo 徽标 + 黑色闪电; 车主模式由 TopBar 显示, 管理页隐藏) ===== */}
+      {activeTab !== "admin" && !isOwner && (
+        <div className="absolute top-4 left-4 z-40 nio-card animate-panel-enter flex items-center gap-2.5 px-3 h-12" style={{ borderRadius: 16 }}>
+          <div
+            className="w-8 h-8 rounded-[10px] flex items-center justify-center shrink-0"
+            style={{
+              background: "linear-gradient(135deg, #EAF2F8 0%, #D6E6F2 100%)",
+              border: "1px solid rgba(90,123,160,0.3)",
+              boxShadow: "0 2px 8px rgba(27,42,74,0.12), inset 0 1px 1px rgba(255,255,255,0.8)",
+            }}
+          >
+            <Zap className="w-4 h-4" style={{ color: "#1B2A4A" }} fill="#1B2A4A" />
+          </div>
+          <div className="leading-none">
+            <p className="text-[15px] font-bold tracking-tight" style={{ color: "#1B2A4A" }}>GeoPlan</p>
+            <p className="text-[9px] mt-[3px] tracking-wide" style={{ color: "#7A8A9A" }}>充电设施智能规划平台</p>
+          </div>
+        </div>
       )}
 
-      {/* ===== 右侧主区域 ===== */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* 头部 - GIS 指挥甲板: 玻璃拟态 + 精致信息架构 */}
-        <TopBar
-          activeTab={activeTab}
+      {/* ===== 顶部中央模式导航 (NIO 悬浮胶囊; 车主不显示, 系统管理页改为页面内嵌导航) ===== */}
+      {!isOwner && activeTab !== "admin" && (
+        <ModeSwitcher
           visibleTabs={visibleTabs}
-          toggleSidebar={toggleSidebar}
-          onToggleMobileSidebar={() => setMobileSidebarOpen(prev => !prev)}
+          activeTab={activeTab}
+          onTabChange={(tab) => {
+            setActiveTab(tab);
+            // 进入选址决策: 弹出选点引导提示 (5 秒后自动消失)
+            if (tab === "site") {
+              setSiteHintVisible(true);
+              setTimeout(() => setSiteHintVisible(false), 5000);
+            }
+          }}
+          onOpenDashboard={() => setShowDashboard(true)}
+          onOpenBlindSpotDashboard={() => setShowBlindSpotDashboard(true)}
+          onOpenSchemeDashboard={() => setShowSchemeDashboard(true)}
+        />
+      )}
+
+      {/* ===== 悬浮控制组 (普通用户: 右上角; 车主: 左上角标题卡) ===== */}
+      {activeTab !== "admin" && (
+        <TopBar
           darkTheme={darkTheme}
           toggleTheme={toggleTheme}
           onOpenShortcutsHelp={() => setShortcutsHelpOpen(true)}
           onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           locating={locating}
           onLocate={locateUser}
-          map={mapRef.current}
-          activeTool={activeTool}
-          onToolChange={handleToolChange}
-          onClearMeasurements={handleClearMeasurements}
           compact={isOwner}
           onLogout={handleLogout}
           username={currentUser?.username}
         />
+      )}
 
-        {/* 内容区域 (垂直功能栏 + 水平分析栏 + 地图) - 主背景改 Zinc-50 */}
-        <div className="flex-1 flex min-w-0 overflow-hidden" style={{ background: "var(--color-canvas)" }}>
-          {/* ===== 垂直功能栏: 地图展示与查询 (仅地图 Tab, Linear 风紧凑面板) - 阶段四 任务 4.4: 响应式自适应 ===== */}
+      {/* ===== GIS 空间分析取消按钮 (缓冲区显示中才出现, 底部工具栏上方) ===== */}
+      {gisAnalysisActive && activeTab !== "admin" && (
+        <button
+          onClick={clearGisAnalysis}
+          className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium transition-all hover:brightness-95 animate-panel-enter"
+          style={{
+            background: "linear-gradient(135deg, rgba(0,200,150,0.16), rgba(0,200,150,0.08))",
+            border: "1px solid rgba(0,200,150,0.35)",
+            color: "var(--color-brand-text)",
+            boxShadow: "0 4px 16px -6px rgba(0,200,150,0.35)",
+          }}
+        >
+          <X className="w-3.5 h-3.5" /> 取消分析
+        </button>
+      )}
+
+      {/* ===== 地图工具栏 (底部中央悬浮胶囊) ===== */}
+      {activeTab !== "admin" && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 nio-card animate-panel-enter" style={{ borderRadius: 999 }}>
+          <MapToolbar
+            map={mapRef.current}
+            activeTool={activeTool}
+            onToolChange={handleToolChange}
+            onClearMeasurements={handleClearMeasurements}
+          />
+        </div>
+      )}
+
+      {/* ===== 左侧图层搜索悬浮卡 (仅地图 Tab, 默认收起为窄条) ===== */}
         {activeTab === "map" && (
           <MapVerticalBar
             searchQuery={searchQuery}
@@ -3666,31 +3747,22 @@ export default function App() {
           />
         )}
 
-          {/* ===== 主列: 左列(水平分析栏 + 地图) + 右竖条栏(选址卡片) ===== */}
-          <div className="flex-1 flex min-w-0 overflow-hidden">
-            {/* 左列: 水平分析栏 + 地图 */}
-            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-            {/* ===== 水平分析栏 (Bento 指挥甲板: 玻璃拟态 + 动态高度) ===== */}
+          {/* ===== 灵动岛式分析控制卡 (覆盖分析 / 选址决策参数条, 居中贴合主导航下方, 与胶囊导航视觉融合) ===== */}
             {(activeTab === "site" || activeTab === "coverage") && (
               <div
-                className="shrink-0 flex gap-0 overflow-x-auto animate-panel-enter transition-all"
+                className="absolute top-[64px] left-1/2 -translate-x-1/2 z-20 nio-card overflow-auto animate-panel-enter"
                 style={{
-                  // 覆盖分析：窄条（44px 参数 + 84px 指标卡 + 可选历史对比），避免占据地图空间
-                  // 选址决策: 仅参数条 (SiteResultPanel 已移至右竖条栏)
-                  height: activeTab === "site"
-                    ? 112
-                    : (coverageSummary ? 198 : (coverageLoading ? 80 : 140)),
-                  borderBottom: "1px solid rgba(255,255,255,0.08)",
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.9) 0%, rgba(250,250,250,0.85) 100%)",
-                  backdropFilter: "blur(16px) saturate(1.2)",
-                  WebkitBackdropFilter: "blur(16px) saturate(1.2)",
-                  boxShadow: "0 4px 24px -4px rgba(0,0,0,0.06)",
-                  zIndex: 10,
+                  // 覆盖分析: 避让右侧结果面板(300)+上下文卡; 选址: 避让右侧结果栏(400)
+                  maxWidth: activeTab === "coverage"
+                    ? "min(1080px, calc(100vw - 660px))"
+                    : "min(880px, calc(100vw - 890px))",
+                  maxHeight: "calc(100vh - 96px)",
+                  borderRadius: 22,
                 }}
               >
                 {/* 选址决策 (仅选址 Tab) - 参数条 */}
                 {activeTab === "site" && (
-                <div className="flex-1 min-w-[420px] px-3 py-2.5">
+                <div className="min-w-[420px] px-3 py-2.5">
                   <SiteControlBar
                     activeTab={activeTab}
                     siteRadius={siteRadius}
@@ -3764,10 +3836,45 @@ export default function App() {
               </div>
             )}
 
+      {/* ===== 选址模式引导提示 (进入选址 Tab 弹出, 液态玻璃浮层, 自动消失) ===== */}
+      {activeTab === "site" && siteHintVisible && !virtualStation && (
+        <div
+          className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 animate-panel-enter pointer-events-none"
+        >
+          <div
+            className="flex items-center gap-3 px-5 py-3.5"
+            style={{
+              background: "linear-gradient(165deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.5) 45%, rgba(255,255,255,0.62) 100%)",
+              backdropFilter: "blur(28px) saturate(1.8) brightness(1.06)",
+              WebkitBackdropFilter: "blur(28px) saturate(1.8) brightness(1.06)",
+              border: "1px solid rgba(255,255,255,0.65)",
+              boxShadow:
+                "0 12px 40px -12px rgba(0,0,0,0.22), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.95), inset 0 -1.5px 1px -0.5px rgba(255,255,255,0.35)",
+              borderRadius: 20,
+            }}
+          >
+            <div
+              className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+              style={{
+                background: "linear-gradient(135deg, #EAF2F8 0%, #D6E6F2 100%)",
+                border: "1px solid rgba(90,123,160,0.3)",
+              }}
+            >
+              <MapPin className="w-4.5 h-4.5" style={{ color: "#1B2A4A", width: 18, height: 18 }} />
+            </div>
+            <div>
+              <p className="text-[13px] font-semibold" style={{ color: "#1B2A4A" }}>点击地图选择选址位置</p>
+              <p className="text-[11px] mt-0.5" style={{ color: "#7A8A9A" }}>
+                选点后自动评估覆盖人口、竞争环境、社会效益 · 拖拽可微调位置
+              </p>
+            </div>
+            <span className="w-1.5 h-1.5 rounded-full animate-status-pulse ml-1" style={{ background: "#D9A843" }} />
+          </div>
+        </div>
+      )}
 
-
-            {/* ===== 地图容器 (OpenLayers 挂载点) ===== */}
-            <div className="flex-1 relative overflow-hidden">
+      {/* ===== 全屏地图区域 (OpenLayers 挂载点 + 地图浮层, 所有 Tab 共享画布) ===== */}
+            <div className="absolute inset-0 overflow-hidden">
               {/* 地图背景纹理 — subtle 点阵网格, 增强空间感 */}
               <div
                 className="absolute inset-0 pointer-events-none"
@@ -3807,18 +3914,22 @@ export default function App() {
 
               {/* 空间查询结果浮窗已移至主界面顶层 (fixed 视口定位) */}
 
+              {/* ===== 上下文卡片栈 (服务区信息 / 候选点 / 社区详情, 弹出在鼠标点击处, 不与边缘 UI 重叠) ===== */}
+              {(serviceAreaInfo || selectedCluster || (communityDetailOpen && communityDetail)) && (
+                <div
+                  className="absolute z-30 flex flex-col gap-2 pointer-events-none"
+                  style={contextCardPos
+                    ? {
+                        left: contextCardPos.x,
+                        top: contextCardPos.y,
+                        transform: contextCardPos.flip ? "translate(-50%, 12px)" : "translate(-50%, calc(-100% - 12px))",
+                      }
+                    : { left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}
+                >
               {/* 服务区/等时圈信息面板 (点击服务区弹出, Bento 玻璃拟态) */}
               {serviceAreaInfo && (
                 <div
-                  className="absolute top-16 right-3 z-40 w-[260px] overflow-hidden pointer-events-auto animate-panel-enter bento-tile"
-                  style={{
-                    background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
-                    backdropFilter: "blur(20px) saturate(1.4)",
-                    WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-                    border: "1px solid rgba(255,255,255,0.4)",
-                    boxShadow: "var(--shadow-elevated)",
-                    borderRadius: 14,
-                  }}
+                  className="w-[260px] overflow-hidden pointer-events-auto animate-panel-enter nio-card bento-tile"
                   onClick={e => e.stopPropagation()}
                 >
                   <div className="px-3.5 py-2.5 flex items-center gap-2" style={{ background: serviceAreaInfo.source === "isochrone" ? "rgba(124,58,237,0.08)" : "rgba(0,200,150,0.08)", borderBottom: `1px solid ${serviceAreaInfo.source === "isochrone" ? "rgba(124,58,237,0.12)" : "rgba(0,200,150,0.12)"}` }}>
@@ -3853,25 +3964,25 @@ export default function App() {
                     <div className="flex justify-between items-center">
                       <span style={{ color: "var(--color-ink-4)" }}>计算模式</span>
                       <span className="font-semibold" style={{ color: "var(--color-ink-1)" }}>
-                        {serviceAreaInfo.source === "isochrone" ? "等时圈 (路网可达)" : serviceAreaInfo.mode === "hybrid" ? "混合 (等时圈优先)" : "圆形缓冲区"}
+                        {serviceAreaInfo.source === "isochrone" ? "等时圈 (路网可达)" : serviceAreaInfo.mode === "hybrid" ? (serviceAreaInfo.component === "buf-estimate" ? "缓冲区估算分量" : "双指标区间 (等时圈+缓冲区)") : "圆形缓冲区"}
                       </span>
                     </div>
+                    {serviceAreaInfo.mode === "hybrid" && (
+                      <div className="flex justify-between items-center">
+                        <span style={{ color: "var(--color-ink-4)" }}>双口径说明</span>
+                        <span className="font-semibold text-right" style={{ color: serviceAreaInfo.component === "buf-estimate" ? "var(--color-brand-text)" : "#7c3aed" }}>
+                          {serviceAreaInfo.component === "buf-estimate" ? "直线距离理想化口径 (下界)" : "真实路网可达口径 (上界)"}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
 
-              {/* 候选点选中弹窗 (地图右上角, Bento 玻璃拟态) */}
+              {/* 候选点选中弹窗 (上下文卡片栈内, Bento 玻璃拟态) */}
               {selectedCluster && (
                 <div
-                  className="absolute top-16 right-3 z-40 w-[240px] overflow-hidden pointer-events-auto animate-panel-enter bento-tile"
-                  style={{
-                    background: "linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,250,250,0.9) 100%)",
-                    backdropFilter: "blur(20px) saturate(1.4)",
-                    WebkitBackdropFilter: "blur(20px) saturate(1.4)",
-                    border: "1px solid rgba(255,255,255,0.4)",
-                    boxShadow: "var(--shadow-elevated)",
-                    borderRadius: 14,
-                  }}
+                  className="w-[240px] overflow-hidden pointer-events-auto animate-panel-enter nio-card bento-tile"
                   onClick={e => e.stopPropagation()}
                 >
                   {/* 标题栏 — 品牌色 subtle 背景, 无渐变 */}
@@ -3919,148 +4030,125 @@ export default function App() {
                 </div>
               )}
 
-          {/* 社区详情弹窗 (屏幕中央模态, Bento 玻璃拟态) */}
+          {/* 社区详情卡片 (上下文卡片栈内, 与服务区弹窗同风格: 点击社区弹出) */}
           {communityDetailOpen && communityDetail && (
             <div
-              className="fixed inset-0 z-50 flex items-center justify-center p-4"
-              style={{ background: "rgba(9,9,11,0.45)" }}
-              onClick={() => { setCommunityDetailOpen(false); setCommunityDetail(null); }}
+              className="w-[300px] overflow-hidden pointer-events-auto animate-panel-enter nio-card bento-tile"
+              onClick={e => e.stopPropagation()}
             >
-              <div
-                className="w-[380px] overflow-hidden bento-tile"
-                style={{
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.95) 100%)",
-                  border: "1px solid rgba(255,255,255,0.6)",
-                  boxShadow: "var(--shadow-elevated)",
-                  borderRadius: 16,
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* 标题栏 */}
-                <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: "1px solid var(--color-muted)" }}>
-                  <h3 className="text-[14px] font-semibold" style={{ color: "var(--color-ink-1)" }}>
-                    {communityDetail.name}
-                  </h3>
-                  <button
-                    onClick={() => { setCommunityDetailOpen(false); setCommunityDetail(null); }}
-                    className="w-7 h-7 rounded-lg flex items-center justify-center transition-all"
-                    style={{ color: "var(--color-ink-4)" }}
-                    onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+              {/* 标题栏 — 与服务区卡片同结构 */}
+              <div className="px-3.5 py-2.5 flex items-center gap-2" style={{ background: "rgba(90,123,160,0.08)", borderBottom: "1px solid rgba(90,123,160,0.12)" }}>
+                <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: "rgba(90,123,160,0.12)" }}>
+                  <Building2 className="w-3.5 h-3.5" style={{ color: "#1B2A4A" }} />
                 </div>
-                {/* 内容区 */}
-                <div className="px-4 py-3 space-y-2.5 text-[12px]">
-                  {/* 行政区 / 人口 */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span style={{ color: "var(--color-ink-5)" }}>行政区</span>
-                      <span className="px-1.5 py-0.5 rounded text-[11px]" style={{ background: "var(--color-subtle)", color: "var(--color-ink-3)" }}>
-                        {communityDetail.district}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <span style={{ color: "var(--color-ink-5)" }}>人口</span>
-                      <span className="font-num font-medium" style={{ color: "var(--color-ink-2)" }}>
-                        {communityDetail.population.toLocaleString()}
-                      </span>
-                    </div>
+                <div className="min-w-0">
+                  <p className="text-[12px] font-bold truncate" style={{ color: "#1B2A4A" }}>{communityDetail.name}</p>
+                  <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>住宅社区 · {communityDetail.district}</p>
+                </div>
+                <button
+                  onClick={() => { setCommunityDetailOpen(false); setCommunityDetail(null); }}
+                  className="ml-auto w-5 h-5 rounded-md flex items-center justify-center transition-colors shrink-0"
+                  style={{ color: "var(--color-ink-4)" }}
+                  onMouseEnter={e => { e.currentTarget.style.background = "rgba(0,0,0,0.05)"; e.currentTarget.style.color = "var(--color-ink-2)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-ink-4)"; }}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {/* 内容区: 指标行 + 附近充电站 + 盲区选址按钮 (限高滚动防溢出) */}
+              <div className="px-3.5 py-3 space-y-2 text-[11px] overflow-y-auto" style={{ color: "var(--color-ink-2)", maxHeight: 320 }}>
+                <div className="flex justify-between items-center">
+                  <span style={{ color: "var(--color-ink-4)" }}>常住人口</span>
+                  <span className="font-semibold font-num" style={{ color: "var(--color-ink-1)" }}>{communityDetail.population.toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span style={{ color: "var(--color-ink-4)" }}>充电覆盖率</span>
+                  <div className="flex items-center gap-1.5">
+                    {(() => {
+                      const ratio = communityDetail.coverageRatio;
+                      let level = "极差";
+                      if (ratio >= 90) level = "优秀";
+                      else if (ratio >= 60) level = "良好";
+                      else if (ratio >= 30) level = "一般";
+                      else if (ratio >= 10) level = "较差";
+                      const color = COVERAGE_LEVEL_COLORS[level];
+                      return (
+                        <>
+                          <span className="w-2 h-2 rounded-sm" style={{ background: color }} />
+                          <span className="text-[10px] font-semibold" style={{ color }}>{level}</span>
+                          <span className="font-num font-bold text-[12px]" style={{ color }}>{ratio.toFixed(1)}%</span>
+                        </>
+                      );
+                    })()}
                   </div>
-                  {/* 覆盖率 + 分级色块 */}
-                  <div className="flex items-center justify-between py-1.5 px-2 rounded" style={{ background: "var(--color-subtle)" }}>
-                    <span style={{ color: "var(--color-ink-5)" }}>覆盖率</span>
-                    <div className="flex items-center gap-1.5">
-                      {(() => {
-                        const ratio = communityDetail.coverageRatio;
-                        let level = "极差";
-                        if (ratio >= 90) level = "优秀";
-                        else if (ratio >= 60) level = "良好";
-                        else if (ratio >= 30) level = "一般";
-                        else if (ratio >= 10) level = "较差";
-                        const color = COVERAGE_LEVEL_COLORS[level];
-                        return (
-                          <>
-                            <span className="w-2.5 h-2.5 rounded-sm" style={{ background: color }} />
-                            <span className="text-[11px]" style={{ color }}>{level}</span>
-                            <span className="font-num font-bold text-[13px]" style={{ color }}>
-                              {ratio.toFixed(1)}%
+                </div>
+                {/* 覆盖充电站列表 (按距离升序, Top5) */}
+                <div className="pt-1" style={{ borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+                  <p className="text-[10px] mb-1.5" style={{ color: "var(--color-ink-5)" }}>附近充电站 (按距离排序)</p>
+                  {nearbyStations.length === 0 ? (
+                    <p className="text-[10px] py-1.5 text-center" style={{ color: "var(--color-ink-5)" }}>暂无充电站数据</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {nearbyStations.map((s, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center justify-between py-1 px-2 rounded-md"
+                          style={{ background: "rgba(255,255,255,0.5)", border: "1px solid rgba(0,0,0,0.04)" }}
+                        >
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className="w-1.5 h-1.5 rounded-full shrink-0"
+                              style={{ background: BRAND_CONFIG[s.brand]?.color || "#3b82f6" }}
+                            />
+                            <span className="text-[10px] truncate" style={{ color: "var(--color-ink-2)" }}>
+                              {s.name}
                             </span>
-                          </>
-                        );
-                      })()}
-                    </div>
-                  </div>
-                  {/* 覆盖充电站列表 (按距离升序, Top5) */}
-                  <div>
-                    <p className="text-[11px] mb-1.5" style={{ color: "var(--color-ink-5)" }}>附近充电站 (按距离排序)</p>
-                    {nearbyStations.length === 0 ? (
-                      <p className="text-[11px] py-2 text-center" style={{ color: "var(--color-ink-5)" }}>暂无充电站数据</p>
-                    ) : (
-                      <div className="space-y-1">
-                        {nearbyStations.map((s, i) => (
-                          <div
-                            key={i}
-                            className="flex items-center justify-between py-1 px-2 rounded"
-                            style={{ background: "var(--color-subtle)" }}
-                          >
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <span
-                                className="w-1.5 h-1.5 rounded-full shrink-0"
-                                style={{ background: BRAND_CONFIG[s.brand]?.color || "#3b82f6" }}
-                              />
-                              <span className="text-[11px] truncate" style={{ color: "var(--color-ink-2)" }}>
-                                {s.name}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-[10px]" style={{ color: "var(--color-ink-5)" }}>
-                                {s.brand}
-                              </span>
-                              <span className="text-[10px] font-num" style={{ color: "var(--color-ink-4)" }}>
-                                快{s.fastChargers}/慢{s.slowChargers}
-                              </span>
-                              <span className="text-[10px] font-num font-medium" style={{ color: "var(--color-brand-text)" }}>
-                                {s.distance.toFixed(2)}km
-                              </span>
-                            </div>
                           </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  {/* 盲区: 显示"在此选址"按钮 */}
-                  {communityDetail.isBlindSpot && (
-                    <button
-                      onClick={() => {
-                        // 从 communitySource 取质心作为选址坐标
-                        const feat = communitySourceRef.current?.getFeatureById(communityDetail.id);
-                        if (feat) {
-                          const g = feat.getGeometry();
-                          if (g && g.getExtent) {
-                            const ext = g.getExtent();
-                            const center3857: [number, number] = [(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2];
-                            const centerLonLat = toLonLat(center3857);
-                            // 3857 坐标系下底图为 GCJ02, 转回 WGS84 传给 placeVirtualStation
-                            const [wgsLng, wgsLat] = gcj02ToWgs84(centerLonLat[0], centerLonLat[1]);
-                            setActiveTab("site");
-                            placeVirtualStation(wgsLng, wgsLat);
-                            setCommunityDetailOpen(false);
-                            setCommunityDetail(null);
-                          }
-                        }
-                      }}
-                      className="w-full mt-2 text-white text-[12px] font-semibold py-2.5 rounded-xl flex items-center justify-center gap-1.5 transition-all btn-brand"
-                      style={{ borderRadius: 12 }}
-                    >
-                      <Target className="w-3.5 h-3.5" /> 在此选址
-                    </button>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-[9px] font-num" style={{ color: "var(--color-ink-4)" }}>
+                              快{s.fastChargers}/慢{s.slowChargers}
+                            </span>
+                            <span className="text-[9px] font-num font-semibold" style={{ color: "var(--color-brand-text)" }}>
+                              {s.distance.toFixed(2)}km
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
+                {/* 盲区: 显示"在此选址"按钮 */}
+                {communityDetail.isBlindSpot && (
+                  <button
+                    onClick={() => {
+                      // 从 communitySource 取质心作为选址坐标
+                      const feat = communitySourceRef.current?.getFeatureById(communityDetail.id);
+                      if (feat) {
+                        const g = feat.getGeometry();
+                        if (g && g.getExtent) {
+                          const ext = g.getExtent();
+                          const center3857: [number, number] = [(ext[0] + ext[2]) / 2, (ext[1] + ext[3]) / 2];
+                          const centerLonLat = toLonLat(center3857);
+                          // 3857 坐标系下底图为 GCJ02, 转回 WGS84 传给 placeVirtualStation
+                          const [wgsLng, wgsLat] = gcj02ToWgs84(centerLonLat[0], centerLonLat[1]);
+                          setActiveTab("site");
+                          placeVirtualStation(wgsLng, wgsLat);
+                          setCommunityDetailOpen(false);
+                          setCommunityDetail(null);
+                        }
+                      }
+                    }}
+                    className="w-full text-white text-[11px] font-semibold py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all btn-brand"
+                    style={{ borderRadius: 10 }}
+                  >
+                    <Target className="w-3.5 h-3.5" /> 在此选址
+                  </button>
+                )}
               </div>
             </div>
           )}
+                </div>
+              )}
 
 
 
@@ -4498,10 +4586,10 @@ export default function App() {
             </div>
           )}
 
-          {/* 鼠标坐标 - Linear 风: 单色边框, 无毛玻璃, 等宽字体 */}
+          {/* 鼠标坐标 - Linear 风: 单色边框, 无毛玻璃, 等宽字体 (上移避开底部工具栏) */}
           {mousePosition && (
             <div
-              className="absolute bottom-1 left-1/2 -translate-x-1/2 z-10 px-2.5 py-1 rounded-md font-num text-[10px] no-select"
+              className="absolute bottom-16 left-1/2 -translate-x-1/2 z-10 px-2.5 py-1 rounded-md font-num text-[10px] no-select"
               style={{
                 background: "var(--color-surface)",
                 border: "1px solid var(--color-muted)",
@@ -4517,9 +4605,9 @@ export default function App() {
             </div>
           )}
 
-          {/* 用户定位与导航浮窗 - Linear 风: 单色边框, 无毛玻璃 (右上角, 除管理页外) */}
+          {/* 用户定位与导航浮窗 - Linear 风: 单色边框, 无毛玻璃 (右上角悬浮控件下方, 自动避让查询/结果面板) */}
           {activeTab !== "admin" && (
-          <div className="absolute top-3 right-3 z-30 flex flex-col gap-1.5 items-end">
+          <div className={`absolute top-[60px] ${ctxStackOffset} z-30 flex flex-col gap-1.5 items-end`}>
             {locateError && (
               <div
                 className="rounded-md px-2.5 py-1.5 text-[9px] w-44 text-center"
@@ -4530,13 +4618,12 @@ export default function App() {
             )}
             {routeInfo && (
               <div
-                className="rounded-lg text-[11px] overflow-hidden w-72 max-h-[70vh] flex flex-col"
-                style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-lg)" }}
+                className="text-[11px] overflow-hidden w-72 max-h-[70vh] flex flex-col nio-card"
               >
-                {/* 导航头部 - Linear 风: 紧凑, 无渐变 */}
+                {/* 导航头部 - 玻璃卡内半透明 */}
                 <div
                   className="px-3 py-2 flex items-center justify-between"
-                  style={{ borderBottom: "1px solid var(--color-muted)", background: "var(--color-surface)" }}
+                  style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}
                 >
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px] flex items-center gap-1" style={{ color: "var(--color-ink-5)" }}>
@@ -4615,11 +4702,19 @@ export default function App() {
           </div>
             )}
 
-          {/* 图例 - Linear 风: 单色边框, 无毛玻璃, 紧凑 (覆盖分析 Tab 使用专属 MapLegend, 此处仅其他 Tab 显示) */}
+          {/* 图例 - 液态玻璃浮窗 (与全站悬浮卡统一; 覆盖分析 Tab 使用专属 MapLegend) */}
           {activeTab !== "coverage" && (
           <div
-            className="absolute bottom-3 left-3 rounded-lg p-2.5 z-10 w-48"
-            style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)", boxShadow: "var(--shadow-sm)" }}
+            className="absolute bottom-3 left-3 p-2.5 z-10 w-48"
+            style={{
+              background: "linear-gradient(165deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.5) 45%, rgba(255,255,255,0.62) 100%)",
+              backdropFilter: "blur(28px) saturate(1.8)",
+              WebkitBackdropFilter: "blur(28px) saturate(1.8)",
+              border: "1px solid rgba(255,255,255,0.55)",
+              boxShadow:
+                "0 8px 28px -8px rgba(0,0,0,0.18), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.95), inset 0 -1px 1px -0.5px rgba(255,255,255,0.35)",
+              borderRadius: 14,
+            }}
           >
             <h5
               className="text-[10px] font-semibold mb-1.5 flex items-center gap-1"
@@ -4658,6 +4753,30 @@ export default function App() {
               asArray={asArray}
               normalizeStations={normalizeStations}
               activeTab={activeTab}
+              navTabs={visibleTabs}
+              onNavTabChange={(tab) => {
+                setActiveTab(tab);
+                if (tab === "site") {
+                  setSiteHintVisible(true);
+                  setTimeout(() => setSiteHintVisible(false), 5000);
+                }
+              }}
+              onOpenDashboard={() => setShowDashboard(true)}
+              onOpenBlindSpotDashboard={() => setShowBlindSpotDashboard(true)}
+              onOpenSchemeDashboard={() => setShowSchemeDashboard(true)}
+              topRightSlot={
+                <TopBar
+                  embedded
+                  darkTheme={darkTheme}
+                  toggleTheme={toggleTheme}
+                  onOpenShortcutsHelp={() => setShortcutsHelpOpen(true)}
+                  onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+                  locating={locating}
+                  onLocate={locateUser}
+                  onLogout={handleLogout}
+                  username={currentUser?.username}
+                />
+              }
             />
           )}
 
@@ -4711,22 +4830,11 @@ export default function App() {
 
 
         </div>
-            </div>
-            {/* ===== 右竖条栏: 选址卡片 (综合评分/盲区概况/推荐选址, 滚动查看) ===== */}
+
+        {/* ===== 选址结果右栏: 悬浮玻璃卡 (综合评分/盲区概况/推荐选址, 滚动查看) ===== */}
             {activeTab === "site" && (
               <div
-                className="w-[480px] shrink-0 border-l overflow-y-auto animate-panel-enter"
-                style={{
-                  borderColor: "rgba(255,255,255,0.08)",
-                  background: "linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(250,250,250,0.88) 100%)",
-                  backdropFilter: "blur(16px) saturate(1.2)",
-                  WebkitBackdropFilter: "blur(16px) saturate(1.2)",
-                  boxShadow: "-4px 0 24px -8px rgba(0,0,0,0.06)",
-                  zIndex: 10,
-                  // 顶部避开参数条 (同覆盖分析右栏), 从功能区下方开始
-                  marginTop: 112,
-                  height: "calc(100% - 112px)",
-                }}
+                className="absolute right-4 top-[68px] bottom-4 z-20 w-[400px] p-3 nio-card overflow-y-auto animate-panel-enter"
               >
                 <SiteResultPanel
                   siteMetrics={siteMetrics}
@@ -4765,9 +4873,6 @@ export default function App() {
                 />
               </div>
             )}
-          </div>
-        </div>
-      </div>
 
       {/* ===== AI 助手悬浮球 + 浮动面板 (AiAssistantPanel 组件) ===== */}
       <AiAssistantPanel
@@ -4848,11 +4953,16 @@ export default function App() {
           >
             <div
               ref={schemeDialogRef}
-              className="w-[720px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
+              className="w-[720px] max-h-[88vh] overflow-y-auto bento-tile"
               style={{
-                background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
-                border: "1px solid rgba(255,255,255,0.6)",
-                boxShadow: "var(--shadow-elevated)",
+                // 液态玻璃 (与全站悬浮浮窗统一)
+                background: "linear-gradient(165deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.5) 45%, rgba(255,255,255,0.62) 100%)",
+                backdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+                WebkitBackdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+                border: "1px solid rgba(255,255,255,0.55)",
+                boxShadow:
+                  "0 24px 64px -16px rgba(0,0,0,0.3), 0 4px 12px -4px rgba(0,0,0,0.12), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.95), inset 0 -1.5px 1px -0.5px rgba(255,255,255,0.35)",
+                borderRadius: 22,
                 // AI 窗口贴合右侧时不动; 窄屏回退悬浮模式时才左移让位
                 transform: schemeAiOpen ? `translateX(-${aiFallbackShift(720)}px)` : "translateX(0)",
                 transition: "transform 0.25s ease",
@@ -4860,8 +4970,13 @@ export default function App() {
               onClick={e => e.stopPropagation()}
             >
               {/* 标题栏 */}
-              <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid var(--color-muted)" }}>
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(0,200,150,0.1)" }}>
+              <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                  style={{
+                    background: "linear-gradient(165deg, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.5) 100%)",
+                    border: "1px solid rgba(255,255,255,0.6)",
+                    boxShadow: "inset 0 1px 1px rgba(255,255,255,0.8)",
+                  }}>
                   <Target className="w-4 h-4" style={{ color: "var(--color-brand-text)" }} />
                 </div>
                 <div className="min-w-0">
@@ -4996,11 +5111,16 @@ export default function App() {
           >
             <div
               ref={compareDialogRef}
-              className="w-[860px] max-h-[88vh] overflow-y-auto rounded-2xl bento-tile"
+              className="w-[860px] max-h-[88vh] overflow-y-auto bento-tile"
               style={{
-                background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
-                border: "1px solid rgba(255,255,255,0.6)",
-                boxShadow: "var(--shadow-elevated)",
+                // 液态玻璃 (与全站悬浮浮窗统一)
+                background: "linear-gradient(165deg, rgba(255,255,255,0.72) 0%, rgba(255,255,255,0.5) 45%, rgba(255,255,255,0.62) 100%)",
+                backdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+                WebkitBackdropFilter: "blur(32px) saturate(1.8) brightness(1.05)",
+                border: "1px solid rgba(255,255,255,0.55)",
+                boxShadow:
+                  "0 24px 64px -16px rgba(0,0,0,0.3), 0 4px 12px -4px rgba(0,0,0,0.12), inset 0 1.5px 1px -0.5px rgba(255,255,255,0.95), inset 0 -1.5px 1px -0.5px rgba(255,255,255,0.35)",
+                borderRadius: 22,
                 // AI 窗口贴合右侧时不动; 窄屏回退悬浮模式时才左移让位
                 transform: compareAiOpen ? `translateX(-${aiFallbackShift(860)}px)` : "translateX(0)",
                 transition: "transform 0.25s ease",
@@ -5008,8 +5128,13 @@ export default function App() {
               onClick={e => e.stopPropagation()}
             >
               {/* 标题栏 */}
-              <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid var(--color-muted)" }}>
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "rgba(56,189,248,0.1)" }}>
+              <div className="px-5 py-4 flex items-center gap-3" style={{ borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+                  style={{
+                    background: "linear-gradient(165deg, rgba(255,255,255,0.75) 0%, rgba(255,255,255,0.5) 100%)",
+                    border: "1px solid rgba(255,255,255,0.6)",
+                    boxShadow: "inset 0 1px 1px rgba(255,255,255,0.8)",
+                  }}>
                   <GitCompare className="w-4 h-4" style={{ color: "#38BDF8" }} />
                 </div>
                 <div className="min-w-0">
@@ -5126,11 +5251,21 @@ export default function App() {
       />
 
       {/* ===== 决策大屏 (阶段三 任务 3.1, 全屏覆盖) ===== */}
-      <Dashboard open={showDashboard} onBack={() => setShowDashboard(false)} />
+      <Dashboard open={showDashboard} onBack={() => setShowDashboard(false)} onNavigate={navigateDashboard} />
       {/* ===== 盲区攻坚大屏 ===== */}
-      <BlindSpotDashboard open={showBlindSpotDashboard} onBack={() => setShowBlindSpotDashboard(false)} />
+      <BlindSpotDashboard
+        open={showBlindSpotDashboard}
+        onBack={() => { setShowBlindSpotDashboard(false); setDashboardJumpPayload(null); }}
+        onNavigate={navigateDashboard}
+        jumpPayload={dashboardJumpPayload}
+      />
       {/* ===== 选址决策大屏 ===== */}
-      <SchemeDashboard open={showSchemeDashboard} onBack={() => setShowSchemeDashboard(false)} />
+      <SchemeDashboard
+        open={showSchemeDashboard}
+        onBack={() => { setShowSchemeDashboard(false); setDashboardJumpPayload(null); }}
+        onNavigate={navigateDashboard}
+        jumpPayload={dashboardJumpPayload}
+      />
 
       {/* ===== 命令面板 (阶段四 任务 4.2, Ctrl+K 唤起) - 普通用户不显示 ===== */}
       {!isOwner && (

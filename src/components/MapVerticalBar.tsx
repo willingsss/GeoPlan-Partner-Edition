@@ -1,7 +1,7 @@
 import React from "react";
 import {
   Zap, Building2, MessageSquare, Square, GripVertical, Activity, Flame, Search, Layers, X,
-  MapIcon, Loader2
+  MapIcon, Loader2, PanelLeftClose
 } from "lucide-react";
 import { BRAND_CONFIG } from "../types";
 
@@ -65,17 +65,40 @@ export default function MapVerticalBar({
   compact = false,
 }: MapVerticalBarProps) {
   const dragLayerIdRef = React.useRef<string | null>(null);
+  // NIO 风格: 默认收起为窄条, 点击展开为左侧悬浮玻璃卡
+  const [collapsed, setCollapsed] = React.useState(true);
+
+  // 收起态: 左侧窄条 (搜索/图层入口), 最大化地图视野
+  if (collapsed) {
+    return (
+      <div className="absolute left-4 top-[68px] z-20 nio-card flex flex-col items-center gap-1 p-1.5 animate-panel-enter">
+        <button
+          onClick={() => setCollapsed(false)}
+          title="展开搜索与图层"
+          className="w-9 h-9 rounded-xl flex items-center justify-center text-white transition-all hover:scale-105"
+          style={{ background: "var(--color-brand)", boxShadow: "0 2px 10px rgba(0,200,150,0.35)" }}
+        >
+          <Search className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => setCollapsed(false)}
+          title="图层管理"
+          className="w-9 h-9 rounded-xl flex items-center justify-center text-zinc-500 hover:text-zinc-800 hover:bg-black/[0.05] transition-all"
+        >
+          <Layers className="w-4 h-4" />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <aside
-      className="shrink-0 bg-white overflow-y-auto flex flex-col map-panel-auto-narrow mobile-map-panel-bottom-sheet"
-      style={{
-        width: 256,
-        borderRight: "1px solid var(--color-muted)",
-      }}
+      className="absolute left-4 top-[68px] bottom-4 z-20 nio-card flex flex-col overflow-hidden animate-panel-enter map-panel-auto-narrow mobile-map-panel-bottom-sheet"
+      style={{ width: 262 }}
     >
       <div
-        className="h-9 shrink-0 px-3 flex items-center justify-between sticky top-0 bg-white z-10"
-        style={{ borderBottom: "1px solid var(--color-muted)" }}
+        className="h-9 shrink-0 px-3 flex items-center justify-between z-10"
+        style={{ borderBottom: "1px solid rgba(0,0,0,0.05)" }}
       >
         <div className="flex items-center gap-1.5">
           <MapIcon className="w-3 h-3 text-zinc-500" />
@@ -83,8 +106,15 @@ export default function MapVerticalBar({
             图层与搜索
           </h3>
         </div>
+        <button
+          onClick={() => setCollapsed(true)}
+          title="收起面板"
+          className="w-6 h-6 rounded-md flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-black/[0.05] transition-all"
+        >
+          <PanelLeftClose className="w-3.5 h-3.5" />
+        </button>
       </div>
-      <div className="p-3 space-y-3.5">
+      <div className="flex-1 overflow-y-auto p-3 space-y-3.5">
                 {/* 地点搜索 - Linear 风: 简洁边框 + 等宽提示 */}
                 <div className="relative">
                   <div className="flex items-center gap-1.5 input-sys px-2 py-1.5">

@@ -26,12 +26,7 @@ export default function QueryResultPanel({
 }: QueryResultPanelProps) {
   return (
     <div
-      className="fixed top-[60px] right-4 z-[60] w-[340px] max-h-[55vh] flex flex-col overflow-hidden animate-panel-enter rounded-xl"
-      style={{
-        background: "linear-gradient(180deg, rgba(255,255,255,0.98) 0%, rgba(250,250,250,0.96) 100%)",
-        border: "1px solid rgba(255,255,255,0.6)",
-        boxShadow: "var(--shadow-elevated)",
-      }}
+      className="fixed top-[60px] right-4 z-[60] w-[340px] max-h-[55vh] flex flex-col overflow-hidden animate-panel-enter nio-card"
     >
       {/* 标题栏 */}
       <div className="px-3.5 py-2.5 flex items-center justify-between shrink-0" style={{ borderBottom: "1px solid rgba(0,0,0,0.05)" }}>

@@ -25,7 +25,8 @@ export function useCoverageAnalysis() {
 
   // 阶段五 等时圈: 服务区模式切换 + 等时圈覆盖率信息
   const [serviceAreaMode, setServiceAreaMode] = useState<"buffer" | "isochrone" | "hybrid">("buffer");
-  const [isochroneCoverage, setIsochroneCoverage] = useState<{ covered: number; total: number; fallback: number; ratio: number } | null>(null);
+  // 等时圈覆盖率信息 (含 avgConfidence: 等时圈站平均置信度 0-100)
+  const [isochroneCoverage, setIsochroneCoverage] = useState<{ covered: number; total: number; fallback: number; ratio: number; avgConfidence?: number } | null>(null);
   const [showIsochroneLayer, setShowIsochroneLayer] = useState<boolean>(true);
   // 服务区图层显示开关 (图例点击切换)
   const [showServiceArea, setShowServiceArea] = useState<boolean>(true);
@@ -61,10 +62,10 @@ export function useCoverageAnalysis() {
   const [coveragePieCollapsed, setCoveragePieCollapsed] = useState(false);
   const [stationEffCollapsed, setStationEffCollapsed] = useState(false);
 
-  // ===== 等时圈模式对比: buffer/isochrone/hybrid 三种服务区模式覆盖率对比 =====
+  // ===== 等时圈模式对比: buffer/isochrone/hybrid 三种服务区模式覆盖率对比 (hybrid 含双指标区间) =====
   const [modeComparison, setModeComparison] = useState<{
     loading: boolean;
-    results: { mode: string; label: string; coverageRate: number; populationCoverageRate: number; blindCount: number }[] | null;
+    results: { mode: string; label: string; coverageRate: number; coverageRateInterval: [number, number] | null; populationCoverageRate: number; blindCount: number }[] | null;
   }>({ loading: false, results: null });
 
   const runModeComparison = async (params: { chargeMode: string; radius?: number; district: string }) => {
@@ -73,7 +74,7 @@ export function useCoverageAnalysis() {
       const modes = [
         { mode: "buffer", label: "缓冲区" },
         { mode: "isochrone", label: "等时圈" },
-        { mode: "hybrid", label: "混合" },
+        { mode: "hybrid", label: "区间" },
       ];
       const results = await Promise.all(modes.map(async m => {
         const res = await fetch("/api/v1/analysis/coverage", {
@@ -87,6 +88,8 @@ export function useCoverageAnalysis() {
           mode: m.mode,
           label: m.label,
           coverageRate: s?.coverageRate ?? 0,
+          // hybrid 双指标区间 (仅区间模式返回)
+          coverageRateInterval: (m.mode === "hybrid" && s?.coverageRateInterval) ? s.coverageRateInterval : null,
           populationCoverageRate: s?.populationCoverageRate ?? 0,
           blindCount: s?.blindSpotCommunities ?? 0,
         };
