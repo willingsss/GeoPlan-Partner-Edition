@@ -11,7 +11,6 @@ import TileLayer from "ol/layer/Tile";
 import VectorLayer from "ol/layer/Vector";
 import VectorSource from "ol/source/Vector";
 import XYZ from "ol/source/XYZ";
-import GeoJSON from "ol/format/GeoJSON";
 import { fromLonLat } from "ol/proj";
 import { Feature } from "ol";
 import { Point } from "ol/geom";
@@ -19,6 +18,9 @@ import { Style, Fill, Stroke, Circle as CircleStyle, Text as OlText } from "ol/s
 import DashboardStoryNav, {
   type DashboardJumpPayload, type DashboardTarget, type DashboardCandidateSpot, geometryBboxCenter,
 } from "./DashboardStoryNav";
+import { readFeaturesFromWGS84 } from "../lib/geojsonProjection";
+import { wgs84ToGcj02 } from "../lib/coordinate";
+import { XUZHOU_CENTER } from "../config/map";
 
 interface BlindSpotDashboardProps {
   open: boolean;
@@ -63,17 +65,20 @@ export default function BlindSpotDashboard({ open, onBack, onNavigate, jumpPaylo
     if (!open || !mapRef.current || mapInstanceRef.current) return;
     const map = new OlMap({
       target: mapRef.current,
-      view: new View({ center: fromLonLat([117.2, 34.26]), zoom: 10.5 }),
+      // 与决策大屏初始视图保持一致 (XUZHOU_CENTER 为 WGS84, 转 GCJ02 与高德底图对齐)
+      view: new View({ center: fromLonLat(wgs84ToGcj02(XUZHOU_CENTER[0], XUZHOU_CENTER[1])), zoom: 11 }),
       layers: [
-        // 高德暗色底图 (暗红滤镜呼应攻坚主题色)
+        // 高德纯白底图 (标准瓦片 + CSS 滤镜处理成简约白)
         new TileLayer({
-          className: "basemap-tint-red",
-          source: new XYZ({ url: "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", crossOrigin: "anonymous" }),
+          className: "basemap-pure-white",
+          source: new XYZ({ url: "https://webrd0{1-4}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", crossOrigin: "anonymous" }),
         }),
       ],
       controls: [],
     });
     mapInstanceRef.current = map;
+    // 等布局完成后校正尺寸, 防止容器未撑开时初始化为 0 尺寸
+    requestAnimationFrame(() => mapInstanceRef.current?.updateSize());
     return () => { map.setTarget(undefined); mapInstanceRef.current = null; };
   }, [open]);
 
@@ -81,10 +86,10 @@ export default function BlindSpotDashboard({ open, onBack, onNavigate, jumpPaylo
   useEffect(() => {
     if (!open || !mapInstanceRef.current || !data) return;
     const map = mapInstanceRef.current;
-    // 盲区面
+    // 盲区面 (小区边界为 WGS84, 需转 GCJ02 与高德底图对齐; 站点为高德POI GCJ02 无需转换)
     if (blindLayerRef.current) { map.removeLayer(blindLayerRef.current); blindLayerRef.current = null; }
     if (data.blindAreas?.features?.length) {
-      const src = new VectorSource({ features: new GeoJSON().readFeatures(data.blindAreas, { featureProjection: "EPSG:3857" }) });
+      const src = new VectorSource({ features: readFeaturesFromWGS84(data.blindAreas) });
       const layer = new VectorLayer({
         source: src,
         style: (f) => new Style({
@@ -121,19 +126,7 @@ export default function BlindSpotDashboard({ open, onBack, onNavigate, jumpPaylo
       map.addLayer(layer);
       stationLayerRef.current = layer;
     }
-
-    // 深链: 从决策大屏跳转而来 → 自动飞行定位人口最大盲区 (Top1)
-    if (jumpPayload?.focusTopBlindSpot && data.topBlindSpots?.length && blindLayerRef.current) {
-      const top1 = data.topBlindSpots[0];
-      const feat = (blindLayerRef.current.getSource() as VectorSource | null)
-        ?.getFeatures()
-        .find(f => String(f.get("id")) === String(top1.id));
-      const geom = feat?.getGeometry();
-      if (geom) {
-        map.getView().fit(geom.getExtent(), { padding: [80, 80, 80, 80], maxZoom: 14, duration: 900 });
-      }
-    }
-  }, [open, data, jumpPayload]);
+  }, [open, data]);
 
   // ===== 各区盲区分布柱图 =====
   useEffect(() => {
@@ -279,7 +272,7 @@ export default function BlindSpotDashboard({ open, onBack, onNavigate, jumpPaylo
                 <Activity className="w-3 h-3" style={{ color: "#E08D5A" }} />
                 <span style={{ color: "#D97F4A" }}>决策大屏跳转</span>
                 <span style={{ color: "rgba(90,123,160,0.4)" }}>|</span>
-                <span style={{ color: "#5A7BA0" }}>盲区社区 <span className="font-num font-bold" style={{ color: "#D97F4A" }}>{jumpPayload.blindSpotCount ?? kpi.blindSpotCommunities ?? 0}</span> 个 · 已定位人口最大盲区</span>
+                <span style={{ color: "#5A7BA0" }}>盲区社区 <span className="font-num font-bold" style={{ color: "#D97F4A" }}>{jumpPayload.blindSpotCount ?? kpi.blindSpotCommunities ?? 0}</span> 个</span>
                 <button onClick={() => setShowJumpTip(false)} className="ml-1 w-5 h-5 rounded flex items-center justify-center transition-colors" style={{ color: "#7A8A9A" }}>
                   <X className="w-3 h-3" />
                 </button>

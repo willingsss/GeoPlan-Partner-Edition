@@ -19,6 +19,7 @@ import { Style, Fill, Stroke, Circle as CircleStyle, Text as OlText } from "ol/s
 import DashboardStoryNav, {
   type DashboardJumpPayload, type DashboardTarget, type DashboardCandidateSpot,
 } from "./DashboardStoryNav";
+import { wgs84ToGcj02 } from "../lib/coordinate";
 
 interface SchemeDashboardProps {
   open: boolean;
@@ -67,17 +68,20 @@ export default function SchemeDashboard({ open, onBack, onNavigate, jumpPayload 
     if (!open || !mapRef.current || mapInstanceRef.current) return;
     const map = new OlMap({
       target: mapRef.current,
-      view: new View({ center: fromLonLat([117.2, 34.26]), zoom: 10.5 }),
+      // 中心为 WGS84 坐标, 需转 GCJ02 与高德底图对齐 (与主页面一致)
+      view: new View({ center: fromLonLat(wgs84ToGcj02(117.2, 34.26)), zoom: 10.5 }),
       layers: [
-        // 高德暗色底图 (深海军蓝滤镜呼应金色决策主题)
+        // 高德纯白底图 (标准瓦片 + CSS 滤镜处理成简约白)
         new TileLayer({
-          className: "basemap-tint-navy",
-          source: new XYZ({ url: "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", crossOrigin: "anonymous" }),
+          className: "basemap-pure-white",
+          source: new XYZ({ url: "https://webrd0{1-4}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", crossOrigin: "anonymous" }),
         }),
       ],
       controls: [],
     });
     mapInstanceRef.current = map;
+    // 等布局完成后校正尺寸, 防止容器未撑开时初始化为 0 尺寸
+    requestAnimationFrame(() => mapInstanceRef.current?.updateSize());
     return () => { map.setTarget(undefined); mapInstanceRef.current = null; candidateLayerRef.current = null; };
   }, [open]);
 

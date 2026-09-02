@@ -305,18 +305,11 @@ body {
   animation-play-state: paused;
 }
 
-/* ===== 数据大屏底图主题染色 (高德暗色底图 + 各屏主题色滤镜, 仅作用于瓦片图层) ===== */
-/* 决策大屏: 墨绿基调 (呼应 #00C896 主题) */
-.basemap-tint-green {
-  filter: brightness(1.06) saturate(0.82) hue-rotate(8deg);
-}
-/* 盲区攻坚大屏: 淡雅暖调 (浅色底, 轻微暖色偏移呼应盲区主题) */
-.basemap-tint-red {
-  filter: brightness(1.05) saturate(0.85) sepia(0.1) hue-rotate(-8deg);
-}
-/* 选址决策大屏: 淡雅冷调 (浅色底, 轻微冷色偏移呼应决策主题) */
-.basemap-tint-navy {
-  filter: brightness(1.06) saturate(0.8) hue-rotate(175deg);
+/* ===== 数据大屏纯白底图 ===== */
+/* 高德瓦片无纯白样式编号, 用滤镜把标准浅色瓦片处理成简约白: */
+/* 灰度化去除水系淡蓝, 提亮把米色底推到纯白, 降对比让路网只留淡灰细线 */
+.basemap-pure-white {
+  filter: grayscale(100%) brightness(1.12) contrast(0.82);
 }
 
 /* 骨架屏 shimmer 动画 (阶段四 任务 4.3.3) */

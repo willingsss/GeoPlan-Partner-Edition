@@ -23,6 +23,7 @@ import {
 import { XUZHOU_CENTER } from "../config/map";
 import { BRAND_CONFIG } from "../types";
 import DashboardStoryNav, { type DashboardJumpPayload, type DashboardTarget } from "./DashboardStoryNav";
+import { wgs84ToGcj02 } from "../lib/coordinate";
 
 interface DashboardProps {
   open: boolean;
@@ -79,16 +80,17 @@ export default function Dashboard({ open, onBack, onNavigate }: DashboardProps) 
     const map = new OlMap({
       target: mapRef.current,
       view: new View({
-        center: fromLonLat(XUZHOU_CENTER),
+        // XUZHOU_CENTER 为 WGS84, 转 GCJ02 与高德底图对齐 (与主页面一致)
+        center: fromLonLat(wgs84ToGcj02(XUZHOU_CENTER[0], XUZHOU_CENTER[1])),
         zoom: 11,
         maxZoom: 18,
       }),
       layers: [
-        // 高德暗色风格底图 (墨绿滤镜呼应决策大屏主题色)
+        // 高德纯白底图 (标准瓦片 + CSS 滤镜处理成简约白, 仅作用于瓦片图层)
         new TileLayer({
-          className: "basemap-tint-green",
+          className: "basemap-pure-white",
           source: new XYZ({
-            url: "https://webrd0{1-4}.is.autonavi.com/appmaptile?style=8&x={x}&y={y}&z={z}",
+            url: "https://webrd0{1-4}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
             crossOrigin: "anonymous",
             attributions: "© 高德地图",
             maxZoom: 20,
@@ -98,6 +100,8 @@ export default function Dashboard({ open, onBack, onNavigate }: DashboardProps) 
       controls: [],
     });
     mapInstanceRef.current = map;
+    // 等布局完成后校正尺寸, 防止容器未撑开时初始化为 0 尺寸
+    requestAnimationFrame(() => mapInstanceRef.current?.updateSize());
     return () => {
       map.setTarget(undefined);
       mapInstanceRef.current = null;
@@ -388,7 +392,7 @@ export default function Dashboard({ open, onBack, onNavigate }: DashboardProps) 
             return (
               <div
                 key={i}
-                onClick={clickable ? () => onNavigate?.(card.target!, { from: "main", blindSpotCount: kpi?.blindSpotCommunities ?? 0, focusTopBlindSpot: true }) : undefined}
+                onClick={clickable ? () => onNavigate?.(card.target!, { from: "main", blindSpotCount: kpi?.blindSpotCommunities ?? 0 }) : undefined}
                 className={`rounded-xl p-3.5 flex-1 flex flex-col justify-between relative overflow-hidden animate-slide-up dash-card ${clickable ? "group cursor-pointer transition-transform hover:scale-[1.02]" : ""}`}
                 style={
                   clickable

@@ -9,9 +9,8 @@ export type DashboardTarget = "main" | "blindspot" | "scheme";
 // 深链 payload: 跨大屏跳转时携带的上下文
 export interface DashboardJumpPayload {
   from: DashboardTarget;
-  // 决策大屏 → 盲区屏: 带上盲区数字, 打开后自动定位 Top1 盲区
+  // 决策大屏 → 盲区屏: 带上盲区数字仅用于提示条展示
   blindSpotCount?: number;
-  focusTopBlindSpot?: boolean;
   // 盲区屏 → 方案屏: Top3 盲区质心作为候选点高亮
   candidateSpots?: DashboardCandidateSpot[];
 }
