@@ -111,26 +111,38 @@ export default function CoverageResultPanel({
     <p className="text-[13px] font-bold font-num" style={{ color: r.mode === currentServiceAreaMode ? "var(--color-brand-text)" : "var(--color-ink-1)" }}>
     {r.coverageRate.toFixed(1)}%
     </p>
-    {/* 区间模式: 显示双口径下界~上界带宽 */}
-    {r.coverageRateInterval && (
-    <p
-    className="text-[8px] font-num"
-    style={{ color: "var(--color-ink-5)" }}
-    title={`双口径区间 ${r.coverageRateInterval[0].toFixed(1)}~${r.coverageRateInterval[1].toFixed(1)}%，带宽 ${(r.coverageRateInterval[1] - r.coverageRateInterval[0]).toFixed(1)} 个百分点；区间模式主值为占比混合覆盖程度均值，与另两种模式的阈值计数口径不同`}
-    >
-    {r.coverageRateInterval[0].toFixed(1)}~{r.coverageRateInterval[1].toFixed(1)}%
+    {/* 混合模式: 双口径下界~上界带宽可视化条 (紫色 = 混合模式主题色) */}
+    {r.coverageRateInterval && (() => {
+    const lo = r.coverageRateInterval![0];
+    const hi = r.coverageRateInterval![1];
+    return (
+    <div className="mt-0.5 px-1" title={`双口径区间 ${lo.toFixed(1)}~${hi.toFixed(1)}%，带宽 ${(hi - lo).toFixed(1)} 个百分点；混合模式主值为占比混合覆盖程度均值，与另两种模式的阈值计数口径不同`}>
+    <div className="relative h-1 rounded-full" style={{ background: "var(--color-subtle)" }}>
+    <div
+    className="absolute inset-y-0 rounded-full"
+    style={{ left: `${lo}%`, width: `${Math.max(hi - lo, 1)}%`, background: "rgba(124,58,237,0.4)" }}
+    />
+    <div
+    className="absolute rounded-full"
+    style={{ left: `${r.coverageRate}%`, top: "-2px", height: "6px", width: "2px", transform: "translateX(-1px)", background: "#7c3aed" }}
+    />
+    </div>
+    <p className="text-[9px] font-num font-semibold mt-0.5" style={{ color: "#7c3aed" }}>
+    {lo.toFixed(1)}~{hi.toFixed(1)}%
     </p>
-    )}
+    </div>
+    );
+    })()}
     <p className="text-[8px] font-num" style={{ color: "var(--color-ink-5)" }}>盲区 {r.blindCount}</p>
     </div>
     ))}
     </div>
     <p className="text-[8px]" style={{ color: "var(--color-ink-5)" }}>
-    缓冲区 / 等时圈为阈值计数口径（过10%即计入），区间为占比混合覆盖程度均值{modeComparison.results[2]?.coverageRateInterval ? `（${modeComparison.results[2].coverageRateInterval[0].toFixed(1)}~${modeComparison.results[2].coverageRateInterval[1].toFixed(1)}%）` : ""}
+    缓冲区 / 等时圈为阈值计数口径（过10%即计入），混合为占比混合覆盖程度均值{modeComparison.results[2]?.coverageRateInterval ? `（${modeComparison.results[2].coverageRateInterval[0].toFixed(1)}~${modeComparison.results[2].coverageRateInterval[1].toFixed(1)}%）` : ""}
     </p>
     </>
     ) : (
-    <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>点击「对比」查看 缓冲区 / 路网等时圈 / 双指标区间 三种服务区模式的覆盖率差异</p>
+    <p className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>点击「对比」查看 缓冲区 / 路网等时圈 / 混合 三种服务区模式的覆盖率差异</p>
     )}
     </div>
     {/* 堆叠柱图: 各行政区覆盖率 */}

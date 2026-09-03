@@ -8,6 +8,32 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { fetchDistrictBoundary } from "../services/districtBoundary";
 import type { BBox } from "../types";
 
+// =========================================================================
+// 等时圈几何读取 + 置信度解析
+// 兼容两种存储格式: Feature(带 .geometry + .properties.reachedDirections) 或裸几何({type,coordinates})
+// 置信度 = 星形法方向命中率 (reached/total)；旧格式(裸几何)降级为默认 0.7
+// =========================================================================
+const LEGACY_ISO_CONFIDENCE = 0.7;
+
+// 等时圈置信度权重上限: 星形 16 方向连线仅为等时圈近似 (方向采样有限 + 路网数据有时效),
+// 即使全部方向命中也不赋予 100% 权重, 保证缓冲区口径始终参与加权 (保底 25%),
+// 使区间模式主值与纯等时圈模式可区分, 结果更保守且可解释
+const ISO_CONF_WEIGHT_CAP = 0.75;
+
+function parseIsochroneGeom(raw: any): { geom: any; confidence: number } | null {
+  if (!raw) return null;
+  const isFeature = raw.type === "Feature";
+  const geom = isFeature ? raw.geometry : raw;
+  if (!geom || !geom.type) return null;
+  const props = isFeature ? raw.properties : null;
+  const reached = Number(props?.reachedDirections);
+  const total = Number(props?.totalDirections);
+  const confidence = props && Number.isFinite(reached) && Number.isFinite(total) && total > 0
+    ? Math.max(0, Math.min(1, reached / total))
+    : LEGACY_ISO_CONFIDENCE;
+  return { geom, confidence };
+}
+
 export default function registerAnalysisRoutes(app: express.Express) {
 app.post("/api/v1/analysis/coverage", async (req, res) => {
   try {
@@ -46,57 +72,77 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
       : activeStations;
 
     // 为每个运营中的充电站生成服务区
-    // 三种模式：buffer（圆形缓冲区，默认）/ isochrone（路网等时圈，缺失不计入）/ hybrid（优先等时圈，缺失回退缓冲区）
+    // 三种模式：
+    //   buffer    — 圆形缓冲区（默认）
+    //   isochrone — 路网等时圈，缺失不计入
+    //   hybrid    — 双指标区间模式：每站同时保留缓冲区与等时圈两种几何，
+    //               社区覆盖率输出「悲观~乐观」区间 + 置信度加权主值（见下方社区循环）
     const isFast = chargeMode !== "slow";
     const serviceRadiusSq = serviceRadius * serviceRadius;
     const serviceAreas: any[] = [];
     let isochroneCoverageCount = 0;
     let fallbackCount = 0;
+    let confidenceSum = 0; // 等时圈站置信度之和（求平均用）
 
     for (const station of filteredStations) {
       const center3857 = toEPSG3857([station.lng, station.lat]);
+      // 缓冲区几何（hybrid 模式下总是生成，作为区间的一个分量）
+      const bufferGeom = createPlanarBuffer3857(center3857, serviceRadius);
+      const bufferBbox: BBox = [
+        center3857[0] - serviceRadius, center3857[1] - serviceRadius,
+        center3857[0] + serviceRadius, center3857[1] + serviceRadius,
+      ];
 
       // 尝试取等时圈几何
-      const isochroneGeomWgs84 = isFast ? station.isochroneFastGeom : station.isochroneSlowGeom;
-      let useIsochrone = false;
+      const isochroneRaw = isFast ? station.isochroneFastGeom : station.isochroneSlowGeom;
+      const parsedIso = (saMode === "isochrone" || saMode === "hybrid") ? parseIsochroneGeom(isochroneRaw) : null;
 
-      if (saMode === "isochrone" || saMode === "hybrid") {
-        // 兼容两种存储格式: Feature(带 .geometry) 或裸几何({type,coordinates})
-        const isochroneGeom = isochroneGeomWgs84?.geometry ?? isochroneGeomWgs84;
-        if (isochroneGeom && isochroneGeom.type) {
-          // 等时圈几何是 WGS84，需投影到 3857 以便后续叠置
-          const isochroneProj = projectGeometryTo3857(isochroneGeom);
-          const isochroneBbox = turf.bbox(isochroneProj);
-          const isochroneCenter: [number, number] = [
-            (isochroneBbox[0] + isochroneBbox[2]) / 2,
-            (isochroneBbox[1] + isochroneBbox[3]) / 2,
-          ];
-          serviceAreas.push({
-            station,
-            buffer: turf.feature(isochroneProj), // 包装为 Feature, 与缓冲区模式格式一致 (turf.intersect 需要)
-            center: isochroneCenter,
-            bbox: isochroneBbox as BBox,
-            source: "isochrone",
-          });
-          isochroneCoverageCount++;
-          useIsochrone = true;
-        } else if (saMode === "isochrone") {
-          // 严格等时圈模式：缺失则跳过该站点
-          continue;
-        }
-      }
-
-      if (!useIsochrone) {
-        // 回退到圆形缓冲区
-        const buffer = createPlanarBuffer3857(center3857, serviceRadius);
-        const bbox: BBox = [
-          center3857[0] - serviceRadius, center3857[1] - serviceRadius,
-          center3857[0] + serviceRadius, center3857[1] + serviceRadius,
+      if (parsedIso) {
+        // 等时圈几何是 WGS84，需投影到 3857 以便后续叠置
+        const isochroneProj = projectGeometryTo3857(parsedIso.geom);
+        const isochroneBbox = turf.bbox(isochroneProj);
+        const isochroneCenter: [number, number] = [
+          (isochroneBbox[0] + isochroneBbox[2]) / 2,
+          (isochroneBbox[1] + isochroneBbox[3]) / 2,
         ];
-        serviceAreas.push({ station, buffer, center: center3857, bbox, source: "buffer" });
+        serviceAreas.push({
+          station,
+          buffer: turf.feature(isochroneProj), // 主几何: 等时圈（渲染/重叠分析用）, 与缓冲区模式格式一致 (turf.intersect 需要)
+          center: isochroneCenter,
+          bbox: isochroneBbox as BBox,
+          source: "isochrone",
+          // hybrid 双几何分量
+          bufGeom: saMode === "hybrid" ? bufferGeom : undefined,
+          bufBbox: bufferBbox,
+          isoGeom: saMode === "hybrid" ? isochroneProj : undefined,
+          isoBbox: isochroneBbox as BBox,
+          isoConfidence: parsedIso.confidence,
+        });
+        isochroneCoverageCount++;
+        confidenceSum += parsedIso.confidence;
+      } else if (saMode === "isochrone") {
+        // 严格等时圈模式：缺失则跳过该站点
+        continue;
+      } else {
+        serviceAreas.push({
+          station,
+          buffer: bufferGeom,
+          center: center3857,
+          bbox: bufferBbox,
+          source: "buffer",
+          // hybrid 双几何分量: 无等时圈数据, 该站仅贡献缓冲区分量
+          bufGeom: saMode === "hybrid" ? bufferGeom : undefined,
+          bufBbox: bufferBbox,
+          isoGeom: undefined,
+          isoBbox: undefined,
+          isoConfidence: 0,
+        });
         if (saMode === "hybrid") fallbackCount++;
       }
     }
+    const avgConfidence = isochroneCoverageCount > 0
+      ? Math.round((confidenceSum / isochroneCoverageCount) * 1000) / 10
+      : 0;
 
     // 服务区重叠分析：双层循环求交，识别冗余覆盖区域
     // 性能优化：用质心距离预筛（两圆心距 > 2r 必不相交）+ bbox 快速判定
@@ -152,6 +198,11 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
     let totalPopulation = 0;
     let coveredCount = 0;
     let blindSpotCount = 0;
+    // hybrid 双指标口径累计: 逐社区混合比例/双口径上下界之和 (汇总层改为"覆盖程度均值"而非阈值计数,
+    // 使缓冲区 25% + 等时圈 75% 的占比混合真正传导到最终数字, 与等时圈模式可区分)
+    let hybridRatioSum = 0;
+    let minRatioSum = 0;
+    let maxRatioSum = 0;
 
     // 把社区循环改为分块异步执行: 每 BATCH 个社区让出一次事件循环, 允许其他 HTTP 请求并发处理
     const COMMUNITY_BATCH = 200;
@@ -162,6 +213,16 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
       const commArea = getPlanarPolygonArea3857(commProj);
       const pop = comm.properties.population_total;
       totalPopulation += pop;
+      // hybrid 模式下求交辅助: 对指定几何求交并返回覆盖率 (异常返回 0)
+      // 注意: 入参可能是 Feature(缓冲区) 或裸几何(等时圈投影), 需归一化为 Feature 才能进 featureCollection
+      const intersectRatio = (geom: any): number => {
+        try {
+          const feat = geom?.type === "Feature" ? geom : turf.feature(geom);
+          const intersection = turf.intersect(turf.featureCollection([commProj, feat]));
+          if (!intersection) return 0;
+          return getPlanarPolygonArea3857(intersection) / commArea;
+        } catch { return 0; }
+      };
 
       // 社区外接圆半径近似（bbox 对角线一半），用于质心距离预筛
       const commHalfDiag = Math.hypot(
@@ -171,7 +232,104 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
       const maxSearchDist = serviceRadius + commHalfDiag;
       const maxSearchDistSq = maxSearchDist * maxSearchDist;
 
-      // 检查社区是否被任何服务区覆盖
+      if (saMode === "hybrid") {
+        // ------------------------------------------------------------------
+        // hybrid 双指标区间模式：
+        //   ratioBuf = max(社区 ∩ 缓冲区)   —— 直线距离理想化口径（乐观分量）
+        //   ratioIso = max(社区 ∩ 等时圈)   —— 真实路网可达口径（现实分量）
+        //   主值     = isoConf × ratioIso + (1 − isoConf) × ratioBuf（置信度加权）
+        //   区间     = [min, max]，宽度本身即数据不确定性的可行动信号
+        // ------------------------------------------------------------------
+        let maxRatioBuf = 0, bufStation: string | null = null;
+        let maxRatioIso = 0, isoStation: string | null = null, isoConfBest = 0;
+
+        for (const sa of serviceAreas) {
+          // 缓冲区分量: bbox + 质心距离预筛
+          if (bboxIntersect(commBbox, sa.bufBbox)) {
+            const dx = (sa.bufBbox[0] + sa.bufBbox[2]) / 2 - commCentroid[0];
+            const dy = (sa.bufBbox[1] + sa.bufBbox[3]) / 2 - commCentroid[1];
+            if (dx * dx + dy * dy <= maxSearchDistSq) {
+              const ratio = intersectRatio(sa.bufGeom);
+              if (ratio > maxRatioBuf) {
+                maxRatioBuf = ratio;
+                bufStation = sa.station.name;
+              }
+            }
+          }
+          // 等时圈分量: bbox 预筛（等时圈非圆形, 质心距离预筛不适用）
+          if (sa.isoGeom && bboxIntersect(commBbox, sa.isoBbox)) {
+            const ratio = intersectRatio(sa.isoGeom);
+            if (ratio > maxRatioIso) {
+              maxRatioIso = ratio;
+              isoStation = sa.station.name;
+              isoConfBest = sa.isoConfidence;
+            }
+          }
+          // 早退: 两种口径均已基本完全覆盖
+          if (maxRatioBuf >= 0.95 && maxRatioIso >= 0.95) break;
+        }
+
+        // 社区级置信度: 取得等时圈最大覆盖率的站的方向命中率, 并施加权重上限 (星形近似不赋予满权重);
+        // 无等时圈数据时为 0（主值退化为缓冲区口径）
+        const isoConf = maxRatioIso > 0 ? Math.min(isoConfBest, ISO_CONF_WEIGHT_CAP) : 0;
+        const hybridRatio = isoConf * maxRatioIso + (1 - isoConf) * maxRatioBuf;
+        const coveragePercent = Math.round(hybridRatio * 1000) / 10;
+        const bufPercent = Math.round(maxRatioBuf * 1000) / 10;
+        const isoPercent = Math.round(maxRatioIso * 1000) / 10;
+        const pessimistic = Math.round(Math.min(maxRatioBuf, maxRatioIso) * 1000) / 10;
+        const optimistic = Math.round(Math.max(maxRatioBuf, maxRatioIso) * 1000) / 10;
+        const isBlindSpot = hybridRatio < 0.1;
+
+        // 双口径覆盖程度累计 (汇总层按比例均值聚合, 而非阈值计数)
+        hybridRatioSum += hybridRatio;
+        minRatioSum += Math.min(maxRatioBuf, maxRatioIso);
+        maxRatioSum += Math.max(maxRatioBuf, maxRatioIso);
+
+        let level: string;
+        if (coveragePercent < 10) level = "极差";
+        else if (coveragePercent < 30) level = "较差";
+        else if (coveragePercent < 60) level = "一般";
+        else if (coveragePercent < 90) level = "良好";
+        else level = "优秀";
+
+        if (isBlindSpot) {
+          blindSpotCount++;
+          blindSpotFeatures.push({
+            type: "Feature",
+            id: comm.id,
+            geometry: comm.geometry,
+            properties: {
+              ...comm.properties,
+              coverage_ratio: coveragePercent,
+              is_blind_spot: true,
+            },
+          });
+        } else {
+          coveredCount++;
+          totalCoveredPop += Math.round(pop * hybridRatio);
+        }
+
+        communityResults.push({
+          id: comm.id,
+          name: comm.properties.name,
+          district: comm.properties.district,
+          population: pop,
+          coverageRatio: coveragePercent,
+          level,
+          isBlindSpot,
+          // 主覆盖站: 双口径中覆盖率较大者对应的站
+          coveredBy: maxRatioIso >= maxRatioBuf ? isoStation : bufStation,
+          // 双指标区间输出 (仅 hybrid 模式)
+          coverageBuf: bufPercent,
+          coverageIso: isoPercent,
+          pessimistic,
+          optimistic,
+          confidence: Math.round(isoConf * 1000) / 10,
+        });
+        return;
+      }
+
+      // 单一口径模式 (buffer / isochrone): 保持原有逻辑
       let maxCoverageRatio = 0;
       let coveredByStation: string | null = null;
 
@@ -270,19 +428,34 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
     });
 
     // 生成服务区 GeoJSON (附带 source 字段: isochrone / buffer, 供前端差异化渲染)
-    const serviceAreaFeatures = serviceAreas.map(({ station, buffer, source }) => {
+    // hybrid 双指标模式: 等时圈站的缓冲区分量也作为显示图层输出 (绿色圆),
+    // 与紫色等时圈双层叠加, 直观呈现「真实路网可达 vs 直线距离理想化」两口径的差异;
+    // 仅用于显示, 不进入上方重叠/冗余分析 (该分析只用每站主几何)
+    const serviceAreaFeatures: any[] = [];
+    for (const { station, buffer, source, bufGeom } of serviceAreas) {
       // buffer 可能是 Feature(turf.polygon) 或裸几何(projectGeometryTo3857 返回), 统一取几何
       const rawGeom = buffer?.geometry ?? buffer;
       const wgs84Geom = projectGeometryTo4326(rawGeom);
-      return turf.feature(wgs84Geom, {
+      serviceAreaFeatures.push(turf.feature(wgs84Geom, {
         stationId: station.id,
         stationName: station.name,
         brand: station.brand,
         radius: serviceRadius,
         source: source || "buffer",
         mode: saMode,
-      });
-    });
+      }));
+      if (saMode === "hybrid" && source === "isochrone" && bufGeom) {
+        serviceAreaFeatures.push(turf.feature(projectGeometryTo4326(bufGeom.geometry ?? bufGeom), {
+          stationId: station.id,
+          stationName: station.name,
+          brand: station.brand,
+          radius: serviceRadius,
+          source: "buffer",
+          mode: saMode,
+          component: "buf-estimate", // 标记为区间模式的缓冲区估算分量 (仅供前端提示)
+        }));
+      }
+    }
 
     // 盲区聚类：基于质心距离的贪心聚合（质心距离≤1500米归入同一聚类）
     const blindSpotClustersRaw: any[] = [];
@@ -450,7 +623,17 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
         totalCommunities: communityResults.length,
         coveredCommunities: coveredCount,
         blindSpotCommunities: blindSpotCount,
-        coverageRate: communityResults.length > 0 ? Math.round((coveredCount / communityResults.length) * 1000) / 10 : 0,
+        // hybrid 模式: 覆盖率 = 逐社区混合覆盖程度的均值 (缓冲区25%+等时圈75%占比混合传导到汇总),
+        //              而非"过10%阈值社区数占比"—— 避免与等时圈模式计数完全相同;
+        // 单一口径模式: 保持阈值计数口径 (口径差异见 modeComparison 对比卡说明)
+        coverageRate: saMode === "hybrid" && communityResults.length > 0
+          ? Math.round((hybridRatioSum / communityResults.length) * 1000) / 10
+          : (communityResults.length > 0 ? Math.round((coveredCount / communityResults.length) * 1000) / 10 : 0),
+        // hybrid 双指标区间: 逐社区双口径下界/上界的均值, 主值必落于区间内
+        coverageRateInterval: saMode === "hybrid" && communityResults.length > 0 ? [
+          Math.round((minRatioSum / communityResults.length) * 1000) / 10,
+          Math.round((maxRatioSum / communityResults.length) * 1000) / 10,
+        ] : null,
         populationCoverageRate: totalPopulation > 0 ? Math.round((totalCoveredPop / totalPopulation) * 1000) / 10 : 0,
         totalPopulation,
         blindSpotPopulation: communityResults.filter(c => c.isBlindSpot).reduce((s, c) => s + c.population, 0),
@@ -467,6 +650,8 @@ app.post("/api/v1/analysis/coverage", async (req, res) => {
         ratio: filteredStations.length > 0
           ? Math.round((isochroneCoverageCount / filteredStations.length) * 1000) / 10
           : 0,
+        // 等时圈站平均置信度 (星形法方向命中率均值, 0-100; 旧格式数据按 70 计)
+        avgConfidence: avgConfidence,
       },
     };
 

@@ -202,28 +202,48 @@ export default function CoverageCommunityList({
                     </span>
                   </div>
                 </div>
-                {hasInterval && (
-                  <div className="flex items-center justify-between mt-0.5">
-                    <span
-                      className="text-[9px] font-num"
-                      style={{ color: "var(--color-ink-5)" }}
-                      title={`缓冲区口径 ${(c.coverageBuf ?? 0).toFixed(1)}% / 等时圈口径 ${(c.coverageIso ?? 0).toFixed(1)}%，区间宽度反映该社区覆盖估计的不确定性`}
-                    >
-                      区间 {c.pessimistic!.toFixed(1)}~{c.optimistic!.toFixed(1)}%
-                    </span>
-                    {typeof c.confidence === "number" && (
-                      <span
-                        className="text-[9px] font-num"
-                        style={{
-                          color: c.confidence >= 80 ? "#059669" : c.confidence > 0 ? "#d97706" : "var(--color-ink-5)",
-                        }}
-                        title="等时圈星形法方向命中率（0-100），越高表示该社区覆盖估计越可信"
-                      >
-                        置信 {c.confidence.toFixed(0)}%
-                      </span>
-                    )}
-                  </div>
-                )}
+                {hasInterval && (() => {
+                  const lo = c.pessimistic!, hi = c.optimistic!;
+                  const conf = c.confidence ?? 0;
+                  const confHigh = conf >= 80;
+                  const confColor = conf > 0 ? (confHigh ? "#059669" : "#d97706") : "var(--color-ink-5)";
+                  return (
+                    <div className="mt-1">
+                      {/* 双指标区间可视化条: 0-100 轨道 + 悲观~乐观高亮段 + 主值标记 (紫色 = 混合模式主题色) */}
+                      <div className="relative h-1 rounded-full" style={{ background: "var(--color-subtle)" }}>
+                        <div
+                          className="absolute inset-y-0 rounded-full"
+                          style={{ left: `${lo}%`, width: `${Math.max(hi - lo, 0.8)}%`, background: "rgba(124,58,237,0.35)" }}
+                        />
+                        <div
+                          className="absolute rounded-full"
+                          style={{ left: `${c.coverageRatio}%`, top: "-2px", height: "6px", width: "2px", transform: "translateX(-1px)", background: "#7c3aed" }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between mt-0.5">
+                        <span
+                          className="text-[9px] font-num font-semibold"
+                          style={{ color: "#7c3aed" }}
+                          title={`缓冲区口径 ${(c.coverageBuf ?? 0).toFixed(1)}% / 等时圈口径 ${(c.coverageIso ?? 0).toFixed(1)}%，区间宽度反映该社区覆盖估计的不确定性`}
+                        >
+                          {lo.toFixed(1)}~{hi.toFixed(1)}%
+                        </span>
+                        {typeof c.confidence === "number" && (
+                          <span
+                            className="text-[9px] font-num font-semibold px-1 rounded"
+                            style={{
+                              background: conf > 0 ? (confHigh ? "rgba(16,185,129,0.1)" : "rgba(245,158,11,0.12)") : "var(--color-subtle)",
+                              color: confColor,
+                            }}
+                            title="等时圈星形法方向命中率（0-100），越高表示该社区覆盖估计越可信；0 表示仅缓冲区口径估算"
+                          >
+                            置信 {conf.toFixed(0)}%
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center justify-between mt-0.5">
                   <span className="text-[10px] truncate" style={{ color: "var(--color-ink-5)" }}>
                     {c.coveredBy ? `覆盖: ${c.coveredBy}` : "无覆盖"}

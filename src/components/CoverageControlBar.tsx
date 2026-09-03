@@ -123,7 +123,7 @@ export default function CoverageControlBar({
     {([
     { key: "buffer", label: "缓冲区" },
     { key: "isochrone", label: "等时圈" },
-    { key: "hybrid", label: "区间" },
+    { key: "hybrid", label: "混合" },
     ] as const).map(m => (
     <button key={m.key} onClick={() => setServiceAreaMode(m.key)}
     className={`h-6 px-2 rounded text-[11px] font-medium transition-all ${
@@ -131,7 +131,7 @@ export default function CoverageControlBar({
     ? "bg-white text-violet-600 shadow-sm"
     : "text-zinc-500 hover:text-zinc-700"
     }`}
-    title={m.key === "buffer" ? "圆形缓冲区 (传统估算, 快充 800m / 慢充 400m)" : m.key === "isochrone" ? "路网等时圈 (驾车 10 分钟 / 步行 15 分钟真实可达范围, 缺失站点不计入)" : "双指标区间 (等时圈+缓冲区双口径, 地图双层叠加显示, 等时圈权重上限 75%, 缓冲区口径保底参与加权, 推荐)"}
+    title={m.key === "buffer" ? "圆形缓冲区 (传统估算, 快充 800m / 慢充 400m)" : m.key === "isochrone" ? "路网等时圈 (驾车 10 分钟 / 步行 15 分钟真实可达范围, 缺失站点不计入)" : "混合模式 (等时圈+缓冲区双指标区间, 地图双层叠加显示, 等时圈权重上限 75%, 缓冲区口径保底参与加权, 推荐)"}
     >
     {m.label}
     </button>
@@ -222,18 +222,31 @@ export default function CoverageControlBar({
     {coverageSummary && (
     <div className="flex items-stretch gap-1.5 mt-1.5">
     <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(16,185,129,0.08), rgba(16,185,129,0.02))", border: "1px solid rgba(16,185,129,0.15)", borderTop: "2px solid #10B981", animationDelay: "0ms" }}>
-    <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate" title={coverageSummary.coverageRateInterval ? "区间模式: 全市平均覆盖程度（缓冲区25% + 等时圈75%占比混合）" : undefined}>覆盖率{coverageSummary.coverageRateInterval ? "·程度" : ""}</p>
+    <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate" title={coverageSummary.coverageRateInterval ? "混合模式: 全市平均覆盖程度（缓冲区25% + 等时圈75%占比混合）" : undefined}>覆盖率{coverageSummary.coverageRateInterval ? "·程度" : ""}</p>
     <p className="text-[14px] font-bold text-emerald-600 font-num mt-0.5">{coverageSummary.coverageRate}%</p>
-    {/* hybrid 双指标区间: 覆盖率的不确定性带宽 (等时圈权重上限 75%, 缓冲区口径保底参与加权) */}
-    {coverageSummary.coverageRateInterval && (
-      <p
-        className="text-[8px] font-num mt-0.5"
-        style={{ color: "var(--color-ink-5)" }}
-        title={`双口径区间: 下界 ${coverageSummary.coverageRateInterval[0]}%（逐社区双口径较小值均值）~ 上界 ${coverageSummary.coverageRateInterval[1]}%（较大值均值），主值为占比混合后的覆盖程度，必落于区间内`}
-      >
-        {coverageSummary.coverageRateInterval[0]}~{coverageSummary.coverageRateInterval[1]}%
-      </p>
-    )}
+    {/* hybrid 双指标区间: 可视化区间条 (轨道 + 悲观~乐观高亮段 + 主值标记), 区间宽度即不确定性带宽 */}
+    {coverageSummary.coverageRateInterval && (() => {
+    const lo = coverageSummary.coverageRateInterval![0];
+    const hi = coverageSummary.coverageRateInterval![1];
+    const main = coverageSummary.coverageRate;
+    return (
+    <div className="mt-1" title={`双口径区间: 悲观 ${lo}% ~ 乐观 ${hi}%，主值为占比混合后的覆盖程度，必落于区间内；区间宽度即估计不确定性带宽`}>
+    <div className="relative h-1.5 rounded-full" style={{ background: "rgba(16,185,129,0.12)" }}>
+    <div
+    className="absolute inset-y-0 rounded-full"
+    style={{ left: `${lo}%`, width: `${Math.max(hi - lo, 1.5)}%`, background: "rgba(16,185,129,0.4)" }}
+    />
+    <div
+    className="absolute rounded-full"
+    style={{ left: `${main}%`, top: "-2px", height: "8px", width: "2px", transform: "translateX(-1px)", background: "#059669" }}
+    />
+    </div>
+    <p className="text-[9px] font-num font-semibold mt-0.5 text-center" style={{ color: "#059669" }}>
+    {lo}~{hi}%
+    </p>
+    </div>
+    );
+    })()}
     </div>
     <div className="metric-card rounded-lg px-2 py-1 animate-count-up flex-1" style={{ background: "linear-gradient(135deg, rgba(20,184,166,0.08), rgba(20,184,166,0.02))", border: "1px solid rgba(20,184,166,0.15)", borderTop: "2px solid #14B8A6", animationDelay: "40ms" }}>
     <p className="text-[9px] text-zinc-500 font-mono uppercase tracking-wider truncate">人口覆盖</p>
@@ -270,7 +283,7 @@ export default function CoverageControlBar({
     style={{ background: "var(--color-surface)", border: "1px solid var(--color-muted)" }}
     >
     <Activity className="w-3 h-3 shrink-0" style={{ color: "#7c3aed" }} />
-    <span className="text-zinc-500">{serviceAreaMode === "hybrid" ? "双指标区间" : "服务区来源"}</span>
+    <span className="text-zinc-500">{serviceAreaMode === "hybrid" ? "混合模式" : "服务区来源"}</span>
     <span className="px-1.5 py-0 rounded font-medium font-mono" style={{ background: "rgba(124,58,237,0.1)", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.3)" }}>
     等时圈 {isochroneCoverage.covered} 站
     </span>
@@ -283,19 +296,28 @@ export default function CoverageControlBar({
     {serviceAreaMode === "hybrid" ? "缓冲兜底" : "缓冲回退"} {isochroneCoverage.fallback} 站
     </span>
     )}
-    {serviceAreaMode === "hybrid" && typeof isochroneCoverage.avgConfidence === "number" && isochroneCoverage.avgConfidence > 0 && (
+    {serviceAreaMode === "hybrid" && typeof isochroneCoverage.avgConfidence === "number" && isochroneCoverage.avgConfidence > 0 && (() => {
+    const high = isochroneCoverage.avgConfidence! >= 80;
+    return (
     <span
-      className="px-1.5 py-0 rounded font-medium font-mono"
-      style={{
-        background: isochroneCoverage.avgConfidence >= 80 ? "rgba(16,185,129,0.1)" : "rgba(245,158,11,0.1)",
-        color: isochroneCoverage.avgConfidence >= 80 ? "#059669" : "#d97706",
-        border: `1px solid ${isochroneCoverage.avgConfidence >= 80 ? "rgba(16,185,129,0.3)" : "rgba(245,158,11,0.3)"}`,
-      }}
-      title="等时圈星形法方向命中率均值（0-100），越高表示路网可达性建模越可信"
+    className="flex items-center gap-1.5 px-1.5 py-0 rounded font-medium font-mono"
+    style={{
+    background: high ? "rgba(16,185,129,0.1)" : "rgba(245,158,11,0.1)",
+    color: high ? "#059669" : "#d97706",
+    border: `1px solid ${high ? "rgba(16,185,129,0.35)" : "rgba(245,158,11,0.35)"}`,
+    }}
+    title="等时圈星形法方向命中率均值（0-100），越高表示路网可达性建模越可信；主值 = 置信度×等时圈口径 + (1-置信度)×缓冲区口径"
     >
+    <span className="relative w-10 h-1 rounded-full overflow-hidden" style={{ background: high ? "rgba(16,185,129,0.2)" : "rgba(245,158,11,0.2)" }}>
+    <span
+    className="absolute inset-y-0 left-0 rounded-full"
+    style={{ width: `${isochroneCoverage.avgConfidence}%`, background: high ? "#10B981" : "#F59E0B" }}
+    />
+    </span>
     置信度 {isochroneCoverage.avgConfidence}%
     </span>
-    )}
+    );
+    })()}
     <span className="ml-auto text-zinc-400 font-mono">
     等时圈占比 {isochroneCoverage.ratio}%
     </span>

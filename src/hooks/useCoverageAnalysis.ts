@@ -74,7 +74,7 @@ export function useCoverageAnalysis() {
       const modes = [
         { mode: "buffer", label: "缓冲区" },
         { mode: "isochrone", label: "等时圈" },
-        { mode: "hybrid", label: "区间" },
+        { mode: "hybrid", label: "混合" },
       ];
       const results = await Promise.all(modes.map(async m => {
         const res = await fetch("/api/v1/analysis/coverage", {

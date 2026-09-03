@@ -34,17 +34,27 @@ export function getPrecomputeProgress(): PrecomputeProgress {
 
 // 写单个站的等时圈到数据库
 // 注意：直接存 JSON 字符串到 JSON 字段（不用 ST_GeomFromGeoJSON，因为后者返回 binary 字符集与 JSON 字段不兼容）
+// 存完整 Feature 格式（含 properties.reachedDirections/totalDirections），供覆盖分析计算等时圈置信度；
+// 读取方已兼容旧裸几何格式（{type,coordinates}），旧数据自动降级为默认置信度
 async function saveStationIsochrone(
   dbPool: any,
   stationId: number,
   mode: IsochroneMode,
-  geom: any
+  result: { geom: any; reachedDirections: number; totalDirections: number }
 ): Promise<void> {
   const col = mode === "fast" ? "isochrone_fast_geom" : "isochrone_slow_geom";
   const timeCol = mode === "fast" ? "isochrone_fast_updated" : "isochrone_slow_updated";
+  const feature = {
+    type: "Feature",
+    geometry: result.geom.geometry,
+    properties: {
+      reachedDirections: result.reachedDirections,
+      totalDirections: result.totalDirections,
+    },
+  };
   await dbPool.query(
     `UPDATE t_charging_station SET ${col} = ?, ${timeCol} = NOW() WHERE id = ?`,
-    [JSON.stringify(geom.geometry), stationId]
+    [JSON.stringify(feature), stationId]
   );
 }
 
@@ -72,9 +82,16 @@ async function computeStationIsochrones(
   if (station.fastChargers > 0) {
     try {
       const fast = await getIsochrone(station.lng, station.lat, "fast");
-      await saveStationIsochrone(dbPool, station.id, "fast", fast.geom);
+      await saveStationIsochrone(dbPool, station.id, "fast", fast);
       if (memoryStation) {
-        memoryStation.isochroneFastGeom = fast.geom;
+        memoryStation.isochroneFastGeom = {
+          type: "Feature",
+          geometry: fast.geom.geometry,
+          properties: {
+            reachedDirections: fast.reachedDirections,
+            totalDirections: fast.totalDirections,
+          },
+        };
         memoryStation.isochroneFastUpdated = new Date().toISOString();
       }
       result.fast = true;
@@ -89,9 +106,16 @@ async function computeStationIsochrones(
   if (station.slowChargers > 0) {
     try {
       const slow = await getIsochrone(station.lng, station.lat, "slow");
-      await saveStationIsochrone(dbPool, station.id, "slow", slow.geom);
+      await saveStationIsochrone(dbPool, station.id, "slow", slow);
       if (memoryStation) {
-        memoryStation.isochroneSlowGeom = slow.geom;
+        memoryStation.isochroneSlowGeom = {
+          type: "Feature",
+          geometry: slow.geom.geometry,
+          properties: {
+            reachedDirections: slow.reachedDirections,
+            totalDirections: slow.totalDirections,
+          },
+        };
         memoryStation.isochroneSlowUpdated = new Date().toISOString();
       }
       result.slow = true;

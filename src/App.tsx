@@ -2459,7 +2459,7 @@ export default function App() {
       return;
     }
     // 阶段五 等时圈: CSV 首行追加服务区模式信息便于追溯
-    const saModeLabel = serviceAreaMode === "buffer" ? "缓冲区" : serviceAreaMode === "isochrone" ? "等时圈" : "双指标区间";
+    const saModeLabel = serviceAreaMode === "buffer" ? "缓冲区" : serviceAreaMode === "isochrone" ? "等时圈" : "混合";
     // 双指标区间模式: 追加 缓冲区口径/等时圈口径/区间/置信度 列
     const hasInterval = serviceAreaMode === "hybrid" && coverageResults.some(c => c.pessimistic !== undefined);
     const header = ["社区名", "行政区", "人口", "覆盖率(%)", ...(hasInterval ? ["覆盖率区间(%)", "置信度(%)"] : []), "分级", "覆盖充电站"];
@@ -2517,7 +2517,7 @@ export default function App() {
     const radiusText = `${coverageRadius || (chargeMode === "fast" ? 1000 : 400)}m`;
     const districtText = coverageDistrict === "all" ? "全部行政区" : coverageDistrict;
     // 阶段五 等时圈: 报告中标注服务区模式
-    const saModeText = serviceAreaMode === "buffer" ? "圆形缓冲区" : serviceAreaMode === "isochrone" ? "路网等时圈" : "双指标区间 (缓冲区+等时圈双口径占比混合, 主值=覆盖程度均值)";
+    const saModeText = serviceAreaMode === "buffer" ? "圆形缓冲区" : serviceAreaMode === "isochrone" ? "路网等时圈" : "混合 (缓冲区+等时圈双口径占比混合, 主值=覆盖程度均值)";
     const isoCovText = isochroneCoverage ? `等时圈 ${isochroneCoverage.covered} 站 / 缓冲兜底 ${isochroneCoverage.fallback} 站 (占比 ${isochroneCoverage.ratio}%${typeof isochroneCoverage.avgConfidence === "number" && isochroneCoverage.avgConfidence > 0 ? `, 平均置信度 ${isochroneCoverage.avgConfidence}%` : ""})` : "";
     // 双指标区间模式: 报告中展示覆盖率双口径区间
     const intervalText = coverageSummary?.coverageRateInterval
@@ -3964,7 +3964,7 @@ export default function App() {
                     <div className="flex justify-between items-center">
                       <span style={{ color: "var(--color-ink-4)" }}>计算模式</span>
                       <span className="font-semibold" style={{ color: "var(--color-ink-1)" }}>
-                        {serviceAreaInfo.source === "isochrone" ? "等时圈 (路网可达)" : serviceAreaInfo.mode === "hybrid" ? (serviceAreaInfo.component === "buf-estimate" ? "缓冲区估算分量" : "双指标区间 (等时圈+缓冲区)") : "圆形缓冲区"}
+                        {serviceAreaInfo.source === "isochrone" ? "等时圈 (路网可达)" : serviceAreaInfo.mode === "hybrid" ? (serviceAreaInfo.component === "buf-estimate" ? "缓冲区估算分量" : "混合双指标区间 (等时圈+缓冲区)") : "圆形缓冲区"}
                       </span>
                     </div>
                     {serviceAreaInfo.mode === "hybrid" && (
@@ -4082,6 +4082,52 @@ export default function App() {
                     })()}
                   </div>
                 </div>
+                {/* 混合模式: 双指标区间 + 置信度可视化块 (紫色 = 混合模式主题色) */}
+                {communityDetail.pessimistic !== undefined && communityDetail.optimistic !== undefined && (communityDetail.optimistic - communityDetail.pessimistic) > 0.1 && (() => {
+                  const lo = communityDetail.pessimistic!;
+                  const hi = communityDetail.optimistic!;
+                  const conf = communityDetail.confidence ?? 0;
+                  const confHigh = conf >= 80;
+                  return (
+                    <div style={{ borderRadius: 8, background: "rgba(124,58,237,0.05)", border: "1px solid rgba(124,58,237,0.18)", padding: "7px 9px" }}>
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-semibold" style={{ color: "#7c3aed" }}>双指标区间</span>
+                        <span className="font-num font-bold text-[12px]" style={{ color: "#7c3aed" }}>
+                          {lo.toFixed(1)}~{hi.toFixed(1)}%
+                        </span>
+                      </div>
+                      {/* 区间可视化条: 0-100 轨道 + 悲观~乐观高亮段 + 主值标记 */}
+                      <div className="relative h-1.5 mt-1.5 rounded-full" style={{ background: "rgba(124,58,237,0.12)" }}>
+                        <div
+                          className="absolute inset-y-0 rounded-full"
+                          style={{ left: `${lo}%`, width: `${Math.max(hi - lo, 1)}%`, background: "rgba(124,58,237,0.4)" }}
+                        />
+                        <div
+                          className="absolute rounded-full"
+                          style={{ left: `${communityDetail.coverageRatio}%`, top: "-2px", height: "8px", width: "2px", transform: "translateX(-1px)", background: "#7c3aed" }}
+                        />
+                      </div>
+                      {/* 置信度进度条 */}
+                      <div className="flex justify-between items-center mt-1.5">
+                        <span className="text-[9px]" style={{ color: "var(--color-ink-5)" }}>估计置信度</span>
+                        <div className="flex items-center gap-1.5">
+                          <span className="relative w-16 h-1 rounded-full overflow-hidden" style={{ background: conf > 0 ? (confHigh ? "rgba(16,185,129,0.2)" : "rgba(245,158,11,0.2)") : "var(--color-muted)" }}>
+                            <span
+                              className="absolute inset-y-0 left-0 rounded-full"
+                              style={{ width: `${conf}%`, background: conf > 0 ? (confHigh ? "#10B981" : "#F59E0B") : "var(--color-line)" }}
+                            />
+                          </span>
+                          <span className="text-[10px] font-num font-bold" style={{ color: conf > 0 ? (confHigh ? "#059669" : "#d97706") : "var(--color-ink-5)" }}>
+                            {conf.toFixed(0)}%
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-[9px] mt-1" style={{ color: "var(--color-ink-5)" }}>
+                        缓冲区口径 {(communityDetail.coverageBuf ?? 0).toFixed(1)}% · 等时圈口径 {(communityDetail.coverageIso ?? 0).toFixed(1)}% · 主值 = 置信度加权
+                      </p>
+                    </div>
+                  );
+                })()}
                 {/* 覆盖充电站列表 (按距离升序, Top5) */}
                 <div className="pt-1" style={{ borderTop: "1px solid rgba(0,0,0,0.05)" }}>
                   <p className="text-[10px] mb-1.5" style={{ color: "var(--color-ink-5)" }}>附近充电站 (按距离排序)</p>
