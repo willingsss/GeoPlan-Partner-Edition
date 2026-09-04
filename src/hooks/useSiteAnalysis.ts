@@ -20,8 +20,11 @@ export interface SavedScheme {
 export function useSiteAnalysis() {
   // 选址参数
   const [siteChargeMode, setSiteChargeMode] = useState<"fast" | "slow">("fast");
+  // 同步 ref: 供 evaluateSite 等闭包读取最新模式 (setState 异步, 闭包内 state 为旧值)
+  const siteChargeModeRef = useRef<"fast" | "slow">("fast");
   const [siteBrand, setSiteBrand] = useState<string>("国家电网");
-  const [siteRadius, setSiteRadius] = useState(800);
+  // 初始值对齐快充默认模式; 切换充电模式时由 App 重置为该模式规划标准半径 (快充1000/慢充400)
+  const [siteRadius, setSiteRadius] = useState(1000);
   const siteRadiusRef = useRef(siteRadius);
 
   // 虚拟站点 + 评估结果
@@ -52,6 +55,7 @@ export function useSiteAnalysis() {
   return {
     // 参数
     siteChargeMode, setSiteChargeMode,
+    siteChargeModeRef,
     siteBrand, setSiteBrand,
     siteRadius, setSiteRadius,
     siteRadiusRef,

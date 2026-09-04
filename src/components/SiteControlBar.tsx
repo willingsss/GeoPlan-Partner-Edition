@@ -57,13 +57,20 @@ export default function SiteControlBar(props: SiteControlBarProps) {
           </div>
           {/* 参数控件区 - Linear 风: 分段控件 */}
           <div className="flex flex-wrap items-center gap-2 text-[12px]">
-            {/* 服务半径 - 紧凑滑块 */}
+            {/* 服务半径 - 紧凑滑块 (充电模式切换时重置为规划标准值) */}
             <div className="flex items-center gap-1.5 min-w-[180px]">
               <span className="text-[10px] text-zinc-500">服务半径</span>
               <input type="range" min="300" max="1500" step="50" value={siteRadius}
                 onChange={(e) => onRadiusChange(parseInt(e.target.value))}
+                title={`规划标准: 快充 1000m / 慢充 400m, 切换充电模式时自动重置`}
                 className="flex-1 accent-amber-500 h-1" />
               <span className="font-num text-amber-600 text-[11px] font-semibold w-12 text-right">{siteRadius}米</span>
+              {siteRadius === (siteChargeMode === "fast" ? 1000 : 400) && (
+                <span className="text-[9px] px-1 py-0.5 rounded text-emerald-600"
+                  style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}>
+                  标准
+                </span>
+              )}
             </div>
             {/* 充电模式 - Linear 风分段控件 */}
             <div className="flex items-center gap-1">

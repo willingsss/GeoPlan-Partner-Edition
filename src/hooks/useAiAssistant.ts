@@ -30,12 +30,25 @@ export interface AiGisResult {
 
 interface UseAiAssistantOptions {
   userLocation: { lng: number; lat: number; accuracy?: number } | null;
+  // 当前登录账号 ID: 历史记录按账号隔离, 未登录时不读写
+  userId?: number | null;
   // GIS 结果到达回调 (App 侧负责地图可视化)
   onGisResult?: (result: any) => void;
 }
 
 const HISTORY_LIMIT = 8; // 多轮上下文: 最近 8 条
-const STORAGE_KEY = "geoplan_ai_messages"; // 会话持久化
+// 会话持久化: 按账号隔离, 每个账号各自独立的历史记录
+const aiStorageKey = (userId?: number | null) =>
+  userId != null ? `geoplan_ai_messages_${userId}` : null;
+
+const loadAiMessages = (key: string | null) => {
+  if (!key) return [];
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved) return JSON.parse(saved);
+  } catch { /* 忽略损坏数据 */ }
+  return [];
+};
 
 // 解析后端错误响应, 返回给用户可读的提示 (401 = 登录失效而非服务故障)
 export async function aiErrorMessage(res: Response): Promise<string> {
@@ -47,21 +60,28 @@ export async function aiErrorMessage(res: Response): Promise<string> {
   return `AI 请求失败 (HTTP ${res.status})`;
 }
 
-export default function useAiAssistant({ userLocation, onGisResult }: UseAiAssistantOptions) {
-  // 会话持久化: 刷新后恢复历史对话
-  const [aiMessages, setAiMessages] = useState<{ role: "user" | "assistant"; content: string; gisResult?: AiGisResult }[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
-    } catch { /* 忽略损坏数据 */ }
-    return [];
-  });
+export default function useAiAssistant({ userLocation, userId, onGisResult }: UseAiAssistantOptions) {
+  const aiAbortRef = useRef<AbortController | null>(null);
+  const gisResultRef = useRef<{ stations: number[]; communities: number[]; center?: [number, number]; radius?: number } | null>(null);
+  // 会话持久化: 刷新后恢复历史对话 (key 按账号隔离)
+  const storageKey = aiStorageKey(userId);
+  const [aiMessages, setAiMessages] = useState<{ role: "user" | "assistant"; content: string; gisResult?: AiGisResult }[]>(() => loadAiMessages(storageKey));
+  // 登录 / 切换账号 / 登出时: 加载该账号自己的历史, 未登录则清空
   useEffect(() => {
+    if (aiAbortRef.current) {
+      aiStoppedRef.current = true; // 静默中断进行中的流, 避免超时提示写入新账号记录
+      aiAbortRef.current.abort();
+    }
+    setAiMessages(loadAiMessages(storageKey));
+    gisResultRef.current = null;
+  }, [storageKey]);
+  useEffect(() => {
+    if (!storageKey) return;
     try {
       // 只保留最近 30 条, 避免 localStorage 膨胀
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(aiMessages.slice(-30)));
+      localStorage.setItem(storageKey, JSON.stringify(aiMessages.slice(-30)));
     } catch { /* 超出配额时忽略 */ }
-  }, [aiMessages]);
+  }, [aiMessages, storageKey]);
   const [aiInput, setAiInput] = useState("");
   const [aiStreaming, setAiStreaming] = useState(false);
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
@@ -70,11 +90,9 @@ export default function useAiAssistant({ userLocation, onGisResult }: UseAiAssis
   const [aiBallPos, setAiBallPos] = useState<{ bottom: number; right: number } | null>(null);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const aiDragRef = useRef<{ startX: number; startY: number; startBottom: number; startRight: number; moved: boolean }>({ startX: 0, startY: 0, startBottom: 0, startRight: 0, moved: false });
-  const aiAbortRef = useRef<AbortController | null>(null);
   const aiMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const aiInputRef = useRef<HTMLTextAreaElement | null>(null);
   const aiStoppedRef = useRef(false);
-  const gisResultRef = useRef<{ stations: number[]; communities: number[]; center?: [number, number]; radius?: number } | null>(null);
 
   // ===== 滚动/输入框自适应 =====
   const scrollAiToBottom = () => {

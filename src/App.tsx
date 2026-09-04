@@ -359,6 +359,7 @@ export default function App() {
   // ===== 选址决策子系统状态 (useSiteAnalysis hook) =====
   const {
     siteChargeMode, setSiteChargeMode,
+    siteChargeModeRef,
     siteBrand, setSiteBrand,
     siteRadius, setSiteRadius, siteRadiusRef,
     virtualStation, setVirtualStation,
@@ -680,6 +681,7 @@ export default function App() {
     sendAiMessage, sendAiText, stopAi, regenerateAi, clearAi, copyAi,
   } = useAiAssistant({
     userLocation,
+    userId: currentUser?.id ?? null,
     onGisResult: undefined,
   });
   const [locating, setLocating] = useState(false);
@@ -758,6 +760,8 @@ export default function App() {
   // 用于在地图事件回调中访问最新值，避免闭包过期
   const activeTabRef = useRef<SubsystemTab>("map");
   const placeVirtualStationRef = useRef<(lng: number, lat: number) => void>(() => {});
+  // 点击已保存方案徽标 → 定位该方案 (地图事件闭包内调用, 避免 stale closure)
+  const focusSchemeRef = useRef<(id: number) => void>(() => {});
   // 覆盖分析结果 ref (供地图点击回调读取最新值, 避免闭包过期)
   const coverageResultsRef = useRef<CommunityResult[]>([]);
 
@@ -780,6 +784,9 @@ export default function App() {
   const blindSpotLayerRef = useRef<VectorLayer | null>(null);
   const intersectionLayerRef = useRef<VectorLayer | null>(null);
   const virtualStationLayerRef = useRef<VectorLayer | null>(null);
+  // 已保存方案徽标图层 (选址 Tab 显示全部已存方案, 与虚拟站点气球 pin 图标区分)
+  const schemeSourceRef = useRef<VectorSource | null>(null);
+  const schemeLayerRef = useRef<VectorLayer | null>(null);
   const feedbackLayerRef = useRef<VectorLayer | null>(null);
   const searchLayerRef = useRef<VectorLayer | null>(null);
   // 候选点 (盲区聚类) 图层引用
@@ -999,6 +1006,9 @@ export default function App() {
     blindSpotSourceRef.current = blindSpotSource;
     const virtualStationSource = new VectorSource();
     virtualStationSourceRef.current = virtualStationSource;
+    // 已保存方案徽标数据源
+    const schemeSource = new VectorSource();
+    schemeSourceRef.current = schemeSource;
     const intersectionSource = new VectorSource();
     intersectionSourceRef.current = intersectionSource;
     // 测量图层 source (存储绘制的折线和多边形)
@@ -1169,20 +1179,63 @@ export default function App() {
       }));
     };
 
+    // 选址虚拟站点图标: 项目 logo 配色 (钢蓝 pin + 冰蓝渐变盘 + 深海军蓝闪电), 快慢充统一
+    const virtualStationPin =
+      "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="56" height="68" viewBox="0 0 56 68">` +
+        `<defs><linearGradient id="disc" x1="0" y1="0" x2="1" y2="1">` +
+        `<stop offset="0%" stop-color="#EAF2F8"/><stop offset="100%" stop-color="#D6E6F2"/>` +
+        `</linearGradient></defs>` +
+        `<ellipse cx="28" cy="64" rx="9" ry="3" fill="rgba(27,42,74,0.22)"/>` +
+        `<path d="M28 3 C15.3 3 5 13.3 5 26.5 C5 41 28 62.5 28 62.5 C28 62.5 51 41 51 26.5 C51 13.3 40.7 3 28 3 Z" fill="#5A7BA0" stroke="#3E5678" stroke-width="2"/>` +
+        `<ellipse cx="28" cy="13" rx="8" ry="4.5" fill="rgba(255,255,255,0.28)" transform="rotate(-24 28 13)"/>` +
+        `<circle cx="28" cy="26.5" r="15" fill="url(#disc)" stroke="rgba(90,123,160,0.4)" stroke-width="1"/>` +
+        `<path d="M33 15.5 L19.5 31 H26 L23 38.5 L36.5 23 H30 Z" fill="#1B2A4A"/>` +
+        `</svg>`
+      );
     const virtualStationStyle = new Style({
-      image: new CircleStyle({
-        radius: 12,
-        fill: new Fill({ color: "#fbbf24" }),
-        stroke: new Stroke({ color: "#ffffff", width: 3 }),
+      image: new IconStyle({
+        src: virtualStationPin,
+        anchor: [0.5, 0.95],
+        anchorXUnits: "fraction",
+        anchorYUnits: "fraction",
+        scale: 0.92,
       }),
       text: new Text({
-        text: "📍 拖拽我",
+        text: "拖拽我",
         font: "bold 11px sans-serif",
-        offsetY: -22,
-        fill: new Fill({ color: "#92400e" }),
+        offsetY: -64,
+        fill: new Fill({ color: "#3E5678" }),
         stroke: new Stroke({ color: "#ffffff", width: 3 }),
       }),
     });
+
+    // 已保存方案徽标: 深海军蓝钻形 + 金色书签 + 方案名标注, 与虚拟站点气球 pin 区分
+    const schemeBadgeIcon =
+      "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 44 44">` +
+        `<defs><linearGradient id="dia" x1="0" y1="0" x2="1" y2="1">` +
+        `<stop offset="0%" stop-color="#2A3F6B"/><stop offset="100%" stop-color="#1B2A4A"/>` +
+        `</linearGradient></defs>` +
+        `<rect x="7" y="7" width="30" height="30" rx="5" fill="url(#dia)" stroke="#D9A843" stroke-width="2" transform="rotate(45 22 22)"/>` +
+        `<path d="M18.6 12.5 h6.8 v14 l-3.4 -3 l-3.4 3 z" fill="#D9A843"/>` +
+        `</svg>`
+      );
+    const schemeBadgeStyleFunc = (feature: any) =>
+      cacheStyle("schemeBadge", feature.get("schemeName") || "", () => new Style({
+        image: new IconStyle({
+          src: schemeBadgeIcon,
+          anchor: [0.5, 0.5],
+          scale: 0.95,
+        }),
+        text: new Text({
+          text: feature.get("schemeName") || "",
+          font: "bold 10px sans-serif",
+          offsetY: 27,
+          fill: new Fill({ color: "#1B2A4A" }),
+          stroke: new Stroke({ color: "#ffffff", width: 3 }),
+        }),
+      }));
 
     const intersectionStyle = (feature: any) => {
       const ratio = feature.get("coverage_ratio") || 0;
@@ -1255,6 +1308,7 @@ export default function App() {
         (() => { const l = new VectorLayer({ source: blindSpotSource, style: blindSpotStyle }); blindSpotLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: intersectionSource, style: intersectionStyle }); intersectionLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: stationSource, style: getStationStyle }); stationLayerRef.current = l; return l; })(),
+        (() => { const l = new VectorLayer({ source: schemeSource, style: schemeBadgeStyleFunc }); schemeLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: virtualStationSource, style: virtualStationStyle }); virtualStationLayerRef.current = l; return l; })(),
         (() => { const l = new VectorLayer({ source: feedbackSource, style: feedbackStyle }); feedbackLayerRef.current = l; return l; })(),
         // 导航路线图层 (最上层)
@@ -1534,12 +1588,13 @@ export default function App() {
       const lng = parseFloat(wgsLng.toFixed(6));
       const lat = parseFloat(wgsLat.toFixed(6));
 
-      // 检查是否点击了充电站 / 候选点 / 重叠区 / 社区 / 服务区
+      // 检查是否点击了充电站 / 候选点 / 重叠区 / 社区 / 服务区 / 已保存方案徽标
       let clickedStation: any = null;
       let clickedCluster: BlindSpotCluster | null = null;
       let clickedOverlap: any = null;
       let clickedCommunityFeature: any = null;
       let clickedServiceArea: any = null;
+      let clickedSchemeId: number | null = null;
       map.forEachFeatureAtPixel(e.pixel, (feature, layer) => {
         const props = feature.getProperties();
         if (props.brand && props.name) {
@@ -1548,6 +1603,10 @@ export default function App() {
         // 候选点 feature 携带 cluster 属性
         if (props.cluster) {
           clickedCluster = props.cluster as BlindSpotCluster;
+        }
+        // 已保存方案徽标 (选址 Tab): 点击定位该方案
+        if (layer === schemeLayerRef.current) {
+          clickedSchemeId = (props.schemeId as number) ?? null;
         }
         // 服务区重叠区 feature (阶段二 任务 2.3.4)
         if (layer === overlapLayerRef.current) {
@@ -1661,6 +1720,12 @@ export default function App() {
       if (aiHighlightTimerRef.current) { clearInterval(aiHighlightTimerRef.current); aiHighlightTimerRef.current = null; }
       setAiStationDetail(null);
 
+      // 点击已保存方案徽标: 定位到该方案, 不触发放置虚拟站点
+      if (clickedSchemeId != null) {
+        focusSchemeRef.current?.(clickedSchemeId);
+        return;
+      }
+
       // 根据当前 Tab 执行不同操作 (传给后端的是 WGS84 坐标)
       if (currentTab === "site") {
         placeVirtualStationRef.current(lng, lat);
@@ -1707,8 +1772,9 @@ export default function App() {
     clusterLayerRef.current?.setVisible(isCov || isSite);
     // 服务区重叠图层: 仅 coverage Tab 可见 (阶段二 任务 2.3.3)
     overlapLayerRef.current?.setVisible(isCov);
-    // 选址决策图层: 仅 site Tab 可见
+    // 选址决策图层: 仅 site Tab 可见 (含已保存方案徽标)
     virtualStationLayerRef.current?.setVisible(isSite);
+    schemeLayerRef.current?.setVisible(isSite);
     intersectionLayerRef.current?.setVisible(isSite);
     // 地图查询图层: 仅 map Tab 可见 (community/feedback 受复选框控制)
     searchLayerRef.current?.setVisible(isMap);
@@ -2113,14 +2179,15 @@ export default function App() {
     }
   }, []);
 
-  const handleLogin = async () => {
+  const handleLogin = async (credsOverride?: { username: string; password: string }) => {
+    const creds = credsOverride || loginForm;
     setLoginLoading(true);
     setLoginError("");
     try {
       const res = await fetch("/api/v1/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(loginForm),
+        body: JSON.stringify(creds),
       });
       const json = await res.json();
       if (json.success) {
@@ -2135,6 +2202,27 @@ export default function App() {
       setLoginError("网络错误，请检查服务是否启动");
     }
     setLoginLoading(false);
+  };
+
+  // 用户注册：成功后用注册凭据自动登录
+  const handleRegister = async (form: { username: string; password: string; role: UserRole }): Promise<{ success: boolean; message?: string }> => {
+    try {
+      const res = await fetch("/api/v1/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const json = await res.json();
+      if (json.success) {
+        setLoginForm({ username: form.username, password: form.password });
+        setLoginError("");
+        handleLogin({ username: form.username, password: form.password });
+        return { success: true, message: json.message };
+      }
+      return { success: false, message: json.message || "注册失败" };
+    } catch {
+      return { success: false, message: "网络错误，请检查服务是否启动" };
+    }
   };
 
   const handleLogout = async () => {
@@ -2281,6 +2369,21 @@ export default function App() {
       if (json.success) setSchemes(json.data);
     });
   }, [authToken, currentUser]);
+
+  // 已保存方案 → 地图钻形徽标 (WGS84 → GCJ02 投影, 名称标注在下方)
+  useEffect(() => {
+    const src = schemeSourceRef.current;
+    if (!src) return;
+    src.clear();
+    for (const s of schemes) {
+      if (typeof s.lng !== "number" || typeof s.lat !== "number") continue;
+      const [gcjLng, gcjLat] = wgs84ToGcj02(s.lng, s.lat);
+      const feat = new Feature({ geometry: new Point(fromLonLat([gcjLng, gcjLat])) });
+      feat.set("schemeName", s.name);
+      feat.set("schemeId", s.id);
+      src.addFeature(feat);
+    }
+  }, [schemes, mapReady]);
 
   // 加载区域统计
   useEffect(() => {
@@ -2659,7 +2762,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          lng, lat, radius: siteRadiusRef.current, chargeMode: siteChargeMode,
+          lng, lat, radius: siteRadiusRef.current, chargeMode: siteChargeModeRef.current,
           // 联动覆盖分析盲区几何, 后端据此返回 in_blind_spot
           coverageBlindSpots: lastCoverageBlindSpotsRef.current || [],
         }),
@@ -2771,6 +2874,8 @@ export default function App() {
     mapRef.current.getView().animate({ center: fromLonLat([gcjLng, gcjLat]), zoom: 14, duration: 700 });
     showToast(`已定位到「${s.name}」`, "info");
   };
+  // 供地图点击闭包调用 (点击徽标定位方案)
+  focusSchemeRef.current = focusSchemeOnMap;
 
   // 批量导出方案 Excel (CSV 带 BOM, Excel 直接打开中文不乱码)
   const exportSchemesExcel = (ids?: number[]) => {
@@ -3593,8 +3698,9 @@ export default function App() {
         onLoginFormChange={(field, value) => setLoginForm(prev => ({ ...prev, [field]: value }))}
         loginError={loginError}
         loginLoading={loginLoading}
-        onLogin={handleLogin}
+        onLogin={() => handleLogin()}
         onFillDemo={fillDemoAccount}
+        onRegister={handleRegister}
       />
     );
   }
@@ -3780,7 +3886,17 @@ export default function App() {
                       siteRadiusRef.current = v;
                       if (virtualStation) evaluateSite(virtualStation.lng, virtualStation.lat);
                     }}
-                    onChargeModeChange={setSiteChargeMode}
+                    onChargeModeChange={(m) => {
+                      setSiteChargeMode(m);
+                      siteChargeModeRef.current = m;
+                      // 切换充电模式时重置为规划标准服务半径 (与后端 coverageConfig 对齐):
+                      // 快充 1000m (GB/T 51313 驾车补电半径) / 慢充 400m (15分钟生活圈步行半径)
+                      const preset = m === "fast" ? 1000 : 400;
+                      setSiteRadius(preset);
+                      siteRadiusRef.current = preset;
+                      // 已放置虚拟站点: 按新模式重新评估
+                      if (virtualStation) evaluateSite(virtualStation.lng, virtualStation.lat);
+                    }}
                     onBrandChange={setSiteBrand}
                     onSchemeNameChange={setSchemeName}
                     onSaveScheme={saveScheme}
